@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 877CE6C72DF8902900B93778 /* NIOSSH */; };
+		87CEB3292E156C1F00AC3F71 /* LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 87CEB3282E156C1F00AC3F71 /* LICENSE.txt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -31,6 +32,7 @@
 		877CE6662DF8632600B93778 /* CodeAgentsMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodeAgentsMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		877CE6752DF8632800B93778 /* CodeAgentsMobileTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodeAgentsMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		877CE67F2DF8632800B93778 /* CodeAgentsMobileUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodeAgentsMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		87CEB3282E156C1F00AC3F71 /* LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -84,6 +86,7 @@
 				877CE6782DF8632800B93778 /* MobileCodeTests */,
 				877CE6822DF8632800B93778 /* MobileCodeUITests */,
 				877CE6672DF8632600B93778 /* Products */,
+				87CEB3282E156C1F00AC3F71 /* LICENSE.txt */,
 			);
 			sourceTree = "<group>";
 		};
@@ -221,6 +224,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				87CEB3292E156C1F00AC3F71 /* LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
