@@ -1,6 +1,6 @@
 //
-//  MobileCodeApp.swift
-//  MobileCode
+//  CodeAgentsMobileApp.swift
+//  CodeAgentsMobile
 //
 //  Created by Eugene Pyvovarov on 2025-06-10.
 //
@@ -9,10 +9,12 @@ import SwiftUI
 import SwiftData
 
 @main
-struct MobileCodeApp: App {
+struct CodeAgentsMobileApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Item.self,
+            Project.self,
+            Server.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

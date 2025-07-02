@@ -1,6 +1,6 @@
 //
 //  Item.swift
-//  MobileCode
+//  CodeAgentsMobile
 //
 //  Created by Eugene Pyvovarov on 2025-06-10.
 //

@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  MobileCode
+//  CodeAgentsMobile
 //
 //  Created by Eugene Pyvovarov on 2025-06-10.
 //
@@ -9,53 +9,61 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
+    @State private var selectedTab = Tab.chat
+    @StateObject private var projectContext = ProjectContext.shared
+    @StateObject private var connectionManager = ConnectionManager.shared
     @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
-
+    
+    enum Tab {
+        case chat
+        case files
+        case terminal
+    }
+    
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+        if projectContext.activeProject == nil {
+            // Show projects list when no project is active
+            ProjectsView()
+                .onAppear {
+                    configureManagers()
+                }
+        } else {
+            // Show tabs when a project is active
+            TabView(selection: $selectedTab) {
+                ChatView()
+                    .tabItem {
+                        Label("Chat", systemImage: "message")
                     }
-                }
-                .onDelete(perform: deleteItems)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                    .tag(Tab.chat)
+                
+                FileBrowserView()
+                    .tabItem {
+                        Label("Files", systemImage: "doc.text")
                     }
-                }
+                    .tag(Tab.files)
+                
+                TerminalView()
+                    .tabItem {
+                        Label("Terminal", systemImage: "terminal")
+                    }
+                    .tag(Tab.terminal)
             }
-        } detail: {
-            Text("Select an item")
+            .onAppear {
+                configureManagers()
+            }
         }
     }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
-            }
-        }
+    
+    private func configureManagers() {
+        // Configure ProjectContext with model context
+        projectContext.configure(with: modelContext)
+        
+        // Load servers for ConnectionManager
+        connectionManager.loadServers(from: modelContext)
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+        .modelContainer(for: [Project.self, Server.self], inMemory: true)
 }

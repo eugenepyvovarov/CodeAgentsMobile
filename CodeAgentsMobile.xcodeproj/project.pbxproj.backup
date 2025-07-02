@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		877CE6932DF8647B00B93778 /* CLAUDE_CODE_MOBILE_SPEC.md in Resources */ = {isa = PBXBuildFile; fileRef = 877CE6922DF8647B00B93778 /* CLAUDE_CODE_MOBILE_SPEC.md */; };
+		877CE6BA2DF879C800B93778 /* SSH_INTEGRATION.md in Resources */ = {isa = PBXBuildFile; fileRef = 877CE6B92DF879C800B93778 /* SSH_INTEGRATION.md */; };
+		877CE6BC2DF879CE00B93778 /* UI_FLOW_MOCKUPS.md in Resources */ = {isa = PBXBuildFile; fileRef = 877CE6BB2DF879CE00B93778 /* UI_FLOW_MOCKUPS.md */; };
+		877CE6BE2DF879E100B93778 /* REAL_SERVER_IMPLEMENTATION_PLAN.md in Resources */ = {isa = PBXBuildFile; fileRef = 877CE6BD2DF879E100B93778 /* REAL_SERVER_IMPLEMENTATION_PLAN.md */; };
+		877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 877CE6C72DF8902900B93778 /* NIOSSH */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		877CE6762DF8632800B93778 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +35,10 @@
 		877CE6662DF8632600B93778 /* MobileCode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MobileCode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		877CE6752DF8632800B93778 /* MobileCodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MobileCodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		877CE67F2DF8632800B93778 /* MobileCodeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MobileCodeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		877CE6922DF8647B00B93778 /* CLAUDE_CODE_MOBILE_SPEC.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE_CODE_MOBILE_SPEC.md; sourceTree = "<group>"; };
+		877CE6B92DF879C800B93778 /* SSH_INTEGRATION.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SSH_INTEGRATION.md; sourceTree = "<group>"; };
+		877CE6BB2DF879CE00B93778 /* UI_FLOW_MOCKUPS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = UI_FLOW_MOCKUPS.md; sourceTree = "<group>"; };
+		877CE6BD2DF879E100B93778 /* REAL_SERVER_IMPLEMENTATION_PLAN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = REAL_SERVER_IMPLEMENTATION_PLAN.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -52,6 +64,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -79,6 +92,10 @@
 				877CE6782DF8632800B93778 /* MobileCodeTests */,
 				877CE6822DF8632800B93778 /* MobileCodeUITests */,
 				877CE6672DF8632600B93778 /* Products */,
+				877CE6922DF8647B00B93778 /* CLAUDE_CODE_MOBILE_SPEC.md */,
+				877CE6B92DF879C800B93778 /* SSH_INTEGRATION.md */,
+				877CE6BB2DF879CE00B93778 /* UI_FLOW_MOCKUPS.md */,
+				877CE6BD2DF879E100B93778 /* REAL_SERVER_IMPLEMENTATION_PLAN.md */,
 			);
 			sourceTree = "<group>";
 		};
@@ -112,6 +129,7 @@
 			);
 			name = MobileCode;
 			packageProductDependencies = (
+				877CE6C72DF8902900B93778 /* NIOSSH */,
 			);
 			productName = MobileCode;
 			productReference = 877CE6662DF8632600B93778 /* MobileCode.app */;
@@ -195,6 +213,9 @@
 			);
 			mainGroup = 877CE65D2DF8632600B93778;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 877CE6672DF8632600B93778 /* Products */;
 			projectDirPath = "";
@@ -212,6 +233,10 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				877CE6932DF8647B00B93778 /* CLAUDE_CODE_MOBILE_SPEC.md in Resources */,
+				877CE6BE2DF879E100B93778 /* REAL_SERVER_IMPLEMENTATION_PLAN.md in Resources */,
+				877CE6BA2DF879C800B93778 /* SSH_INTEGRATION.md in Resources */,
+				877CE6BC2DF879CE00B93778 /* UI_FLOW_MOCKUPS.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -558,6 +583,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-ssh";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.10.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		877CE6C72DF8902900B93778 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 877CE65E2DF8632600B93778 /* Project object */;
 }
