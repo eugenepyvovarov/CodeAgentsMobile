@@ -15,10 +15,13 @@ final class Server {
     var host: String
     var port: Int = 22
     var username: String
-    var authMethodType: String = "password"
+    var authMethodType: String = "password" // "password" or "key"
+    // TODO: Add password storage using Keychain Services
+    // TODO: Add SSH private key storage using Keychain Services
+    // TODO: Consider converting authMethodType to enum for type safety
+    // Password is stored securely in Keychain Services
     var createdAt: Date = Date()
     var lastConnected: Date?
-    var isDefault: Bool = false
     
     init(name: String, host: String, port: Int = 22, username: String, authMethodType: String = "password") {
         self.name = name

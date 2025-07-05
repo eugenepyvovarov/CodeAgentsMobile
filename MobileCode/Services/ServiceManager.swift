@@ -14,6 +14,7 @@ import Foundation
 
 /// Central service manager
 /// Provides access to all app services
+@MainActor
 class ServiceManager {
     // MARK: - Singleton
     
@@ -25,14 +26,21 @@ class ServiceManager {
     /// SSH connection service
     let sshService: SSHService
     
+    /// Project operations service
+    let projectService: ProjectService
+    
     /// Claude Code service (will be implemented next)
     // let claudeService: ClaudeCodeService
+    
+    //TODO: Add ClaudeCodeService property
+    //TODO: Make SSHService a computed property that returns the shared instance
     
     // MARK: - Initialization
     
     private init() {
         // Initialize services
         self.sshService = SSHService()
+        self.projectService = ProjectService(sshService: sshService)
         
         print("🚀 ServiceManager: Initialized")
     }

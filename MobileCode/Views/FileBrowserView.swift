@@ -7,48 +7,9 @@
 
 import SwiftUI
 
-struct FileNode: Identifiable {
-    let id = UUID()
-    let name: String
-    let path: String
-    let isDirectory: Bool
-    var children: [FileNode]?
-    let fileSize: Int64?
-    let modificationDate: Date?
-    var isExpanded: Bool = false
-    
-    var icon: String {
-        if isDirectory {
-            return isExpanded ? "folder.fill" : "folder"
-        } else {
-            switch name.split(separator: ".").last?.lowercased() {
-            case "swift": return "swift"
-            case "py": return "doc.text"
-            case "js", "ts": return "doc.text"
-            case "json": return "doc.text"
-            case "md": return "doc.richtext"
-            case "png", "jpg", "jpeg": return "photo"
-            default: return "doc"
-            }
-        }
-    }
-    
-    var formattedSize: String? {
-        guard let fileSize = fileSize else { return nil }
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: fileSize)
-    }
-}
-
 struct FileBrowserView: View {
     @State private var viewModel = FileBrowserViewModel()
-    @State private var searchText = ""
-    @State private var showingNewItemMenu = false
-    @State private var showingSettings = false
-    @State private var showingNewFileDialog = false
     @State private var showingNewFolderDialog = false
-    @State private var showingUploadPicker = false
     @State private var newItemName = ""
     @State private var selectedNodeForAction: FileNode?
     @State private var showingRenameDialog = false
@@ -57,74 +18,31 @@ struct FileBrowserView: View {
     
     var body: some View {
         NavigationStack {
-            ConnectionRequiredView(
-                title: "No Server Connected",
-                message: "Connect to a server to browse files"
-            ) {
-                VStack(spacing: 0) {
-                    breadcrumbView
-                    
-                    Divider()
-                    
-                    fileListView
+            VStack(spacing: 0) {
+                breadcrumbView
+                
+                Divider()
+                
+                fileListView
+            }
+            .navigationTitle("Files")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    ConnectionStatusView()
                 }
-                .navigationTitle("Files")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .principal) {
-                        ConnectionStatusView()
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        HStack(spacing: 16) {
-                            Menu {
-                                Button {
-                                    projectContext.clearActiveProject()
-                                } label: {
-                                    Label("Back to Projects", systemImage: "arrow.backward")
-                                }
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
-                            }
-                            
-                            fileMenuButton
-                            
-                            Button {
-                                showingSettings = true
-                            } label: {
-                                Image(systemName: "gearshape")
-                            }
-                        }
-                    }
+                ToolbarItem(placement: .primaryAction) {
+                    fileMenuButton
                 }
-                .refreshable {
-                    await viewModel.refresh()
-                }
-                .task {
-                    viewModel.setupProjectPath()
-                    await viewModel.loadRemoteFiles()
-                }
+            }
+            .task {
+                viewModel.setupProjectPath()
+                await viewModel.loadRemoteFiles()
             }
         }
         .sheet(item: $viewModel.selectedFile) { file in
             if !file.isDirectory {
-                CodeViewerSheet(file: file)
-            }
-        }
-        .sheet(isPresented: $showingSettings) {
-            NavigationStack {
-                SettingsView()
-            }
-        }
-        .alert("New File", isPresented: $showingNewFileDialog) {
-            TextField("File name", text: $newItemName)
-            Button("Cancel", role: .cancel) {
-                newItemName = ""
-            }
-            Button("Create") {
-                Task {
-                    await viewModel.createFile(name: newItemName)
-                    newItemName = ""
-                }
+                CodeViewerSheet(file: file, viewModel: viewModel)
             }
         }
         .alert("New Folder", isPresented: $showingNewFolderDialog) {
@@ -228,34 +146,23 @@ struct FileBrowserView: View {
             }
         }
         .listStyle(.plain)
-        .searchable(text: $searchText, prompt: "Search files")
     }
     
     @ViewBuilder
     private var fileMenuButton: some View {
         Menu {
             Button {
-                showingNewFileDialog = true
-            } label: {
-                Label("New File", systemImage: "doc.badge.plus")
-            }
-            
-            Button {
                 showingNewFolderDialog = true
             } label: {
                 Label("New Folder", systemImage: "folder.badge.plus")
             }
             
-            Button {
-                showingUploadPicker = true
-            } label: {
-                Label("Upload File", systemImage: "square.and.arrow.up")
-            }
-            
             Divider()
             
             Button {
-                refreshFiles()
+                Task {
+                    await viewModel.refresh()
+                }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
@@ -295,40 +202,11 @@ struct FileBrowserView: View {
     }
     
     private var filteredNodes: [FileNode] {
-        if searchText.isEmpty {
-            return viewModel.rootNodes
-        } else {
-            return filterNodes(viewModel.rootNodes, searchText: searchText)
-        }
-    }
-    
-    private func filterNodes(_ nodes: [FileNode], searchText: String) -> [FileNode] {
-        var result: [FileNode] = []
-        
-        for node in nodes {
-            if node.name.localizedCaseInsensitiveContains(searchText) {
-                result.append(node)
-            } else if let children = node.children {
-                let filteredChildren = filterNodes(children, searchText: searchText)
-                if !filteredChildren.isEmpty {
-                    var nodeCopy = node
-                    nodeCopy.children = filteredChildren
-                    result.append(nodeCopy)
-                }
-            }
-        }
-        
-        return result
+        return viewModel.rootNodes
     }
     
     private func navigateToPath(_ path: String) {
         viewModel.navigateTo(path: path)
-    }
-    
-    private func refreshFiles() {
-        Task {
-            await viewModel.refresh()
-        }
     }
 }
 
@@ -400,6 +278,7 @@ struct FileRow: View {
 
 struct CodeViewerSheet: View {
     let file: FileNode
+    let viewModel: FileBrowserViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var isEditing = false
     @State private var content = ""
@@ -463,16 +342,8 @@ struct CodeViewerSheet: View {
         isLoading = true
         errorMessage = nil
         
-        guard let server = ConnectionManager.shared.activeServer else {
-            errorMessage = "No server connection"
-            isLoading = false
-            return
-        }
-        
         do {
-            let sshService = ServiceManager.shared.sshService
-            let session = try await sshService.connect(to: server)
-            content = try await session.readFile(file.path)
+            content = try await viewModel.loadFileContent(path: file.path)
             isLoading = false
         } catch {
             errorMessage = error.localizedDescription

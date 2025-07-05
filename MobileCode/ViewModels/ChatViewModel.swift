@@ -7,14 +7,15 @@
 //  Purpose: Manages chat state and message handling
 //  - Stores chat messages
 //  - Handles sending/receiving messages
-//  - Will integrate with ClaudeCodeService later
+//  - Integrates with ClaudeCodeService
 //
 
 import SwiftUI
 import Observation
+import SwiftData
 
 /// ViewModel for the chat interface
-/// Integrates with ClaudeCodeService for real Claude interactions
+/// Handles message display, streaming, and persistence
 @MainActor
 @Observable
 class ChatViewModel {
@@ -26,130 +27,151 @@ class ChatViewModel {
     /// Whether we're currently processing a message
     var isProcessing = false
     
-    /// Show/hide attachment options
-    var showAttachments = false
-    
     /// Current assistant message being streamed
     var streamingMessage: Message?
     
+    /// Model context for persistence
+    private var modelContext: ModelContext?
+    
+    /// Current project ID
+    private var projectId: UUID?
+    
     /// Claude Code service reference
-    @MainActor
-    private var claudeService: ClaudeCodeService {
-        ClaudeCodeService.shared
+    private let claudeService = ClaudeCodeService.shared
+    
+    // MARK: - Configuration
+    
+    /// Configure the view model with model context and project
+    func configure(modelContext: ModelContext, projectId: UUID) {
+        self.modelContext = modelContext
+        self.projectId = projectId
+        loadMessages()
     }
     
-    /// Current project context from ProjectContext manager
-    @MainActor
-    var currentProject: Project? {
-        ProjectContext.shared.activeProject
-    }
-    
-    // MARK: - Initialization
-    
-    init() {
-        // No mock messages - start with empty conversation
-    }
-    
-    // MARK: - Methods
+    // MARK: - Public Methods
     
     /// Send a message to Claude
     /// - Parameter text: The message text
-    /// - Note: Uses ClaudeCodeService for streaming responses
     func sendMessage(_ text: String) async {
-        // Add user message
-        let userMessage = Message(content: text, role: .user)
-        
-        await MainActor.run {
-            messages.append(userMessage)
-            isProcessing = true
-        }
-        
-        // Get active project
-        guard let project = currentProject else {
-            let errorMessage = Message(
-                content: "No active project. Please select a project first.",
-                role: .assistant
-            )
-            await MainActor.run {
-                messages.append(errorMessage)
-                isProcessing = false
-            }
+        guard let project = ProjectContext.shared.activeProject else {
+            await addErrorMessage("No active project. Please select a project first.")
             return
         }
         
-        // Create assistant message for streaming
-        let assistantMessage = Message(content: "", role: .assistant)
-        await MainActor.run {
-            messages.append(assistantMessage)
-            streamingMessage = assistantMessage
-        }
+        // Create and save user message
+        let userMessage = createMessage(content: text, role: .user)
         
-        // Get streaming response from Claude
-        let stream = claudeService.sendMessage(text, in: project)
+        // Create placeholder for assistant response
+        let assistantMessage = createMessage(content: "", role: .assistant)
+        streamingMessage = assistantMessage
+        isProcessing = true
         
+        // Stream response from Claude
         do {
+            let stream = claudeService.sendMessage(text, in: project)
             var fullContent = ""
             
             for try await chunk in stream {
                 if chunk.isError {
-                    // Handle error chunks
                     fullContent = chunk.content
                     break
                 } else if !chunk.isComplete {
-                    // Append content chunks
                     fullContent += chunk.content
-                    
-                    // Update the message content on main thread
-                    await MainActor.run {
-                        if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                            messages[index].content = fullContent
-                        }
-                    }
+                    updateMessage(assistantMessage, with: fullContent)
                 }
             }
             
-            // Finalize the message
-            await MainActor.run {
-                if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                    // Only update if we have content, otherwise keep what we have
-                    if !fullContent.isEmpty {
-                        messages[index].content = fullContent
-                    }
-                }
-                streamingMessage = nil
-                isProcessing = false
+            // Final update
+            if !fullContent.isEmpty {
+                updateMessage(assistantMessage, with: fullContent)
             }
             
         } catch {
-            // Handle streaming errors
-            let errorContent = "Failed to get response: \(error.localizedDescription)"
-            await MainActor.run {
-                if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                    messages[index].content = errorContent
-                }
-                streamingMessage = nil
-                isProcessing = false
-            }
+            updateMessage(assistantMessage, with: "Failed to get response: \(error.localizedDescription)")
         }
+        
+        streamingMessage = nil
+        isProcessing = false
     }
     
     /// Clear all messages and start fresh
-    @MainActor
     func clearChat() {
+        // Delete persisted messages
+        if let modelContext = modelContext {
+            for message in messages {
+                modelContext.delete(message)
+            }
+            
+            do {
+                try modelContext.save()
+            } catch {
+                print("Failed to delete messages: \(error)")
+            }
+        }
+        
         messages.removeAll()
         claudeService.clearSessions()
     }
     
-    /// Check Claude installation and authentication status
-    func checkClaudeStatus(on server: Server) async -> (installed: Bool, authenticated: Bool, error: String?) {
-        return await claudeService.checkClaudeStatus(on: server)
+    // MARK: - Private Methods
+    
+    /// Load messages for the current project
+    private func loadMessages() {
+        guard let modelContext = modelContext,
+              let projectId = projectId else { return }
+        
+        let descriptor = FetchDescriptor<Message>(
+            predicate: #Predicate { message in
+                message.projectId == projectId
+            },
+            sortBy: [SortDescriptor(\.timestamp)]
+        )
+        
+        do {
+            messages = try modelContext.fetch(descriptor)
+        } catch {
+            print("Failed to load messages: \(error)")
+            messages = []
+        }
     }
     
-    /// Attach a file to the conversation
-    /// - Parameter fileURL: URL of the file to attach
-    func attachFile(_ fileURL: URL) {
-        // TODO: Implement file attachment when we have file access
-        print("File attachment not yet implemented: \(fileURL)")
+    /// Create and save a new message
+    private func createMessage(content: String, role: MessageRole) -> Message {
+        let message = Message(content: content, role: role, projectId: projectId)
+        messages.append(message)
+        saveMessage(message)
+        return message
     }
     
+    /// Update message content
+    private func updateMessage(_ message: Message, with content: String) {
+        if let index = messages.firstIndex(where: { $0.id == message.id }) {
+            messages[index].content = content
+            saveChanges()
+        }
+    }
+    
+    /// Save a message to persistence
+    private func saveMessage(_ message: Message) {
+        guard let modelContext = modelContext else { return }
+        
+        modelContext.insert(message)
+        saveChanges()
+    }
+    
+    /// Save any pending changes
+    private func saveChanges() {
+        guard let modelContext = modelContext else { return }
+        
+        do {
+            try modelContext.save()
+        } catch {
+            print("Failed to save: \(error)")
+        }
+    }
+    
+    /// Add an error message to the chat
+    private func addErrorMessage(_ text: String) {
+        _ = createMessage(content: text, role: .assistant)
+    }
 }

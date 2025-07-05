@@ -40,19 +40,19 @@ class SwiftSHSession: SSHSession {
     
     /// Create and connect a new SSH session
     static func connect(to server: Server) async throws -> SwiftSHSession {
-        print("🔄 SwiftSHSession: Starting connection to \(server.host):\(server.port)")
+        SSHLogger.log("Starting connection to \(server.host):\(server.port)", level: .info)
         let session = SwiftSHSession(server: server)
         
         do {
             try await session.establishConnection()
-            print("✅ SwiftSHSession: Connection established")
+            SSHLogger.log("Connection established", level: .info)
             
             try await session.authenticate()
-            print("✅ SwiftSHSession: Authentication completed")
+            SSHLogger.log("Authentication completed", level: .info)
             
             return session
         } catch {
-            print("❌ SwiftSHSession: Connection failed - \(error)")
+            SSHLogger.log("Connection failed - \(error)", level: .error)
             throw error
         }
     }
@@ -72,6 +72,7 @@ class SwiftSHSession: SSHSession {
             throw SSHError.connectionFailed("Not connected")
         }
         
+        // Use interactive session to prepare for future streaming input support
         return try await createInteractiveSession(command: command)
     }
     
@@ -149,7 +150,7 @@ class SwiftSHSession: SSHSession {
         let dirStatus = try await execute(checkDirCommand)
         
         if dirStatus.trimmingCharacters(in: .whitespacesAndNewlines) == "missing" {
-            print("📁 Creating /root/projects directory...")
+            SSHLogger.log("Creating /root/projects directory...", level: .info)
             let createDirCommand = "mkdir -p '\(projectsDir)'"
             _ = try await execute(createDirCommand)
         }
@@ -183,132 +184,20 @@ class SwiftSHSession: SSHSession {
         return projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
     
-    /// Analyze a project directory to determine its type and metadata
+    /// Analyze a project directory to determine its metadata
     private func analyzeProject(path: String, name: String) async throws -> RemoteProject {
-        var projectType: ProjectType = .unknown
-        var language: String = "Unknown"
-        var framework: String? = nil
-        var hasGit = false
-        
-        // Check for various project indicators
-        let indicators = [
-            "package.json": ProjectType.nodeJS,
-            "Cargo.toml": ProjectType.rust,
-            "go.mod": ProjectType.go,
-            "pom.xml": ProjectType.java,
-            "build.gradle": ProjectType.java,
-            "requirements.txt": ProjectType.python,
-            "setup.py": ProjectType.python,
-            "Pipfile": ProjectType.python,
-            "Package.swift": ProjectType.swift,
-            "*.xcodeproj": ProjectType.swift,
-            "Gemfile": ProjectType.ruby,
-            "composer.json": ProjectType.php,
-            "CMakeLists.txt": ProjectType.cpp,
-            "Makefile": ProjectType.cpp,
-            "Dockerfile": ProjectType.docker
-        ]
-        
-        for (file, type) in indicators {
-            let checkCommand = file.contains("*") 
-                ? "ls '\(path)'/\(file) 2>/dev/null | head -1" 
-                : "[ -f '\(path)/\(file)' ] && echo 'found' || echo ''"
-            let result = try await execute(checkCommand)
-            
-            if !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                projectType = type
-                language = type.displayName
-                
-                // Get framework info for specific types
-                if type == .nodeJS {
-                    framework = try? await getNodeJSFramework(path: path)
-                } else if type == .python {
-                    framework = try? await getPythonFramework(path: path)
-                }
-                break
-            }
-        }
-        
         // Check for Git repository
+        // Check for Git repository (for future use)
         let gitCommand = "[ -d '\(path)/.git' ] && echo 'git' || echo ''"
         let gitResult = try await execute(gitCommand)
-        hasGit = !gitResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // let hasGit = !gitResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         
-        // If no specific type found, try to detect by file extensions
-        if projectType == .unknown {
-            let extensionCommand = "find '\(path)' -maxdepth 2 -name '*.swift' -o -name '*.py' -o -name '*.js' -o -name '*.go' -o -name '*.rs' -o -name '*.java' 2>/dev/null | head -5"
-            let extensionResult = try await execute(extensionCommand)
-            
-            if extensionResult.contains(".swift") {
-                projectType = .swift
-                language = "Swift"
-            } else if extensionResult.contains(".py") {
-                projectType = .python
-                language = "Python"
-            } else if extensionResult.contains(".js") {
-                projectType = .nodeJS
-                language = "JavaScript"
-            } else if extensionResult.contains(".go") {
-                projectType = .go
-                language = "Go"
-            } else if extensionResult.contains(".rs") {
-                projectType = .rust
-                language = "Rust"
-            } else if extensionResult.contains(".java") {
-                projectType = .java
-                language = "Java"
-            }
-        }
-        
-        return RemoteProject(
+        let project = RemoteProject(
             name: name,
-            path: path,
-            type: projectType,
-            language: language,
-            framework: framework,
-            hasGit: hasGit,
-            lastModified: Date() // We could get this from filesystem if needed
+            serverId: server.id
         )
-    }
-    
-    /// Detect Node.js framework
-    private func getNodeJSFramework(path: String) async throws -> String? {
-        let packageCommand = "cat '\(path)/package.json' 2>/dev/null || echo '{}'"
-        let packageContent = try await execute(packageCommand)
-        
-        if packageContent.contains("\"react\"") {
-            return "React"
-        } else if packageContent.contains("\"vue\"") {
-            return "Vue.js"
-        } else if packageContent.contains("\"angular\"") {
-            return "Angular"
-        } else if packageContent.contains("\"next\"") {
-            return "Next.js"
-        } else if packageContent.contains("\"express\"") {
-            return "Express"
-        } else if packageContent.contains("\"nestjs\"") {
-            return "NestJS"
-        }
-        
-        return nil
-    }
-    
-    /// Detect Python framework
-    private func getPythonFramework(path: String) async throws -> String? {
-        let requirementsCommand = "cat '\(path)/requirements.txt' '\(path)/setup.py' '\(path)/pyproject.toml' 2>/dev/null || echo ''"
-        let content = try await execute(requirementsCommand)
-        
-        if content.contains("django") || content.contains("Django") {
-            return "Django"
-        } else if content.contains("flask") || content.contains("Flask") {
-            return "Flask"
-        } else if content.contains("fastapi") || content.contains("FastAPI") {
-            return "FastAPI"
-        } else if content.contains("tornado") || content.contains("Tornado") {
-            return "Tornado"
-        }
-        
-        return nil
+        project.path = path
+        return project
     }
     
     // MARK: - Real SSH Implementation (Placeholder)
@@ -341,7 +230,7 @@ class SwiftSHSession: SSHSession {
         do {
             self.channel = try await bootstrap.connect(host: server.host, port: server.port).get()
             self.isConnected = true
-            print("✅ SSH: Connected to \(server.name) via SwiftNIO SSH")
+            SSHLogger.log("Connected to \(server.name) via SwiftNIO SSH", level: .info)
         } catch {
             throw SSHError.connectionFailed("Failed to connect: \(error)")
         }
@@ -405,6 +294,62 @@ class SwiftSHSession: SSHSession {
         }.get()
     }
     
+    /// Create a direct process execution (non-interactive)
+    private func createDirectProcess(command: String) async throws -> ProcessHandle {
+        guard let channel = channel else {
+            throw SSHError.connectionFailed("No active connection")
+        }
+
+        let processHandle = SwiftSHProcessHandle(command: command, channel: channel)
+        
+        // Execute on the event loop to avoid threading issues
+        try await channel.eventLoop.flatSubmit {
+            let promise = channel.eventLoop.makePromise(of: Channel.self)
+            
+            // Create child channel for the command
+            channel.pipeline.handler(type: NIOSSHHandler.self).whenSuccess { sshHandler in
+                sshHandler.createChannel(promise, channelType: .session) { childChannel, channelType in
+                    // Enable half-closure for proper SSH channel handling
+                    _ = childChannel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+                    
+                    // Add handlers for the command execution
+                    return childChannel.pipeline.addHandlers([
+                        processHandle, // The process handle is also a channel handler
+                        ErrorHandler()
+                    ])
+                }
+            }
+            
+            // Wait for the child channel to be created
+            return promise.futureResult.flatMap { childChannel in
+                self.childChannel = childChannel
+                // Set the child channel on the process handle
+                processHandle.setChildChannel(childChannel)
+                
+                // Request command execution (not shell)
+                let execPromise = channel.eventLoop.makePromise(of: Void.self)
+                let execRequest = SSHChannelRequestEvent.ExecRequest(
+                    command: command,
+                    wantReply: true
+                )
+                childChannel.triggerUserOutboundEvent(execRequest).whenComplete { result in
+                    switch result {
+                    case .success:
+                        SSHLogger.log("Exec request sent successfully for streaming", level: .info)
+                        execPromise.succeed(())
+                    case .failure(let error):
+                        SSHLogger.log("Exec request failed: \(error)", level: .error)
+                        execPromise.fail(error)
+                    }
+                }
+                
+                return execPromise.futureResult
+            }
+        }.get()
+        
+        return processHandle
+    }
+    
     /// Create an interactive SSH session
     private func createInteractiveSession(command: String) async throws -> ProcessHandle {
         guard let channel = channel else {
@@ -434,6 +379,8 @@ class SwiftSHSession: SSHSession {
             // Wait for the child channel to be created
             return promise.futureResult.flatMap { childChannel in
                 self.childChannel = childChannel
+                // Set the child channel on the process handle
+                processHandle.setChildChannel(childChannel)
                 
                 // Now, request a shell
                 let shellPromise = channel.eventLoop.makePromise(of: Void.self)
@@ -441,10 +388,10 @@ class SwiftSHSession: SSHSession {
                 childChannel.triggerUserOutboundEvent(shellRequest).whenComplete { result in
                     switch result {
                     case .success:
-                        print("✅ SSH: Shell request successful")
+                        SSHLogger.log("Shell request successful", level: .info)
                         shellPromise.succeed(())
                     case .failure(let error):
-                        print("❌ SSH: Shell request failed: \(error)")
+                        SSHLogger.log("Shell request failed: \(error)", level: .error)
                         shellPromise.fail(error)
                     }
                 }
@@ -453,8 +400,10 @@ class SwiftSHSession: SSHSession {
             }
         }.get()
         
-        // If a command is provided, execute it in the shell
+        // If a command is provided, send it to the shell
         if !command.isEmpty {
+            // Small delay to ensure shell is ready
+            try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
             try await processHandle.sendInput("\(command)\n")
         }
         
@@ -518,207 +467,6 @@ class SwiftSHSession: SSHSession {
     
 }
 
-// MARK: - SSH Authentication Delegates
-
-/// Password authentication delegate
-final class PasswordAuthenticationDelegate: NIOSSHClientUserAuthenticationDelegate {
-    private let username: String
-    private let password: String
-    
-    init(username: String, password: String) {
-        self.username = username
-        self.password = password
-    }
-    
-    func nextAuthenticationType(
-        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
-        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
-    ) {
-        if availableMethods.contains(.password) {
-            nextChallengePromise.succeed(NIOSSHUserAuthenticationOffer(
-                username: username,
-                serviceName: "ssh-connection",
-                offer: .password(.init(password: password))
-            ))
-        } else {
-            nextChallengePromise.succeed(nil)
-        }
-    }
-}
-
-/// Accept all host keys delegate (for development)
-final class AcceptAllHostKeysDelegate: NIOSSHClientServerAuthenticationDelegate {
-    func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
-        // In production, you should verify the host key
-        validationCompletePromise.succeed(())
-    }
-}
-
-// MARK: - Channel Handlers
-
-/// SSH channel data handler - accumulates output data
-final class SSHChannelDataHandler: ChannelInboundHandler {
-    typealias InboundIn = SSHChannelData
-    
-    private var stdoutBuffer = ByteBuffer()
-    private var stderrBuffer = ByteBuffer()
-    
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let channelData = unwrapInboundIn(data)
-        
-        switch channelData.data {
-        case .byteBuffer(var bytes):
-            let receivedString = String(buffer: bytes)
-            switch channelData.type {
-            case .channel:
-                // Standard output
-                print("📥 SSH: Received stdout data (\(bytes.readableBytes) bytes): \(receivedString.prefix(100))...")
-                stdoutBuffer.writeBuffer(&bytes)
-            case .stdErr:
-                // Standard error
-                print("📥 SSH: Received stderr data (\(bytes.readableBytes) bytes): \(receivedString.prefix(100))...")
-                stderrBuffer.writeBuffer(&bytes)
-            default:
-                print("📥 SSH: Received other data type: \(channelData.type)")
-                break
-            }
-        case .fileRegion:
-            print("📥 SSH: Received file region data")
-            break
-        }
-    }
-    
-    func getAccumulatedOutput() -> (stdout: String, stderr: String) {
-        let stdout = stdoutBuffer.getString(at: 0, length: stdoutBuffer.readableBytes) ?? ""
-        let stderr = stderrBuffer.getString(at: 0, length: stderrBuffer.readableBytes) ?? ""
-        return (cleanSSHOutput(stdout), cleanSSHOutput(stderr))
-    }
-    
-    /// Remove SSH authentication warnings from command output
-    private func cleanSSHOutput(_ output: String) -> String {
-        let lines = output.components(separatedBy: .newlines)
-        let cleanedLines = lines.filter { line in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Filter out common SSH warnings and authentication messages
-            return !trimmed.isEmpty &&
-                   !trimmed.lowercased().contains("password change required") &&
-                   !trimmed.lowercased().contains("warning") &&
-                   !trimmed.contains("TTY") &&
-                   !trimmed.contains("expired") &&
-                   !trimmed.contains("Last login") &&
-                   !trimmed.contains("authenticity") &&
-                   !trimmed.contains("fingerprint")
-        }
-        return cleanedLines.joined(separator: "\n")
-    }
-}
-
-/// Error handler
-final class ErrorHandler: ChannelInboundHandler {
-    typealias InboundIn = Any
-    
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        print("❌ SSH Error: \(error)")
-        context.close(promise: nil)
-    }
-}
-
-/// Command execution handler - manages the complete lifecycle of command execution
-final class CommandExecutionHandler: ChannelInboundHandler {
-    typealias InboundIn = Any
-    
-    private let command: String
-    private let promise: EventLoopPromise<String>
-    private let dataHandler: SSHChannelDataHandler
-    private var hasCompleted = false
-    private var exitStatus: Int32?
-    
-    init(command: String, promise: EventLoopPromise<String>, dataHandler: SSHChannelDataHandler) {
-        self.command = command
-        self.promise = promise
-        self.dataHandler = dataHandler
-    }
-    
-    func channelActive(context: ChannelHandlerContext) {
-        print("✅ SSH: Command handler channel active, sending exec request")
-        print("📝 SSH: Command to execute: \(command)")
-        
-        // Send exec request
-        let execRequest = SSHChannelRequestEvent.ExecRequest(
-            command: command,
-            wantReply: true
-        )
-        context.triggerUserOutboundEvent(execRequest).whenComplete { result in
-            switch result {
-            case .success:
-                print("✅ SSH: Exec request sent successfully")
-            case .failure(let error):
-                print("❌ SSH: Failed to send exec request: \(error)")
-                if !self.hasCompleted {
-                    self.hasCompleted = true
-                    self.promise.fail(SSHError.commandFailed("Failed to send exec request: \(error)"))
-                }
-                context.close(promise: nil)
-            }
-        }
-    }
-    
-    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        print("📥 SSH: Received user inbound event: \(type(of: event))")
-        
-        switch event {
-        case let event as SSHChannelRequestEvent.ExitStatus:
-            print("✅ SSH: Command completed with exit status: \(event.exitStatus)")
-            // Store the exit status but don't complete yet - wait for channel to close
-            self.exitStatus = Int32(event.exitStatus)
-            // Schedule channel close after a brief delay to allow data to drain
-            context.eventLoop.scheduleTask(in: .milliseconds(100)) {
-                context.close(promise: nil)
-            }
-            
-        case let event as SSHChannelRequestEvent.ExitSignal:
-            // Command terminated by signal
-            if !hasCompleted {
-                hasCompleted = true
-                promise.fail(SSHError.commandFailed("Command terminated by signal: \(event.signalName)"))
-            }
-            context.close(promise: nil)
-            
-        default:
-            context.fireUserInboundEventTriggered(event)
-        }
-    }
-    
-    func channelInactive(context: ChannelHandlerContext) {
-        print("📥 SSH: Channel became inactive")
-        
-        // Channel closed - now we can complete the promise with all accumulated data
-        if !hasCompleted {
-            hasCompleted = true
-            let (stdout, stderr) = dataHandler.getAccumulatedOutput()
-            let output = !stderr.isEmpty ? stdout + "\n" + stderr : stdout
-            
-            print("📤 SSH: Channel closed, returning output (\(output.count) bytes)")
-            
-            // If we have an exit status of 0 or we have output, consider it successful
-            if exitStatus == 0 || !output.isEmpty {
-                promise.succeed(output)
-            } else if let exitStatus = exitStatus {
-                promise.fail(SSHError.commandFailed("Command exited with status \(exitStatus)"))
-            } else {
-                promise.fail(SSHError.commandFailed("Channel closed without output"))
-            }
-        }
-    }
-    
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        if !hasCompleted {
-            hasCompleted = true
-            promise.fail(error)
-        }
-        context.close(promise: nil)
-    }
-}
 
 // MARK: - Channel Handler conformance for SwiftSHSession
 
@@ -726,125 +474,16 @@ extension SwiftSHSession: ChannelInboundHandler {
     typealias InboundIn = Any
     
     func channelActive(context: ChannelHandlerContext) {
-        print("✅ SSH: Channel active")
+        SSHLogger.log("Channel active", level: .info)
     }
     
     func channelInactive(context: ChannelHandlerContext) {
-        print("❌ SSH: Channel inactive")
+        SSHLogger.log("Channel inactive", level: .info)
         isConnected = false
     }
     
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        print("❌ SSH: Error caught: \(error)")
+        SSHLogger.log("Error caught: \(error)", level: .error)
         context.close(promise: nil)
-    }
-}
-
-// MARK: - Process Handle Implementation
-
-/// Process handle for an interactive SwiftNIO SSH session
-class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle {
-    typealias InboundIn = SSHChannelData
-    
-    private let command: String
-    private let channel: Channel
-    private var isTerminated = false
-    
-    // Continuations for the output stream
-    private var continuations: [AsyncThrowingStream<String, Error>.Continuation] = []
-    
-    var isRunning: Bool {
-        !isTerminated && channel.isActive
-    }
-    
-    init(command: String, channel: Channel) {
-        self.command = command
-        self.channel = channel
-        print("✅ SSH: Started interactive process: \(command)")
-    }
-    
-    // MARK: - ProcessHandle Conformance
-    
-    func sendInput(_ text: String) async throws {
-        guard !isTerminated else {
-            throw SSHError.commandFailed("Process terminated")
-        }
-        
-        print("📝 SSH: Sending input to process: \(text.trimmingCharacters(in: .newlines)) ")
-        
-        // Wrap the text in a buffer and send it
-        var buffer = channel.allocator.buffer(capacity: text.utf8.count)
-        buffer.writeString(text)
-        
-        let data = SSHChannelData(type: .channel, data: .byteBuffer(buffer))
-        
-        try await channel.writeAndFlush(data).get()
-    }
-    
-    func readOutput() async throws -> String {
-        // This method is not ideal for streams, but can be used for one-off reads
-        var output = ""
-        for try await chunk in outputStream() {
-            output += chunk
-            // Decide on a condition to stop reading, e.g., a prompt
-            if chunk.contains("$") || chunk.contains("#") { break }
-        }
-        return output
-    }
-    
-    func outputStream() -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            self.continuations.append(continuation)
-        }
-    }
-    
-    func terminate() {
-        guard !isTerminated else { return }
-        isTerminated = true
-        
-        // Close the channel
-        channel.close(promise: nil)
-        
-        // Finish all streaming continuations
-        for continuation in continuations {
-            continuation.finish()
-        }
-        continuations.removeAll()
-        
-        print("✅ SSH: Process terminated")
-    }
-    
-    // MARK: - ChannelInboundHandler Conformance
-    
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let channelData = self.unwrapInboundIn(data)
-        
-        switch channelData.data {
-        case .byteBuffer(let bytes):
-            let output = String(buffer: bytes)
-            print("📥 SSH: Received interactive output: \(output.prefix(100))")
-            // Yield the output to all active streams
-            for continuation in continuations {
-                continuation.yield(output)
-            }
-        case .fileRegion:
-            // Not expected in a shell session
-            break
-        }
-    }
-    
-    func channelInactive(context: ChannelHandlerContext) {
-        print("ℹ️ SSH: Interactive channel became inactive.")
-        terminate()
-    }
-    
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        print("❌ SSH: Error in interactive process: \(error)")
-        // Finish all streaming continuations with the error
-        for continuation in continuations {
-            continuation.finish(throwing: error)
-        }
-        continuations.removeAll()
-        terminate()
     }
 }

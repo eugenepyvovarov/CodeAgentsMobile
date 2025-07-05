@@ -15,127 +15,130 @@
 
 import Foundation
 
-/// SSH Session protocol - represents an active SSH connection
-protocol SSHSession {
-    /// Execute a command and return output
-    func execute(_ command: String) async throws -> String
-    
-    /// Start a long-running process (like Claude Code CLI)
-    func startProcess(_ command: String) async throws -> ProcessHandle
-    
-    /// Upload a file to the server
-    func uploadFile(localPath: URL, remotePath: String) async throws
-    
-    /// Download a file from the server
-    func downloadFile(remotePath: String, localPath: URL) async throws
-    
-    /// Read file content from remote
-    /// - Parameter remotePath: Path on remote server
-    /// - Returns: File content as string
-    func readFile(_ remotePath: String) async throws -> String
-    
-    /// List files in a directory
-    func listDirectory(_ path: String) async throws -> [RemoteFile]
-    
-    /// Discover projects on the server
-    func discoverProjects() async throws -> [RemoteProject]
-    
-    /// Close the session
-    func disconnect()
-}
-
-/// Handle for a running process
-protocol ProcessHandle {
-    /// Send input to the process
-    func sendInput(_ text: String) async throws
-    
-    /// Read output from the process
-    func readOutput() async throws -> String
-    
-    /// Read output as a stream
-    func outputStream() -> AsyncThrowingStream<String, Error>
-    
-    /// Check if process is still running
-    var isRunning: Bool { get }
-    
-    /// Kill the process
-    func terminate()
-}
-
-/// Remote file information
-struct RemoteFile {
-    let name: String
-    let path: String
-    let isDirectory: Bool
-    let size: Int64?
-    let modificationDate: Date?
-    let permissions: String?
-}
-
 /// Main SSH Service for managing connections
-actor SSHService {
+@MainActor
+class SSHService {
     // MARK: - Properties
     
-    /// Active SSH sessions keyed by server ID
-    private var sessions: [UUID: SSHSession] = [:]
+    /// Active SSH sessions keyed by ConnectionKey
+    private var connectionPool: [ConnectionKey: SSHSession] = [:]
+    
+    /// Map to track which server each project belongs to
+    private var projectServerMap: [UUID: UUID] = [:]
     
     // MARK: - Public Methods
     
-    /// Connect to a server
-    /// - Parameter server: Server to connect to
+    /// Connect directly to a server (for operations that don't require a project)
+    /// - Parameters:
+    ///   - server: Server to connect to  
+    ///   - purpose: Purpose of the connection (defaults to fileOperations)
+    /// - Returns: Active SSH session (not pooled)
+    func connect(to server: Server, purpose: ConnectionPurpose = .fileOperations) async throws -> SSHSession {
+        SSHLogger.log("Creating direct connection to server: \(server.name) for \(purpose)", level: .info)
+        return try await createSession(for: server)
+    }
+    
+    /// Get or create a connection for a specific project and purpose
+    /// - Parameters:
+    ///   - project: The project requiring the connection
+    ///   - purpose: The purpose of the connection (claude, terminal, files)
     /// - Returns: Active SSH session
-    func connect(to server: Server) async throws -> SSHSession {
-        // Check if already connected
-        if let existingSession = sessions[server.id] {
+    func getConnection(for project: RemoteProject, purpose: ConnectionPurpose) async throws -> SSHSession {
+        let key = ConnectionKey(projectId: project.id, purpose: purpose)
+        
+        // Check if connection exists and is active
+        if let existingSession = connectionPool[key] {
+            // Validate connection is still alive
+            // For now, we assume it's valid - in production, add a health check
+            SSHLogger.log("Reusing existing connection for \(key)", level: .debug)
             return existingSession
         }
         
-        // Create new session
+        // Get server for this project
+        let serverId = project.serverId
+        guard let server = ServerManager.shared.servers.first(where: { $0.id == serverId }) else {
+            throw SSHError.notConnected
+        }
+        
+        // Create new connection
+        SSHLogger.log("Creating new connection for \(key)", level: .info)
         let session = try await createSession(for: server)
-        sessions[server.id] = session
+        connectionPool[key] = session
+        projectServerMap[project.id] = serverId
         
         return session
     }
     
-    /// Disconnect from a server
-    /// - Parameter serverId: ID of server to disconnect from
-    func disconnect(from serverId: UUID) {
-        if let session = sessions[serverId] {
-            session.disconnect()
-            sessions[serverId] = nil
-        }
-    }
     
-    /// Check if connected to a server
-    /// - Parameter serverId: Server ID to check
-    /// - Returns: True if connected
-    func isConnected(to serverId: UUID) -> Bool {
-        return sessions[serverId] != nil
-    }
-    
-    /// Execute a command on a server
+    /// Check if a connection is active for a project and purpose
     /// - Parameters:
-    ///   - command: Command to execute
-    ///   - serverId: Server to execute on
-    /// - Returns: Command output
-    func executeCommand(_ command: String, on serverId: UUID) async throws -> String {
-        guard let session = sessions[serverId] else {
-            throw SSHError.notConnected
-        }
-        
-        return try await session.execute(command)
+    ///   - projectId: Project ID to check
+    ///   - purpose: Connection purpose
+    /// - Returns: True if connection exists and is active
+    func isConnectionActive(projectId: UUID, purpose: ConnectionPurpose) -> Bool {
+        let key = ConnectionKey(projectId: projectId, purpose: purpose)
+        return connectionPool[key] != nil
     }
-
-    /// Start an interactive session on a server
-    /// - Parameter serverId: Server to start session on
-    /// - Returns: Process handle for the interactive session
-    func startInteractiveSession(on serverId: UUID) async throws -> ProcessHandle {
-        guard let session = sessions[serverId] else {
-            throw SSHError.notConnected
+    
+    /// Get all active connection purposes for a project
+    /// - Parameter projectId: Project ID to check
+    /// - Returns: Array of active connection purposes
+    func getActiveConnections(for projectId: UUID) -> [ConnectionPurpose] {
+        var activePurposes: [ConnectionPurpose] = []
+        
+        for purpose in ConnectionPurpose.allCases {
+            if isConnectionActive(projectId: projectId, purpose: purpose) {
+                activePurposes.append(purpose)
+            }
         }
         
-        // Start a shell process. The command can be empty for a default shell.
-        return try await session.startProcess("")
+        return activePurposes
+    }
+    
+    /// Close connections for a project
+    /// - Parameters:
+    ///   - projectId: Project ID
+    ///   - purpose: Optional specific purpose to close, nil closes all
+    func closeConnections(projectId: UUID, purpose: ConnectionPurpose? = nil) {
+        if let specificPurpose = purpose {
+            // Close specific connection
+            let key = ConnectionKey(projectId: projectId, purpose: specificPurpose)
+            if let session = connectionPool[key] {
+                SSHLogger.log("Closing connection for \(key)", level: .info)
+                session.disconnect()
+                connectionPool.removeValue(forKey: key)
+            }
+        } else {
+            // Close all connections for this project
+            for connectionPurpose in ConnectionPurpose.allCases {
+                let key = ConnectionKey(projectId: projectId, purpose: connectionPurpose)
+                if let session = connectionPool[key] {
+                    SSHLogger.log("Closing connection for \(key)", level: .info)
+                    session.disconnect()
+                    connectionPool.removeValue(forKey: key)
+                }
+            }
+            // Clean up project mapping
+            projectServerMap.removeValue(forKey: projectId)
+        }
+    }
+    
+    /// Close all connections
+    func closeAllConnections() {
+        SSHLogger.log("Closing all \(connectionPool.count) connections", level: .info)
+        for (key, session) in connectionPool {
+            SSHLogger.log("Closing connection for \(key)", level: .debug)
+            session.disconnect()
+        }
+        connectionPool.removeAll()
+        projectServerMap.removeAll()
+    }
+    
+    /// Disconnect a specific server connection (for non-project connections)
+    /// - Parameter serverId: Server ID to disconnect
+    func disconnect(from serverId: UUID) async {
+        // Since direct connections aren't pooled, this is mainly for API consistency
+        SSHLogger.log("Disconnect called for server \(serverId) - no action needed for direct connections", level: .debug)
     }
     
     // MARK: - Private Methods
@@ -144,31 +147,16 @@ actor SSHService {
     /// - Parameter server: Server configuration
     /// - Returns: New SSH session
     private func createSession(for server: Server) async throws -> SSHSession {
-        print("🔄 SSHService: Creating SSH session for server: \(server.name)")
+        SSHLogger.log("Creating SSH session for server: \(server.name)", level: .info)
         return try await SwiftSHSession.connect(to: server)
     }
-}
-
-/// SSH-related errors
-enum SSHError: LocalizedError {
-    case notConnected
-    case connectionFailed(String)
-    case authenticationFailed
-    case commandFailed(String)
-    case fileTransferFailed(String)
     
-    var errorDescription: String? {
-        switch self {
-        case .notConnected:
-            return "Not connected to server"
-        case .connectionFailed(let reason):
-            return "Connection failed: \(reason)"
-        case .authenticationFailed:
-            return "Authentication failed"
-        case .commandFailed(let reason):
-            return "Command failed: \(reason)"
-        case .fileTransferFailed(let reason):
-            return "File transfer failed: \(reason)"
+    /// Get connection statistics
+    var connectionStats: (total: Int, byPurpose: [ConnectionPurpose: Int]) {
+        var purposeCount: [ConnectionPurpose: Int] = [:]
+        for key in connectionPool.keys {
+            purposeCount[key.purpose, default: 0] += 1
         }
+        return (total: connectionPool.count, byPurpose: purposeCount)
     }
 }

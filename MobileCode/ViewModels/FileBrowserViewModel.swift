@@ -7,14 +7,13 @@
 //  Purpose: Manages file browser state and navigation
 //  - Handles file tree structure
 //  - Manages current path navigation
-//  - Will integrate with SSH service for real file access
+//  - Provides basic file operations
 //
 
 import SwiftUI
 import Observation
 
 /// ViewModel for file browser functionality
-/// Integrates with SSH for real file access
 @MainActor
 @Observable
 class FileBrowserViewModel {
@@ -35,29 +34,24 @@ class FileBrowserViewModel {
     /// Loading state
     var isLoading = false
     
-    /// Recent files for quick access
-    var recentFiles: [FileNode] = []
-    
     /// SSH Service reference
     private let sshService = ServiceManager.shared.sshService
     
-    // MARK: - Initialization
+    /// Current project reference
+    private var currentProject: RemoteProject?
     
-    init() {
-        // Project path will be set when view appears
-    }
+    // MARK: - Public Methods
     
-    /// Setup project path from active project
-    func setupProjectPath() {
+    /// Initialize file browser for a project
+    /// - Parameter project: The project to browse
+    func initializeForProject(_ project: RemoteProject) {
         Task { @MainActor in
-            if let projectPath = ProjectContext.shared.activeProjectPath {
-                projectRootPath = projectPath
-                currentPath = projectPath
-            }
+            currentProject = project
+            projectRootPath = project.path
+            currentPath = project.path
+            await loadRemoteFiles()
         }
     }
-    
-    // MARK: - Methods
     
     /// Navigate to a specific path
     /// - Parameter path: The path to navigate to
@@ -71,40 +65,15 @@ class FileBrowserViewModel {
         }
     }
     
-    /// Refresh current directory
-    func refresh() async {
-        await loadRemoteFiles()
-    }
-    
     /// Load files from remote server
     func loadRemoteFiles() async {
-        // Ensure project path is set
-        if projectRootPath.isEmpty {
-            await MainActor.run {
-                if let projectPath = ProjectContext.shared.activeProjectPath {
-                    projectRootPath = projectPath
-                    currentPath = projectPath
-                }
-            }
-        }
+        guard let project = currentProject else { return }
         
-        let server = await ConnectionManager.shared.activeServer
-        guard let server = server else {
-            // Not connected, clear data
-            await MainActor.run {
-                rootNodes = []
-                isLoading = false
-            }
-            return
-        }
-        
-        await MainActor.run {
-            isLoading = true
-        }
+        isLoading = true
         
         do {
-            // Get or create SSH session
-            let session = try await sshService.connect(to: server)
+            // Get SSH connection for file operations
+            let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
             let remoteFiles = try await session.listDirectory(currentPath)
             
             // Convert to FileNode structure
@@ -125,52 +94,30 @@ class FileBrowserViewModel {
             }
             .sorted { $0.name < $1.name }
             
-            await MainActor.run {
-                self.rootNodes = nodes
-                self.isLoading = false
-            }
+            rootNodes = nodes
             
         } catch {
             print("Failed to load remote files: \(error)")
-            await MainActor.run {
-                // Show error but keep existing data
-                self.isLoading = false
-            }
         }
+        
+        isLoading = false
     }
     
-    /// Create a new file in current directory
-    /// - Parameter name: Name of the file
-    func createFile(name: String) async {
-        guard let server = await ConnectionManager.shared.activeServer else { return }
-        
-        do {
-            let session = try await sshService.connect(to: server)
-            let filePath = currentPath.hasSuffix("/") ? "\(currentPath)\(name)" : "\(currentPath)/\(name)"
-            
-            // Create empty file using touch command
-            _ = try await session.execute("touch \(filePath)")
-            
-            // Refresh file list
-            await loadRemoteFiles()
-        } catch {
-            print("Failed to create file: \(error)")
+    /// Open a file for viewing
+    /// - Parameter file: The file to open
+    func openFile(_ file: FileNode) {
+        if !file.isDirectory {
+            selectedFile = file
         }
     }
     
     /// Create a new folder in current directory
     /// - Parameter name: Name of the folder
     func createFolder(name: String) async {
-        guard let server = await ConnectionManager.shared.activeServer else { return }
+        let folderPath = currentPath.hasSuffix("/") ? "\(currentPath)\(name)" : "\(currentPath)/\(name)"
         
         do {
-            let session = try await sshService.connect(to: server)
-            let folderPath = currentPath.hasSuffix("/") ? "\(currentPath)\(name)" : "\(currentPath)/\(name)"
-            
-            // Create directory
-            _ = try await session.execute("mkdir -p \(folderPath)")
-            
-            // Refresh file list
+            try await executeCommand("mkdir -p '\(folderPath)'")
             await loadRemoteFiles()
         } catch {
             print("Failed to create folder: \(error)")
@@ -180,36 +127,13 @@ class FileBrowserViewModel {
     /// Delete a file or folder
     /// - Parameter node: The file node to delete
     func deleteNode(_ node: FileNode) async {
-        guard let server = await ConnectionManager.shared.activeServer else { return }
+        let command = node.isDirectory ? "rm -rf '\(node.path)'" : "rm '\(node.path)'"
         
         do {
-            let session = try await sshService.connect(to: server)
-            
-            // Use rm -rf for directories, rm for files
-            let command = node.isDirectory ? "rm -rf \(node.path)" : "rm \(node.path)"
-            _ = try await session.execute(command)
-            
-            // Refresh file list
+            try await executeCommand(command)
             await loadRemoteFiles()
         } catch {
             print("Failed to delete node: \(error)")
-        }
-    }
-    
-    /// Open a file for viewing/editing
-    /// - Parameter file: The file to open
-    func openFile(_ file: FileNode) {
-        if !file.isDirectory {
-            selectedFile = file
-            
-            // Add to recent files
-            recentFiles.removeAll { $0.id == file.id }
-            recentFiles.insert(file, at: 0)
-            
-            // Keep only last 10 recent files
-            if recentFiles.count > 10 {
-                recentFiles = Array(recentFiles.prefix(10))
-            }
         }
     }
     
@@ -218,65 +142,71 @@ class FileBrowserViewModel {
     ///   - node: The file node to rename
     ///   - newName: The new name
     func renameNode(_ node: FileNode, to newName: String) async {
-        guard let server = await ConnectionManager.shared.activeServer else { return }
+        let parentPath = (node.path as NSString).deletingLastPathComponent
+        let newPath = (parentPath as NSString).appendingPathComponent(newName)
         
         do {
-            let session = try await sshService.connect(to: server)
-            
-            // Get parent directory path
-            let parentPath = (node.path as NSString).deletingLastPathComponent
-            let newPath = (parentPath as NSString).appendingPathComponent(newName)
-            
-            // Use mv command to rename
-            _ = try await session.execute("mv '\(node.path)' '\(newPath)'")
-            
-            // Refresh file list
+            try await executeCommand("mv '\(node.path)' '\(newPath)'")
             await loadRemoteFiles()
         } catch {
             print("Failed to rename node: \(error)")
         }
     }
     
-    /// Upload file content to server
-    /// - Parameters:
-    ///   - fileName: Name for the new file
-    ///   - content: File content data
-    func uploadFile(name fileName: String, content: Data) async {
-        guard let server = await ConnectionManager.shared.activeServer else { return }
-        
-        do {
-            let session = try await sshService.connect(to: server)
-            let filePath = currentPath.hasSuffix("/") ? "\(currentPath)\(fileName)" : "\(currentPath)/\(fileName)"
-            
-            // Write file content using echo and base64 encoding for binary safety
-            if let contentString = String(data: content, encoding: .utf8) {
-                // For text files, write directly
-                let escapedContent = contentString.replacingOccurrences(of: "'", with: "'\"'\"'")
-                _ = try await session.execute("echo '\(escapedContent)' > '\(filePath)'")
-            } else {
-                // For binary files, use base64 encoding
-                let base64Content = content.base64EncodedString()
-                _ = try await session.execute("echo '\(base64Content)' | base64 -d > '\(filePath)'")
-            }
-            
-            // Refresh file list
-            await loadRemoteFiles()
-        } catch {
-            print("Failed to upload file: \(error)")
+    /// Setup project path from ProjectContext
+    func setupProjectPath() {
+        if let project = ProjectContext.shared.activeProject {
+            currentProject = project
+            projectRootPath = project.path
+            currentPath = project.path
         }
     }
     
     /// Get relative path from project root
-    /// - Parameter fullPath: The full path
-    /// - Returns: Path relative to project root
-    func getRelativePath(from fullPath: String) -> String {
-        if fullPath == projectRootPath {
-            return "/"
-        } else if fullPath.hasPrefix(projectRootPath + "/") {
-            let relativePath = String(fullPath.dropFirst(projectRootPath.count))
-            return relativePath
+    func getRelativePath(from path: String) -> String {
+        if path.hasPrefix(projectRootPath) {
+            return String(path.dropFirst(projectRootPath.count))
         }
-        return fullPath
+        return ""
     }
     
+    /// Refresh current directory
+    func refresh() async {
+        await loadRemoteFiles()
+    }
+    
+    /// Load file content
+    func loadFileContent(path: String) async throws -> String {
+        guard let project = currentProject else {
+            throw FileBrowserError.noProject
+        }
+        
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        return try await session.readFile(path)
+    }
+    
+    // MARK: - Private Methods
+    
+    /// Execute SSH command
+    private func executeCommand(_ command: String) async throws {
+        guard let project = currentProject else {
+            throw FileBrowserError.noProject
+        }
+        
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        _ = try await session.execute(command)
+    }
+}
+
+// MARK: - Errors
+
+enum FileBrowserError: LocalizedError {
+    case noProject
+    
+    var errorDescription: String? {
+        switch self {
+        case .noProject:
+            return "No active project"
+        }
+    }
 }

@@ -11,7 +11,7 @@ import SwiftData
 struct ContentView: View {
     @State private var selectedTab = Tab.chat
     @StateObject private var projectContext = ProjectContext.shared
-    @StateObject private var connectionManager = ConnectionManager.shared
+    @StateObject private var serverManager = ServerManager.shared
     @Environment(\.modelContext) private var modelContext
     
     enum Tab {
@@ -55,15 +55,12 @@ struct ContentView: View {
     }
     
     private func configureManagers() {
-        // Configure ProjectContext with model context
-        projectContext.configure(with: modelContext)
-        
-        // Load servers for ConnectionManager
-        connectionManager.loadServers(from: modelContext)
+        // Load servers for ServerManager
+        serverManager.loadServers(from: modelContext)
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: [Project.self, Server.self], inMemory: true)
+        .modelContainer(for: [RemoteProject.self, Server.self], inMemory: true)
 }

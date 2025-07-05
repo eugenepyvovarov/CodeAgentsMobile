@@ -12,9 +12,9 @@ import SwiftData
 struct CodeAgentsMobileApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
-            Project.self,
-            Server.self
+            RemoteProject.self,
+            Server.self,
+            Message.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

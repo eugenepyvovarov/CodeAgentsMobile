@@ -14,7 +14,7 @@ import Foundation
 import SwiftUI
 import SwiftData
 
-/// Manages the active project context and coordinates with ConnectionManager
+/// Manages the active project context across the app
 @MainActor
 class ProjectContext: ObservableObject {
     // MARK: - Singleton
@@ -24,19 +24,10 @@ class ProjectContext: ObservableObject {
     // MARK: - Properties
     
     /// Currently active project
-    @Published var activeProject: Project?
+    @Published var activeProject: RemoteProject?
     
-    /// Whether we're in the process of activating a project
-    @Published var isActivating: Bool = false
-    
-    /// Error message if project activation fails
-    @Published var activationError: String?
-    
-    /// Reference to connection manager
-    private let connectionManager = ConnectionManager.shared
-    
-    /// Model context for updating project data
-    private var modelContext: ModelContext?
+    /// Reference to server manager for server lookups
+    private let serverManager = ServerManager.shared
     
     // MARK: - Initialization
     
@@ -44,86 +35,30 @@ class ProjectContext: ObservableObject {
         // Private initializer for singleton
     }
     
-    // MARK: - Configuration
-    
-    /// Set the model context for database operations
-    func configure(with modelContext: ModelContext) {
-        self.modelContext = modelContext
-    }
-    
     // MARK: - Methods
     
-    /// Set the active project and connect to its server
+    /// Set the active project
     /// - Parameter project: The project to activate
-    func setActiveProject(_ project: Project) async {
-        // Clear any previous error
-        activationError = nil
-        isActivating = true
-        
-        do {
-            // Find the server for this project
-            guard let modelContext = modelContext else {
-                throw ProjectError.noModelContext
-            }
-            
-            let serverId = project.serverId
-            let descriptor = FetchDescriptor<Server>(
-                predicate: #Predicate { server in
-                    server.id == serverId
-                }
-            )
-            
-            let servers = try modelContext.fetch(descriptor)
-            guard let server = servers.first else {
-                throw ProjectError.serverNotFound
-            }
-            
-            // Check if we need to connect to a different server
-            if connectionManager.activeServer?.id != server.id {
-                // Disconnect from current server if connected
-                if connectionManager.isConnected {
-                    connectionManager.disconnect()
-                }
-                
-                // Connect to the project's server
-                await connectionManager.connect(to: server)
-                
-                // Check if connection was successful
-                if !connectionManager.isConnected {
-                    throw ProjectError.connectionFailed(
-                        connectionManager.connectionError ?? "Unknown connection error"
-                    )
-                }
-            }
-            
-            // Update project timestamps
-            project.lastOpened = Date()
-            project.lastAccessed = Date()
-            
-            // Set as active project
-            activeProject = project
-            
-            // Update ConnectionManager's active project
-            connectionManager.setActiveProject(project)
-            
-            // Save changes
-            try modelContext.save()
-            
-            print("✅ Activated project: \(project.name) on server: \(server.name)")
-            
-        } catch {
-            activationError = error.localizedDescription
-            print("❌ Failed to activate project: \(error)")
+    func setActiveProject(_ project: RemoteProject) {
+        // Clear any previous project connections if switching projects
+        if let currentProject = activeProject, currentProject.id != project.id {
+            clearActiveProject()
         }
         
-        isActivating = false
+        // Set the new active project
+        activeProject = project
+        
+        print("✅ Activated project: \(project.name)")
     }
     
     /// Clear the active project
     func clearActiveProject() {
+        if let project = activeProject {
+            // Close all connections for this project
+            ServiceManager.shared.sshService.closeConnections(projectId: project.id)
+        }
+        
         activeProject = nil
-        activationError = nil
-        connectionManager.setActiveProject(nil)
     }
     
     /// Get the full path for the active project
@@ -132,7 +67,7 @@ class ProjectContext: ObservableObject {
     }
     
     /// Check if a project is currently active
-    func isProjectActive(_ project: Project) -> Bool {
+    func isProjectActive(_ project: RemoteProject) -> Bool {
         activeProject?.id == project.id
     }
     
@@ -140,23 +75,10 @@ class ProjectContext: ObservableObject {
     var workingDirectory: String {
         activeProjectPath ?? "/root/projects"
     }
-}
-
-// MARK: - Errors
-
-enum ProjectError: LocalizedError {
-    case noModelContext
-    case serverNotFound
-    case connectionFailed(String)
     
-    var errorDescription: String? {
-        switch self {
-        case .noModelContext:
-            return "Database context not configured"
-        case .serverNotFound:
-            return "Server not found for this project"
-        case .connectionFailed(let message):
-            return "Failed to connect to server: \(message)"
-        }
+    /// Get the server for the active project
+    var activeServer: Server? {
+        guard let project = activeProject else { return nil }
+        return serverManager.server(withId: project.serverId)
     }
 }

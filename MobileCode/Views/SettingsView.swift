@@ -4,6 +4,8 @@
 //
 //  Created by Claude on 2025-06-10.
 //
+//  Purpose: App settings and server management
+//
 
 import SwiftUI
 import SwiftData
@@ -14,12 +16,6 @@ struct SettingsView: View {
     @State private var showingAddServer = false
     @State private var showingAPIKeyEntry = false
     @State private var apiKey = ""
-    @State private var selectedTheme = "System"
-    @State private var enableBiometrics = true
-    @State private var autoSaveEnabled = true
-    @State private var syntaxHighlighting = true
-    
-    let themes = ["System", "Light", "Dark"]
     
     var body: some View {
         NavigationStack {
@@ -40,8 +36,6 @@ struct SettingsView: View {
                     .onTapGesture {
                         showingAPIKeyEntry = true
                     }
-                    
-                    Toggle("Use Biometric Authentication", isOn: $enableBiometrics)
                 }
                 
                 Section("Servers") {
@@ -57,26 +51,6 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section("Appearance") {
-                    Picker("Theme", selection: $selectedTheme) {
-                        ForEach(themes, id: \.self) { theme in
-                            Text(theme).tag(theme)
-                        }
-                    }
-                    
-                    Toggle("Syntax Highlighting", isOn: $syntaxHighlighting)
-                }
-                
-                Section("Editor") {
-                    Toggle("Auto-save", isOn: $autoSaveEnabled)
-                    
-                    HStack {
-                        Text("Font Size")
-                        Spacer()
-                        Stepper("14pt", value: .constant(14), in: 10...20)
-                    }
-                }
-                
                 Section("About") {
                     HStack {
                         Text("Version")
@@ -85,9 +59,7 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
                     
-                    Link("GitHub Repository", destination: URL(string: "https://github.com/example/claude-code-mobile")!)
-                    
-                    Link("Documentation", destination: URL(string: "https://docs.example.com")!)
+                    Link("GitHub Repository", destination: URL(string: "https://github.com/eugenepyvovarov/CodeAgentsMobile")!)
                 }
             }
             .navigationTitle("Settings")
@@ -100,20 +72,18 @@ struct SettingsView: View {
             }
         }
         .onAppear {
-            createSampleServers()
             loadAPIKey()
         }
     }
     
     private func deleteServer(at offsets: IndexSet) {
         for index in offsets {
-            modelContext.delete(servers[index])
+            let server = servers[index]
+            // Clean up credentials from keychain
+            try? KeychainManager.shared.deletePassword(for: server.id)
+            // Delete from database
+            modelContext.delete(server)
         }
-    }
-    
-    private func createSampleServers() {
-        // No longer create sample servers automatically
-        // Users should add their own real servers
     }
     
     private func loadAPIKey() {
@@ -129,55 +99,18 @@ struct SettingsView: View {
 
 struct ServerRow: View {
     let server: Server
-    @State private var connectionManager = ConnectionManager.shared
-    
-    private var isConnected: Bool {
-        connectionManager.activeServer?.id == server.id && connectionManager.isConnected
-    }
     
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(server.name)
-                    .font(.headline)
-                
-                Text("\(server.username)@\(server.host):\(server.port)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fontDesign(.monospaced)
-            }
+        VStack(alignment: .leading, spacing: 4) {
+            Text(server.name)
+                .font(.headline)
             
-            Spacer()
-            
-            Button {
-                toggleConnection()
-            } label: {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(isConnected ? Color.green : Color.gray)
-                        .frame(width: 8, height: 8)
-                    
-                    Text(isConnected ? "Connected" : "Connect")
-                        .font(.caption)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color(.systemGray5))
-                .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
+            Text("\(server.username)@\(server.host):\(server.port)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fontDesign(.monospaced)
         }
         .padding(.vertical, 4)
-    }
-    
-    private func toggleConnection() {
-        Task {
-            if isConnected {
-                connectionManager.disconnect()
-            } else {
-                await connectionManager.connect(to: server)
-            }
-        }
     }
 }
 
@@ -189,9 +122,7 @@ struct AddServerSheet: View {
     @State private var host = ""
     @State private var port = "22"
     @State private var username = ""
-    @State private var authMethod = "password"
     @State private var password = ""
-    @State private var privateKey = ""
     @State private var isTestingConnection = false
     @State private var testResult: String?
     @State private var showError = false
@@ -213,26 +144,7 @@ struct AddServerSheet: View {
                 }
                 
                 Section("Authentication") {
-                    Picker("Method", selection: $authMethod) {
-                        Text("Password").tag("password")
-                        Text("SSH Key").tag("key")
-                    }
-                    
-                    if authMethod == "password" {
-                        SecureField("Password", text: $password)
-                    } else {
-                        Button {
-                            // TODO: Implement SSH key import
-                        } label: {
-                            Label("Import SSH Key", systemImage: "key")
-                        }
-                        
-                        if !privateKey.isEmpty {
-                            Text("Key imported")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        }
-                    }
+                    SecureField("Password", text: $password)
                 }
                 
                 Section {
@@ -250,9 +162,7 @@ struct AddServerSheet: View {
                             }
                         }
                     }
-                    .disabled(host.isEmpty || username.isEmpty || 
-                             (authMethod == "password" && password.isEmpty) ||
-                             isTestingConnection)
+                    .disabled(host.isEmpty || username.isEmpty || password.isEmpty || isTestingConnection)
                     
                     if let result = testResult {
                         HStack {
@@ -277,8 +187,7 @@ struct AddServerSheet: View {
                     Button("Save") {
                         saveServer()
                     }
-                    .disabled(serverName.isEmpty || host.isEmpty || username.isEmpty ||
-                             (authMethod == "password" && password.isEmpty))
+                    .disabled(serverName.isEmpty || host.isEmpty || username.isEmpty || password.isEmpty)
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -300,19 +209,12 @@ struct AddServerSheet: View {
                 host: host,
                 port: Int(port) ?? 22,
                 username: username,
-                authMethodType: authMethod
+                authMethodType: "password"
             )
             
             do {
                 // Store credentials temporarily
-                if authMethod == "password" {
-                    try KeychainManager.shared.storePassword(password, for: testServer.id)
-                } else {
-                    // Handle SSH key
-                    if let keyData = privateKey.data(using: .utf8) {
-                        try KeychainManager.shared.storeSSHKey(keyData, for: testServer.id)
-                    }
-                }
+                try KeychainManager.shared.storePassword(password, for: testServer.id)
                 
                 // Test connection
                 print("🔍 Testing SSH connection to \(host):\(port)")
@@ -325,8 +227,8 @@ struct AddServerSheet: View {
                 print("✅ Test command result: \(result)")
                 
                 // If successful, disconnect and clean up
-                await sshService.disconnect(from: testServer.id)
-                try KeychainManager.shared.deleteCredentials(for: testServer.id)
+                session.disconnect()
+                try KeychainManager.shared.deletePassword(for: testServer.id)
                 
                 await MainActor.run {
                     testResult = "Success! Connection established"
@@ -366,7 +268,7 @@ struct AddServerSheet: View {
                 }
                 
                 // Clean up credentials even on failure
-                try? KeychainManager.shared.deleteCredentials(for: testServer.id)
+                try? KeychainManager.shared.deletePassword(for: testServer.id)
             }
         }
     }
@@ -377,7 +279,7 @@ struct AddServerSheet: View {
             host: host,
             port: Int(port) ?? 22,
             username: username,
-            authMethodType: authMethod
+            authMethodType: "password"
         )
         
         // Save server to database
@@ -385,11 +287,7 @@ struct AddServerSheet: View {
         
         // Store credentials in keychain
         do {
-            if authMethod == "password" {
-                try KeychainManager.shared.storePassword(password, for: server.id)
-            } else if let keyData = privateKey.data(using: .utf8) {
-                try KeychainManager.shared.storeSSHKey(keyData, for: server.id)
-            }
+            try KeychainManager.shared.storePassword(password, for: server.id)
             dismiss()
         } catch {
             errorMessage = "Failed to store credentials: \(error.localizedDescription)"

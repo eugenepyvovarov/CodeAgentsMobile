@@ -22,27 +22,20 @@ class KeychainManager {
     // MARK: - Properties
     
     private let serviceName = "com.claudecode.mobile"
-    private let accessGroup: String? = nil // Can be used for app groups
     
     // MARK: - Error Types
     
     enum KeychainError: LocalizedError {
         case itemNotFound
-        case duplicateItem
         case invalidData
-        case authenticationFailed
         case unknown(OSStatus)
         
         var errorDescription: String? {
             switch self {
             case .itemNotFound:
                 return "Item not found in keychain"
-            case .duplicateItem:
-                return "Item already exists in keychain"
             case .invalidData:
                 return "Invalid data format"
-            case .authenticationFailed:
-                return "Authentication failed"
             case .unknown(let status):
                 return "Keychain error: \(status)"
             }
@@ -76,32 +69,12 @@ class KeychainManager {
         return password
     }
     
-    /// Store an SSH private key
-    /// - Parameters:
-    ///   - keyData: The SSH key data
-    ///   - serverId: Server identifier
-    func storeSSHKey(_ keyData: Data, for serverId: UUID) throws {
-        let key = sshKeyKey(for: serverId)
-        try store(data: keyData, for: key)
-    }
     
-    /// Retrieve an SSH private key
+    /// Delete password for a server
     /// - Parameter serverId: Server identifier
-    /// - Returns: The SSH key data
-    func retrieveSSHKey(for serverId: UUID) throws -> Data {
-        let key = sshKeyKey(for: serverId)
-        return try retrieve(for: key)
-    }
-    
-    /// Delete all credentials for a server
-    /// - Parameter serverId: Server identifier
-    func deleteCredentials(for serverId: UUID) throws {
-        // Try to delete both password and SSH key
+    func deletePassword(for serverId: UUID) throws {
         let passwordKey = passwordKey(for: serverId)
-        let sshKey = sshKeyKey(for: serverId)
-        
-        try? delete(for: passwordKey)
-        try? delete(for: sshKey)
+        try delete(for: passwordKey)
     }
     
     /// Store API key (for Claude)
@@ -129,9 +102,6 @@ class KeychainManager {
         return "password_\(serverId.uuidString)"
     }
     
-    private func sshKeyKey(for serverId: UUID) -> String {
-        return "sshkey_\(serverId.uuidString)"
-    }
     
     /// Store data in keychain
     private func store(data: Data, for key: String) throws {
@@ -150,9 +120,6 @@ class KeychainManager {
         let status = SecItemAdd(query as CFDictionary, nil)
         
         guard status == errSecSuccess else {
-            if status == errSecDuplicateItem {
-                throw KeychainError.duplicateItem
-            }
             throw KeychainError.unknown(status)
         }
     }
@@ -199,34 +166,14 @@ class KeychainManager {
         }
     }
     
-    /// Clear all stored credentials (use with caution)
-    func clearAll() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName
-        ]
-        
-        let status = SecItemDelete(query as CFDictionary)
-        
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainError.unknown(status)
-        }
-    }
 }
 
 // MARK: - Convenience Extensions
 
 extension Server {
-    /// Retrieve stored credentials
+    /// Retrieve stored password
     func retrieveCredentials() throws -> String {
-        switch authMethodType {
-        case "password":
-            return try KeychainManager.shared.retrievePassword(for: id)
-        case "key":
-            let keyData = try KeychainManager.shared.retrieveSSHKey(for: id)
-            return String(data: keyData, encoding: .utf8) ?? ""
-        default:
-            return ""
-        }
+        // Only password authentication is supported
+        return try KeychainManager.shared.retrievePassword(for: id)
     }
 }
