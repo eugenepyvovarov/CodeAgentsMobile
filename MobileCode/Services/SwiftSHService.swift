@@ -12,7 +12,7 @@
 
 import Foundation
 import NIO
-import NIOSSH
+@preconcurrency import NIOSSH
 
 /// Real SSH session implementation using SwiftNIO SSH
 class SwiftSHSession: SSHSession {
@@ -28,6 +28,9 @@ class SwiftSHSession: SSHSession {
     
     init(server: Server) {
         self.server = server
+        
+        // Enable verbose logging for debugging
+        SSHLogger.logLevel = .verbose
     }
     
     deinit {
@@ -72,8 +75,8 @@ class SwiftSHSession: SSHSession {
             throw SSHError.connectionFailed("Not connected")
         }
         
-        // Use interactive session to prepare for future streaming input support
-        return try await createInteractiveSession(command: command)
+        // Use direct process for command execution (not interactive shell)
+        return try await createDirectProcess(command: command)
     }
     
     func uploadFile(localPath: URL, remotePath: String) async throws {
@@ -311,9 +314,15 @@ class SwiftSHSession: SSHSession {
                 sshHandler.createChannel(promise, channelType: .session) { childChannel, channelType in
                     // Enable half-closure for proper SSH channel handling
                     _ = childChannel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+                    // CRITICAL: Enable auto-read to ensure data flows
+                    _ = childChannel.setOption(ChannelOptions.autoRead, value: true)
+                    
+                    // Create data handler to unwrap SSH channel data
+                    let dataHandler = SSHChannelDataHandler()
                     
                     // Add handlers for the command execution
                     return childChannel.pipeline.addHandlers([
+                        dataHandler,   // Unwraps SSH channel data
                         processHandle, // The process handle is also a channel handler
                         ErrorHandler()
                     ])
@@ -326,24 +335,9 @@ class SwiftSHSession: SSHSession {
                 // Set the child channel on the process handle
                 processHandle.setChildChannel(childChannel)
                 
-                // Request command execution (not shell)
-                let execPromise = channel.eventLoop.makePromise(of: Void.self)
-                let execRequest = SSHChannelRequestEvent.ExecRequest(
-                    command: command,
-                    wantReply: true
-                )
-                childChannel.triggerUserOutboundEvent(execRequest).whenComplete { result in
-                    switch result {
-                    case .success:
-                        SSHLogger.log("Exec request sent successfully for streaming", level: .info)
-                        execPromise.succeed(())
-                    case .failure(let error):
-                        SSHLogger.log("Exec request failed: \(error)", level: .error)
-                        execPromise.fail(error)
-                    }
-                }
-                
-                return execPromise.futureResult
+                // The exec request will be sent by the process handle in channelActive
+                // Read will be triggered after exec request is accepted
+                return channel.eventLoop.makeSucceededFuture(())
             }
         }.get()
         
@@ -367,6 +361,8 @@ class SwiftSHSession: SSHSession {
                 sshHandler.createChannel(promise, channelType: .session) { childChannel, channelType in
                     // Enable half-closure for proper SSH channel handling
                     _ = childChannel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+                    // CRITICAL: Enable auto-read to ensure data flows
+                    _ = childChannel.setOption(ChannelOptions.autoRead, value: true)
                     
                     // Add handlers for the interactive session
                     return childChannel.pipeline.addHandlers([

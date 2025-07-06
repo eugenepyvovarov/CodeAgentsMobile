@@ -59,32 +59,36 @@ final class SSHChannelDataHandler: ChannelInboundHandler {
     private var stderrBuffer = ByteBuffer()
     
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        SSHLogger.log("channelRead called with data type: \(type(of: data))", level: .verbose)
+        SSHLogger.log("SSHChannelDataHandler channelRead called with data type: \(type(of: data))", level: .verbose)
         let channelData = unwrapInboundIn(data)
         
         switch channelData.data {
-        case .byteBuffer(var bytes):
-            let receivedString = String(buffer: bytes)
+        case .byteBuffer(let bytes):
+            // Get string representation without consuming the buffer
+            let receivedString = bytes.getString(at: bytes.readerIndex, length: bytes.readableBytes) ?? ""
             switch channelData.type {
             case .channel:
                 // Standard output
                 SSHLogger.log("Received stdout data (\(bytes.readableBytes) bytes): \(receivedString.prefix(100))...", level: .debug)
-                stdoutBuffer.writeBuffer(&bytes)
+                var mutableBytes = bytes
+                stdoutBuffer.writeBuffer(&mutableBytes)
             case .stdErr:
                 // Standard error
                 SSHLogger.log("Received stderr data (\(bytes.readableBytes) bytes): \(receivedString.prefix(100))...", level: .debug)
-                stderrBuffer.writeBuffer(&bytes)
+                var mutableBytes = bytes
+                stderrBuffer.writeBuffer(&mutableBytes)
             default:
                 SSHLogger.log("Received other data type: \(channelData.type)", level: .debug)
                 break
             }
+            
+            // Forward the original ByteBuffer to the next handler (both stdout and stderr)
+            SSHLogger.log("Forwarding \(bytes.readableBytes) bytes to next handler", level: .verbose)
+            context.fireChannelRead(NIOAny(bytes))
         case .fileRegion:
             SSHLogger.log("Received file region data", level: .debug)
             break
         }
-        
-        // Forward the event
-        context.fireChannelRead(data)
     }
     
     func getAccumulatedOutput() -> (stdout: String, stderr: String) {
@@ -214,8 +218,8 @@ final class CommandExecutionHandler: ChannelInboundHandler {
 // MARK: - Process Handle Implementation
 
 /// Process handle for an interactive SwiftNIO SSH session
-class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle {
-    typealias InboundIn = SSHChannelData
+final class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle, @unchecked Sendable {
+    typealias InboundIn = Any
     
     private let command: String
     private let parentChannel: Channel
@@ -227,6 +231,9 @@ class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle {
     // Continuations for the output stream
     private var continuations: [AsyncThrowingStream<String, Error>.Continuation] = []
     
+    // Buffer for output that arrives before continuations are ready
+    private var earlyOutputBuffer: [String] = []
+    
     var isRunning: Bool {
         !isTerminated && (childChannel?.isActive ?? false)
     }
@@ -235,7 +242,7 @@ class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle {
         self.command = command
         self.parentChannel = channel
         if !command.isEmpty {
-            SSHLogger.log("Started interactive process: \(command)", level: .info)
+            SSHLogger.log("Started process for command: \(command)", level: .info)
         } else {
             SSHLogger.log("Started interactive shell", level: .info)
         }
@@ -266,7 +273,7 @@ class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle {
         let data = SSHChannelData(type: .channel, data: .byteBuffer(buffer))
         
         // Write the SSH channel data
-        try await channel.writeAndFlush(NIOAny(data)).get()
+        try await channel.writeAndFlush(data).get()
     }
     
     func readOutput() async throws -> String {
@@ -283,6 +290,15 @@ class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle {
     func outputStream() -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             self.continuations.append(continuation)
+            
+            // Flush any buffered output to the new continuation
+            if !earlyOutputBuffer.isEmpty {
+                SSHLogger.log("Flushing \(earlyOutputBuffer.count) buffered chunks to new continuation", level: .debug)
+                for bufferedOutput in earlyOutputBuffer {
+                    continuation.yield(bufferedOutput)
+                }
+                earlyOutputBuffer.removeAll()
+            }
         }
     }
     
@@ -304,80 +320,158 @@ class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle {
     
     // MARK: - ChannelInboundHandler Conformance
     
+    func channelActive(context: ChannelHandlerContext) {
+        SSHLogger.log("Process handle channel active, channel isActive: \(context.channel.isActive)", level: .info)
+        
+        // Store the child channel reference immediately
+        self.childChannel = context.channel
+        
+        // For direct exec, the exec request should be sent here
+        if !command.isEmpty {
+            SSHLogger.log("Sending exec request for command: \(command)", level: .debug)
+            let execRequest = SSHChannelRequestEvent.ExecRequest(
+                command: command,
+                wantReply: true
+            )
+            
+            // Send the exec request
+            context.triggerUserOutboundEvent(execRequest).whenComplete { result in
+                switch result {
+                case .success:
+                    SSHLogger.log("Exec request sent successfully from process handle", level: .info)
+                    // CRITICAL: Flush the channel to ensure the exec request is sent immediately
+                    context.flush()
+                    // Reading will start when we receive ChannelSuccessEvent in userInboundEventTriggered
+                case .failure(let error):
+                    SSHLogger.log("Failed to send exec request: \(error)", level: .error)
+                    self.terminate()
+                    for continuation in self.continuations {
+                        continuation.finish(throwing: error)
+                    }
+                }
+            }
+        } else {
+            // For interactive sessions, start reading immediately
+            context.channel.read()
+        }
+    }
+    
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let channelData = self.unwrapInboundIn(data)
+        let unwrappedData = self.unwrapInboundIn(data)
         
-        SSHLogger.log("channelRead called, data type: \(channelData.type)", level: .verbose)
+        SSHLogger.log("SwiftSHProcessHandle channelRead called with data type: \(type(of: unwrappedData))", level: .verbose)
         
-        // Process both stdout and stderr
-        if channelData.type == .stdErr {
-            // Handle stderr
+        // Process the data regardless of type
+        var outputText: String? = nil
+        
+        // Handle IOData (SwiftNIO's wrapper for ByteBuffer)
+        if let ioData = unwrappedData as? IOData {
+            SSHLogger.log("Received IOData", level: .verbose)
+            switch ioData {
+            case .byteBuffer(let buffer):
+                outputText = String(buffer: buffer)
+                SSHLogger.log("Extracted ByteBuffer from IOData (\(outputText?.count ?? 0) chars): \(outputText?.prefix(100) ?? "")...", level: .debug)
+            case .fileRegion:
+                SSHLogger.log("Received file region in IOData", level: .debug)
+                return
+            }
+        }
+        // For SSH exec channels, data comes as ByteBuffer directly (after SSHChannelDataHandler)
+        else if let buffer = unwrappedData as? ByteBuffer {
+            outputText = String(buffer: buffer)
+            SSHLogger.log("Received ByteBuffer output (\(outputText?.count ?? 0) chars): \(outputText?.prefix(100) ?? "")...", level: .debug)
+        }
+        // Handle SSHChannelData if it comes through (before SSHChannelDataHandler)
+        else if let channelData = unwrappedData as? SSHChannelData {
+            SSHLogger.log("Received SSHChannelData, type: \(channelData.type)", level: .verbose)
+            
             switch channelData.data {
             case .byteBuffer(let bytes):
-                let error = String(buffer: bytes)
-                SSHLogger.log("Stderr output: \(error)", level: .warning)
-                // Also yield stderr to continuations as it might contain important info
-                for continuation in continuations {
-                    continuation.yield("❌ Error: \(error)")
-                }
+                outputText = String(buffer: bytes)
+                let isError = channelData.type == .stdErr
+                SSHLogger.log("\(isError ? "Stderr" : "Stdout") output (\(outputText?.count ?? 0) chars): \(outputText?.prefix(100) ?? "")...", level: .debug)
             case .fileRegion:
-                break
+                SSHLogger.log("Received file region data", level: .debug)
+                return
             }
+        } else {
+            SSHLogger.log("Received unknown data type: \(type(of: unwrappedData))", level: .warning)
             return
         }
         
-        // Only process channel data (stdout)
-        guard channelData.type == .channel else {
-            SSHLogger.log("Ignoring non-channel data type: \(channelData.type)", level: .verbose)
-            return
-        }
-        
-        switch channelData.data {
-        case .byteBuffer(let bytes):
-            let output = String(buffer: bytes)
-            SSHLogger.log("Raw output received (\(output.count) chars): \(output.prefix(100))...", level: .verbose)
-            
-            // Simplified command echo filtering
-            if !hasReceivedFirstOutput && !command.isEmpty {
-                commandEchoBuffer += output
-                
-                // Look for the command followed by a newline
-                if let range = commandEchoBuffer.range(of: "\(command)\n") {
-                    hasReceivedFirstOutput = true
-                    // Everything after the command+newline is the actual output
-                    let actualOutput = String(commandEchoBuffer[range.upperBound...])
-                    if !actualOutput.isEmpty {
-                        SSHLogger.log("Received initial output (\(actualOutput.count) chars)", level: .debug)
-                        for continuation in continuations {
-                            continuation.yield(actualOutput)
-                        }
-                    }
-                    commandEchoBuffer = ""
-                } else if commandEchoBuffer.count > command.count + 1000 {
-                    // Safety: if buffer is too large, just yield everything
-                    hasReceivedFirstOutput = true
-                    SSHLogger.log("No command echo detected, yielding all output", level: .debug)
-                    for continuation in continuations {
-                        continuation.yield(commandEchoBuffer)
-                    }
-                    commandEchoBuffer = ""
-                }
+        // Process the output text if we have any
+        if let output = outputText, !output.isEmpty {
+            // Check if we have continuations ready
+            if continuations.isEmpty {
+                SSHLogger.log("No continuations ready, buffering output (\(output.count) chars)", level: .debug)
+                earlyOutputBuffer.append(output)
             } else {
-                // Normal output after command echo has been filtered
-                SSHLogger.log("Received chunk (\(output.count) chars)", level: .debug)
+                SSHLogger.log("Yielding output chunk (\(output.count) chars) to \(continuations.count) continuations", level: .debug)
                 for continuation in continuations {
                     continuation.yield(output)
                 }
             }
-        case .fileRegion:
-            // Not expected in a shell session
-            break
         }
+        
+        // Continue reading more data
+        context.channel.read()
+    }
+    
+    func channelReadComplete(context: ChannelHandlerContext) {
+        SSHLogger.log("Channel read complete, triggering another read", level: .verbose)
+        // Ensure we continue reading
+        context.channel.read()
     }
     
     func channelInactive(context: ChannelHandlerContext) {
         SSHLogger.log("Interactive channel became inactive", level: .info)
         terminate()
+    }
+    
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        SSHLogger.log("Process handle received event: \(type(of: event))", level: .verbose)
+        
+        switch event {
+        case is ChannelSuccessEvent:
+            SSHLogger.log("Channel success - exec request accepted", level: .info)
+            // Command accepted, now we wait for output
+            // CRITICAL: Start continuous reading
+            context.channel.read()
+            // Set up continuous reading loop
+            startContinuousReading(context: context)
+            
+            // For exec commands, close the output (stdin) side to signal EOF
+            // This tells the command that no more input is coming
+            if !command.isEmpty {
+                SSHLogger.log("Closing output side (stdin) for exec command", level: .debug)
+                context.channel.close(mode: .output, promise: nil)
+            }
+            
+        case let exitStatus as SSHChannelRequestEvent.ExitStatus:
+            SSHLogger.log("Command exited with status: \(exitStatus.exitStatus)", level: .info)
+            // Don't terminate immediately - let any remaining output be processed
+            
+        case let exitSignal as SSHChannelRequestEvent.ExitSignal:
+            SSHLogger.log("Command terminated by signal: \(exitSignal.signalName)", level: .warning)
+            
+        default:
+            SSHLogger.log("Unknown event type: \(event)", level: .verbose)
+            context.fireUserInboundEventTriggered(event)
+        }
+    }
+    
+    private func startContinuousReading(context: ChannelHandlerContext) {
+        // Schedule repeated reads to ensure we get all data
+        let readTask = context.eventLoop.scheduleRepeatedTask(initialDelay: .milliseconds(10), delay: .milliseconds(100)) { task in
+            guard self.isRunning else {
+                task.cancel()
+                return
+            }
+            context.channel.read()
+        }
+        
+        // Store the task handle (you might want to add a property for this)
+        // For now, it will be cancelled when the channel becomes inactive
     }
     
     func errorCaught(context: ChannelHandlerContext, error: Error) {

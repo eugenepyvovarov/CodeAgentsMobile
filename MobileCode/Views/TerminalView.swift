@@ -33,7 +33,7 @@ struct TerminalView: View {
                         Text(line)
                             .font(.footnote)
                             .foregroundColor(.secondary)
-                            .fontFamily(.monospaced)
+                            .monospaced()
                     }
                 }
                 .padding()

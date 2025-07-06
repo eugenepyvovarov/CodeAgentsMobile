@@ -14,6 +14,33 @@
 import Foundation
 import SwiftUI
 
+/// Buffers partial lines and yields complete lines
+class LineBuffer {
+    private var buffer = ""
+    
+    func addData(_ data: String) -> [String] {
+        buffer += data
+        var lines: [String] = []
+        
+        while let newlineIndex = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[..<newlineIndex])
+            buffer.removeSubrange(...newlineIndex)
+            if !line.isEmpty {
+                lines.append(line)
+            }
+        }
+        
+        return lines
+    }
+    
+    func flush() -> String? {
+        guard !buffer.isEmpty else { return nil }
+        let remaining = buffer
+        buffer = ""
+        return remaining
+    }
+}
+
 /// Authentication status for Claude Code
 enum ClaudeAuthStatus {
     case authenticated
@@ -212,33 +239,6 @@ enum ClaudeContent: Decodable {
     }
 }
 
-/// Buffers partial lines and yields complete lines
-class LineBuffer {
-    private var buffer = ""
-    
-    func addData(_ data: String) -> [String] {
-        buffer += data
-        var lines: [String] = []
-        
-        while let newlineIndex = buffer.firstIndex(of: "\n") {
-            let line = String(buffer[..<newlineIndex])
-            buffer.removeSubrange(...newlineIndex)
-            if !line.isEmpty {
-                lines.append(line)
-            }
-        }
-        
-        return lines
-    }
-    
-    func flush() -> String? {
-        guard !buffer.isEmpty else { return nil }
-        let remaining = buffer
-        buffer = ""
-        return remaining
-    }
-}
-
 /// Service for managing Claude Code interactions
 @MainActor
 class ClaudeCodeService: ObservableObject {
@@ -289,44 +289,129 @@ class ClaudeCodeService: ObservableObject {
                         .replacingOccurrences(of: "\"", with: "\\\"")
                         .replacingOccurrences(of: "\n", with: "\\n")
                     
-                    // Build the Claude command
-                    var command = "cd '\(project.path)' && "
-                    command += "export ANTHROPIC_API_KEY=\"\(try KeychainManager.shared.retrieveAPIKey())\" && "
-                    command += "claude --output-format stream-json --verbose "
-                    command += "--allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob "
+                    // First, let's test with a simple echo command to verify streaming works
+                    let testSimpleCommand = false // Set to true to test
                     
-                    // Add continuation flag if needed
-                    if let claudeSessionId = project.claudeSessionId, !text.hasPrefix("/") {
-                        // Use --resume with the saved session ID
-                        command += "--resume \(claudeSessionId) "
+                    var command: String
+                    let debugSteps = false // Enable debug to test Claude installation
+                    
+                    if testSimpleCommand {
+                        // Simple test command that outputs immediately
+                        command = "echo 'Line 1: Testing SSH streaming' && echo 'Line 2: Buffer should catch this' && echo 'Line 3: All output captured'"
+                    } else {
+                        // Build the Claude command - let's test with a simple version first
+                        
+                        if debugSteps {
+                            // Test each step separately to find where it hangs
+                            command = "echo '=== Testing Claude setup ===' && "
+                            command += "echo 'Step 1: Current directory' && pwd && "
+                            command += "echo 'Step 2: Changing to project directory' && "
+                            command += "cd '\(project.path)' 2>&1 && pwd && "
+                            command += "echo 'Step 3: Setting API key' && "
+                            command += "export ANTHROPIC_API_KEY=\"\(try KeychainManager.shared.retrieveAPIKey())\" && "
+                            command += "echo 'Step 4: Checking Claude installation' && "
+                            command += "which claude && echo 'Claude found at above path' || echo 'Claude NOT found in PATH' && "
+                            command += "echo 'Step 5: Checking Claude version' && "
+                            command += "claude --version || echo 'Claude version check failed' && "
+                            command += "echo 'Step 6: Testing Claude help' && "
+                            command += "claude --help | head -5 || echo 'Claude help failed' && "
+                            command += "echo 'Step 7: Running Claude with message \"\(escapedMessage)\"' && "
+                            command += "claude --print \"\(escapedMessage)\" --output-format stream-json --verbose "
+                            command += "--allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob 2>&1"
+                        } else {
+                            // Use streaming JSON with verbose and allowedTools
+                            command = "cd '\(project.path)' && "
+                            command += "export ANTHROPIC_API_KEY=\"\(try KeychainManager.shared.retrieveAPIKey())\" && "
+                            // Full command with streaming, verbose, and allowedTools
+                            // CRITICAL: DO NOT MODIFY ANY FLAGS IN THIS COMMAND!
+                            // --print: REQUIRED to run in non-interactive mode (without it, Claude hangs waiting for input)
+                            // --output-format stream-json: REQUIRED for streaming JSON responses that we parse
+                            // --verbose: REQUIRED to get session IDs and detailed output
+                            // --allowedTools: REQUIRED to specify which tools Claude can use
+                            // Removing ANY of these flags will break the integration!
+                            command += "claude --print \"\(escapedMessage)\" "
+                            command += "--output-format stream-json --verbose "
+                            command += "--allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob "
+                            
+                            // Add continuation flag if needed
+                            if let claudeSessionId = project.claudeSessionId, !text.hasPrefix("/") {
+                                // Use --resume with the saved session ID
+                                command += "--resume \(claudeSessionId) "
+                            }
+                            
+                            // Add stderr redirection at the end
+                            command += "2>&1"
+                        }
                     }
                     
-                    // Add the message
-                    command += "\"\(escapedMessage)\""
+                    print("📤 Executing Claude command:")
+                    print("📋 Command: \(command)")
                     
-                    print("📤 Executing Claude command")
-                    
-                    // Execute and get output
-                    let output = try await sshSession.execute(command)
-                    
-                    print("📥 Received output (\(output.count) chars)")
-                    
-                    // Parse streaming JSON output line by line
-                    let lines = output.components(separatedBy: .newlines)
-                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                    
+                    // Start process for streaming output
+                    let processHandle = try await sshSession.startProcess(command)
+                    let lineBuffer = LineBuffer()
                     var receivedSessionId: String?
                     
-                    for line in lines {
-                        if let messageChunk = StreamingJSONParser.parseStreamingLine(line) {
-                            // Extract session ID if present
-                            if let metadata = messageChunk.metadata,
-                               let sessionId = metadata["sessionId"] as? String,
-                               !sessionId.isEmpty {
-                                receivedSessionId = sessionId
+                    // Read output as it arrives with timeout detection
+                    do {
+                        var hasReceivedOutput = false
+                        let startTime = Date()
+                        
+                        // Create a timeout task
+                        let timeoutTask = Task {
+                            try await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
+                            if !hasReceivedOutput {
+                                print("⚠️ No output received after 10 seconds")
+                                print("🔍 Possible issues:")
+                                print("   - Claude CLI not installed or not in PATH")
+                                print("   - Command syntax error")
+                                print("   - SSH session issues")
                             }
-                            continuation.yield(messageChunk)
                         }
+                        
+                        for try await chunk in processHandle.outputStream() {
+                            hasReceivedOutput = true
+                            timeoutTask.cancel()
+                            
+                            print("📥 Received chunk (\(chunk.count) chars)")
+                            print("📄 Raw chunk: \(chunk)")
+                            
+                            let lines = lineBuffer.addData(chunk)
+                            for line in lines {
+                                print("📄 Processing line: \(line.prefix(100))...")
+                                
+                                // For now, just output everything to see what Claude is sending
+                                if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                                    continuation.yield(MessageChunk(
+                                        content: line + "\n",
+                                        isComplete: false,
+                                        isError: false,
+                                        metadata: ["type": "raw"]
+                                    ))
+                                }
+                            }
+                        }
+                        
+                        // Process any remaining data in the buffer
+                        if let lastLine = lineBuffer.flush() {
+                            print("📄 Processing final line: \(lastLine.prefix(100))...")
+                            if !lastLine.trimmingCharacters(in: .whitespaces).isEmpty {
+                                continuation.yield(MessageChunk(
+                                    content: lastLine + "\n",
+                                    isComplete: false,
+                                    isError: false,
+                                    metadata: ["type": "raw"]
+                                ))
+                            }
+                        }
+                    } catch {
+                        print("❌ Stream error: \(error)")
+                        continuation.yield(MessageChunk(
+                            content: "Stream error: \(error.localizedDescription)",
+                            isComplete: true,
+                            isError: true,
+                            metadata: nil
+                        ))
                     }
                     
                     // Save the session ID to the project if we received one
@@ -350,6 +435,16 @@ class ClaudeCodeService: ObservableObject {
         }
     }
     
+    /// Clear Claude sessions for the active project
+    func clearSessions() {
+        guard let project = projectContext.activeProject else { return }
+        
+        // Clear the session ID
+        project.claudeSessionId = nil
+        
+        // Note: The caller should save the project context to persist this change
+        // This is already handled in ChatViewModel which saves the modelContext
+    }
     
 }
 
