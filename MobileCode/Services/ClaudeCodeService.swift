@@ -378,30 +378,41 @@ class ClaudeCodeService: ObservableObject {
                             
                             let lines = lineBuffer.addData(chunk)
                             for line in lines {
-                                print("📄 Processing line: \(line.prefix(100))...")
+                                print("📄 Processing line: \(line)")
                                 
-                                // For now, just output everything to see what Claude is sending
-                                if !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                                    continuation.yield(MessageChunk(
-                                        content: line + "\n",
-                                        isComplete: false,
-                                        isError: false,
-                                        metadata: ["type": "raw"]
-                                    ))
+                                // Parse JSON line using StreamingJSONParser
+                                if let parsedChunk = StreamingJSONParser.parseStreamingLine(line) {
+                                    continuation.yield(parsedChunk)
+                                    
+                                    // Extract session ID from system messages
+                                    if let type = parsedChunk.metadata?["type"] as? String,
+                                       type == "system",
+                                       let sessionId = parsedChunk.metadata?["sessionId"] as? String {
+                                        receivedSessionId = sessionId
+                                        print("📌 Captured session ID: \(sessionId)")
+                                    }
+                                    
+                                    // Check for result message to capture session ID
+                                    if let type = parsedChunk.metadata?["type"] as? String,
+                                       type == "result",
+                                       let sessionId = parsedChunk.metadata?["sessionId"] as? String {
+                                        receivedSessionId = sessionId
+                                        print("📌 Captured session ID from result: \(sessionId)")
+                                    }
+                                } else if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                                    // Fallback for non-JSON lines (shouldn't happen with Claude Code)
+                                    print("⚠️ Non-JSON line: \(line)")
                                 }
                             }
                         }
                         
                         // Process any remaining data in the buffer
                         if let lastLine = lineBuffer.flush() {
-                            print("📄 Processing final line: \(lastLine.prefix(100))...")
-                            if !lastLine.trimmingCharacters(in: .whitespaces).isEmpty {
-                                continuation.yield(MessageChunk(
-                                    content: lastLine + "\n",
-                                    isComplete: false,
-                                    isError: false,
-                                    metadata: ["type": "raw"]
-                                ))
+                            print("📄 Processing final line: \(lastLine)")
+                            if let parsedChunk = StreamingJSONParser.parseStreamingLine(lastLine) {
+                                continuation.yield(parsedChunk)
+                            } else if !lastLine.trimmingCharacters(in: .whitespaces).isEmpty {
+                                print("⚠️ Non-JSON final line: \(lastLine)")
                             }
                         }
                     } catch {

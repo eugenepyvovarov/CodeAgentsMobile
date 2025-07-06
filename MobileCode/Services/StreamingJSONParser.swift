@@ -21,23 +21,38 @@ class StreamingJSONParser {
             let response = try JSONDecoder().decode(ClaudeStreamingResponse.self, from: data)
             
             // Convert streaming response to MessageChunk based on type
+            var chunk: MessageChunk?
             switch response.type {
             case "system":
-                return parseSystemMessage(response)
+                chunk = parseSystemMessage(response)
                 
             case "assistant":
-                return parseAssistantMessage(response)
+                chunk = parseAssistantMessage(response)
                 
             case "user":
-                return parseUserMessage(response)
+                chunk = parseUserMessage(response)
                 
             case "result":
-                return parseResultMessage(response)
+                chunk = parseResultMessage(response)
                 
             default:
                 // Unknown message type, ignore
                 return nil
             }
+            
+            // Add original JSON data to metadata
+            if var chunk = chunk {
+                var metadata = chunk.metadata ?? [:]
+                metadata["originalJSON"] = line
+                return MessageChunk(
+                    content: chunk.content,
+                    isComplete: chunk.isComplete,
+                    isError: chunk.isError,
+                    metadata: metadata
+                )
+            }
+            
+            return chunk
             
         } catch {
             // Log parsing error but don't show to user
@@ -52,17 +67,25 @@ class StreamingJSONParser {
     private static func parseSystemMessage(_ response: ClaudeStreamingResponse) -> MessageChunk? {
         guard response.subtype == "init" else { return nil }
         
-        // Initial system message with tool list
-        var content = "🚀 **Claude initialized**\n"
-        if let tools = response.tools, !tools.isEmpty {
-            content += "🛠️ Available tools: \(tools.joined(separator: ", "))\n"
+        // Return raw data for UI to format
+        var metadata: [String: Any] = [
+            "type": "system",
+            "subtype": response.subtype ?? "unknown"
+        ]
+        
+        if let tools = response.tools {
+            metadata["tools"] = tools
+        }
+        
+        if let sessionId = response.sessionId {
+            metadata["sessionId"] = sessionId
         }
         
         return MessageChunk(
-            content: content,
+            content: "", // No pre-formatted content
             isComplete: false,
             isError: false,
-            metadata: ["type": "system", "subtype": "init"]
+            metadata: metadata
         )
     }
     
@@ -70,14 +93,27 @@ class StreamingJSONParser {
         guard let message = response.message,
               let contents = message.content else { return nil }
         
-        var fullContent = ""
+        // Convert content to metadata for structured display
+        var contentBlocks: [[String: Any]] = []
+        
         for content in contents {
             switch content {
             case .text(let text):
-                fullContent += text
+                contentBlocks.append([
+                    "type": "text",
+                    "text": text
+                ])
                 
             case .toolUse(let toolUse):
-                fullContent += formatToolUse(toolUse)
+                var block: [String: Any] = [
+                    "type": "tool_use",
+                    "id": toolUse.id,
+                    "name": toolUse.name
+                ]
+                if let input = toolUse.input {
+                    block["input"] = input
+                }
+                contentBlocks.append(block)
                 
             case .toolResult(_):
                 // Tool results come in user messages, not assistant
@@ -88,13 +124,17 @@ class StreamingJSONParser {
             }
         }
         
-        guard !fullContent.isEmpty else { return nil }
+        guard !contentBlocks.isEmpty else { return nil }
         
         return MessageChunk(
-            content: fullContent,
+            content: "", // No pre-formatted content
             isComplete: false,
             isError: false,
-            metadata: ["type": "assistant", "role": "assistant"]
+            metadata: [
+                "type": "assistant",
+                "role": "assistant",
+                "content": contentBlocks
+            ]
         )
     }
     
@@ -102,55 +142,86 @@ class StreamingJSONParser {
         guard let message = response.message,
               let contents = message.content else { return nil }
         
-        var fullContent = ""
+        // Convert content to metadata for structured display
+        var contentBlocks: [[String: Any]] = []
+        
         for content in contents {
-            if case .toolResult(let toolResult) = content {
-                fullContent += formatToolResult(toolResult)
+            switch content {
+            case .text(let text):
+                contentBlocks.append([
+                    "type": "text",
+                    "text": text
+                ])
+                
+            case .toolResult(let toolResult):
+                var block: [String: Any] = [
+                    "type": "tool_result",
+                    "tool_use_id": toolResult.toolUseId,
+                    "is_error": false  // ToolResult doesn't have isError field
+                ]
+                if let content = toolResult.content {
+                    block["content"] = content
+                }
+                contentBlocks.append(block)
+                
+            case .toolUse(_):
+                // Tool uses come in assistant messages, not user
+                break
+                
+            case .unknown:
+                break
             }
         }
         
-        guard !fullContent.isEmpty else { return nil }
+        guard !contentBlocks.isEmpty else { return nil }
         
         return MessageChunk(
-            content: fullContent,
+            content: "", // No pre-formatted content
             isComplete: false,
             isError: false,
-            metadata: ["type": "user", "role": "user"]
+            metadata: [
+                "type": "user",
+                "role": "user",
+                "content": contentBlocks
+            ]
         )
     }
     
     private static func parseResultMessage(_ response: ClaudeStreamingResponse) -> MessageChunk? {
+        var metadata: [String: Any] = ["type": "result"]
+        
+        if let subtype = response.subtype {
+            metadata["subtype"] = subtype
+        }
+        if let sessionId = response.sessionId {
+            metadata["sessionId"] = sessionId
+        }
+        if let durationMs = response.durationMs {
+            metadata["duration_ms"] = durationMs
+        }
+        // These fields don't exist in ClaudeStreamingResponse
+        // if let durationApiMs = response.durationApiMs {
+        //     metadata["duration_api_ms"] = durationApiMs
+        // }
+        // if let numTurns = response.numTurns {
+        //     metadata["num_turns"] = numTurns
+        // }
+        if let totalCostUsd = response.totalCostUsd {
+            metadata["total_cost_usd"] = totalCostUsd
+        }
+        if let usage = response.usage {
+            // Usage is a generic dictionary, pass it through as-is
+            metadata["usage"] = usage
+        }
+        if let result = response.result {
+            metadata["result"] = result
+        }
+        
         return MessageChunk(
-            content: response.result ?? "",
+            content: "", // No pre-formatted content
             isComplete: true,
             isError: response.isError ?? false,
-            metadata: ["type": "result", "sessionId": response.sessionId ?? ""]
+            metadata: metadata
         )
-    }
-    
-    // MARK: - Formatting Helpers
-    
-    private static func formatToolUse(_ toolUse: ClaudeContent.ToolUse) -> String {
-        var content = "\n🔧 **Using tool:** `\(toolUse.name)`\n"
-        if let input = toolUse.input {
-            content += "📥 Input: `\(String(describing: input))`\n"
-        }
-        return content
-    }
-    
-    private static func formatToolResult(_ toolResult: ClaudeContent.ToolResult) -> String {
-        var content = "\n✅ **Tool result** (ID: `\(toolResult.toolUseId.suffix(8))`)\n"
-        
-        if let resultContent = toolResult.content {
-            let preview = resultContent.prefix(200)
-            if resultContent.count > 200 {
-                content += "📄 \(preview)...\n"
-                content += "   *(Result truncated, \(resultContent.count) chars total)*\n"
-            } else {
-                content += "📄 \(resultContent)\n"
-            }
-        }
-        
-        return content
     }
 }
