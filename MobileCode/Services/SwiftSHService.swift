@@ -35,7 +35,8 @@ class SwiftSHSession: SSHSession {
     
     deinit {
         disconnect()
-        try? group.syncShutdownGracefully()
+        // EventLoopGroup will be cleaned up automatically when deallocated
+        // Calling syncShutdownGracefully() here can cause crashes if called from EventLoop thread
     }
     
     
@@ -137,6 +138,18 @@ class SwiftSHSession: SSHSession {
         // Clean up channels when SwiftNIO SSH is integrated
         childChannel = nil
         channel = nil
+    }
+    
+    /// Explicit cleanup method for graceful shutdown
+    /// Call this when you want to properly shutdown the EventLoopGroup
+    /// This should NOT be called from an EventLoop thread
+    func cleanup() async throws {
+        disconnect()
+        
+        // Only attempt shutdown if we're not on an EventLoop thread
+        if !group.any().inEventLoop {
+            try await group.shutdownGracefully()
+        }
     }
     
     // MARK: - Project Discovery Methods
