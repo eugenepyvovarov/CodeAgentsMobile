@@ -1,6 +1,11 @@
 # MobileCode
 
-An iOS app that provides a mobile IDE experience with Claude Code integration.
+An mobile client to Claude Code for iOS.
+Allows you to run Claude code on any Linux ssh server.
+
+**BETA VERSION AVAILABLE IN TESTFLIGHT**
+
+https://testflight.apple.com/join/eUpweBZV
 
 ## Features
 
@@ -32,6 +37,7 @@ open CodeAgentsMobile.xcodeproj
 ## Architecture
 
 Built with SwiftUI and SwiftData following MVVM pattern.
+Icon - https://tabler.io/icons/icon/brain, edited here https://icon.kitchen
 
 ## License
 
