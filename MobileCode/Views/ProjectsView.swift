@@ -14,7 +14,6 @@ struct ProjectsView: View {
     @State private var viewModel = ProjectsViewModel()
     @State private var showingSettings = false
     @State private var showingAddProject = false
-    @State private var showingDeleteConfirmation = false
     @State private var projectToDelete: RemoteProject?
     @State private var deleteFromServer = false
     @StateObject private var serverManager = ServerManager.shared
@@ -30,8 +29,15 @@ struct ProjectsView: View {
                 if !projects.isEmpty {
                     ForEach(projects) { project in
                         ProjectRow(project: project)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button {
+                                    projectToDelete = project
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                                .tint(.red)
+                            }
                     }
-                    .onDelete(perform: deleteProjects)
                 } else {
                     // Empty state
                     VStack(spacing: 16) {
@@ -91,21 +97,18 @@ struct ProjectsView: View {
             .sheet(isPresented: $showingAddProject) {
                 AddProjectSheet()
             }
-            .sheet(isPresented: $showingDeleteConfirmation) {
+            .sheet(item: $projectToDelete) { project in
                 DeleteProjectConfirmationSheet(
-                    project: projectToDelete,
+                    project: project,
                     deleteFromServer: $deleteFromServer,
                     onDelete: {
-                        if let project = projectToDelete {
-                            Task {
-                                await performDeletion(of: project)
-                            }
+                        Task {
+                            await performDeletion(of: project)
                         }
                     },
                     onCancel: {
                         projectToDelete = nil
                         deleteFromServer = false
-                        showingDeleteConfirmation = false
                     }
                 )
             }
@@ -113,12 +116,6 @@ struct ProjectsView: View {
     }
     
     // MARK: - Delete Methods
-    
-    private func deleteProjects(at offsets: IndexSet) {
-        guard let index = offsets.first else { return }
-        projectToDelete = projects[index]
-        showingDeleteConfirmation = true
-    }
     
     private func performDeletion(of project: RemoteProject) async {
         do {
@@ -134,7 +131,6 @@ struct ProjectsView: View {
             // Clear selection and reset state
             projectToDelete = nil
             deleteFromServer = false
-            showingDeleteConfirmation = false
             
         } catch {
             // Failed to delete project
@@ -380,7 +376,7 @@ struct AddProjectSheet: View {
 
 
 struct DeleteProjectConfirmationSheet: View {
-    let project: RemoteProject?
+    let project: RemoteProject
     @Binding var deleteFromServer: Bool
     let onDelete: () -> Void
     let onCancel: () -> Void
@@ -388,11 +384,23 @@ struct DeleteProjectConfirmationSheet: View {
     
     var body: some View {
         NavigationStack {
-            if let project = project {
-                Form {
-                    Section {
-                        Text("Are you sure you want to delete '\(project.name)'?")
-                            .font(.body)
+            Form {
+                Section {
+                    Text("Are you sure you want to delete '\(project.name)'?")
+                        .font(.body)
+                    
+                    Toggle("Also delete from server", isOn: $deleteFromServer)
+                        .tint(.red)
+                    
+                    if deleteFromServer {
+                        Label {
+                            Text("The project folder and all its contents will be permanently deleted from the server.")
+                        } icon: {
+                            Image(systemName: "server.rack")
+                                .foregroundColor(.red)
+                        }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                         
                         Label {
                             Text("This action cannot be undone.")
@@ -402,66 +410,38 @@ struct DeleteProjectConfirmationSheet: View {
                         }
                         .font(.footnote)
                         .foregroundColor(.secondary)
-                    }
-                    
-                    Section {
-                        Toggle("Also delete from server", isOn: $deleteFromServer)
-                            .tint(.red)
-                        
-                        if deleteFromServer {
-                            Label {
-                                Text("The project folder and all its contents will be permanently deleted from the server.")
-                            } icon: {
-                                Image(systemName: "server.rack")
-                                    .foregroundColor(.red)
-                            }
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        } else {
-                            Label {
-                                Text("The project will only be removed from this app. Files on the server will remain intact.")
-                            } icon: {
-                                Image(systemName: "iphone")
-                                    .foregroundColor(.blue)
-                            }
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    } else {
+                        Label {
+                            Text("The project will only be removed from this app. Files on the server will remain intact.")
+                        } icon: {
+                            Image(systemName: "iphone")
+                                .foregroundColor(.blue)
                         }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     }
                 }
-                .navigationTitle("Delete Project")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") {
-                            onCancel()
-                            dismiss()
-                        }
-                    }
-                    
-                    ToolbarItem(placement: .destructiveAction) {
-                        Button("Delete", role: .destructive) {
-                            dismiss()
-                            onDelete()
-                        }
-                        .foregroundColor(.red)
+            }
+            .navigationTitle("Delete Project")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel()
+                        dismiss()
                     }
                 }
-            } else {
-                Text("No project selected")
-                    .navigationTitle("Delete Project")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") {
-                                onCancel()
-                                dismiss()
-                            }
-                        }
+                
+                ToolbarItem(placement: .destructiveAction) {
+                    Button("Delete", role: .destructive) {
+                        dismiss()
+                        onDelete()
                     }
+                    .foregroundColor(.red)
+                }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.height(300)])
     }
 }
 
