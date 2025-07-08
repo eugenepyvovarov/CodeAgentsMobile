@@ -60,6 +60,15 @@ struct SettingsView: View {
                     }
                     
                     Link("GitHub Repository", destination: URL(string: "https://github.com/eugenepyvovarov/CodeAgentsMobile")!)
+                    
+                    Link(destination: URL(string: "https://x.com/selfhosted_ai")!) {
+                        HStack {
+                            Text("Follow Author on X")
+                            Spacer()
+                            Image(systemName: "arrow.up.right.square")
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
             .navigationTitle("Settings")
