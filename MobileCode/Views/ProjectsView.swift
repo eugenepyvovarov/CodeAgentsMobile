@@ -14,8 +14,12 @@ struct ProjectsView: View {
     @State private var viewModel = ProjectsViewModel()
     @State private var showingSettings = false
     @State private var showingAddProject = false
+    @State private var showingDeleteConfirmation = false
+    @State private var projectToDelete: RemoteProject?
+    @State private var deleteFromServer = false
     @StateObject private var serverManager = ServerManager.shared
     @StateObject private var projectContext = ProjectContext.shared
+    @Environment(\.modelContext) private var modelContext
     
     @Query(sort: \RemoteProject.lastModified, order: .reverse) 
     private var projects: [RemoteProject]
@@ -27,6 +31,7 @@ struct ProjectsView: View {
                     ForEach(projects) { project in
                         ProjectRow(project: project)
                     }
+                    .onDelete(perform: deleteProjects)
                 } else {
                     // Empty state
                     VStack(spacing: 16) {
@@ -86,6 +91,54 @@ struct ProjectsView: View {
             .sheet(isPresented: $showingAddProject) {
                 AddProjectSheet()
             }
+            .sheet(isPresented: $showingDeleteConfirmation) {
+                DeleteProjectConfirmationSheet(
+                    project: projectToDelete,
+                    deleteFromServer: $deleteFromServer,
+                    onDelete: {
+                        if let project = projectToDelete {
+                            Task {
+                                await performDeletion(of: project)
+                            }
+                        }
+                    },
+                    onCancel: {
+                        projectToDelete = nil
+                        deleteFromServer = false
+                        showingDeleteConfirmation = false
+                    }
+                )
+            }
+        }
+    }
+    
+    // MARK: - Delete Methods
+    
+    private func deleteProjects(at offsets: IndexSet) {
+        guard let index = offsets.first else { return }
+        projectToDelete = projects[index]
+        showingDeleteConfirmation = true
+    }
+    
+    private func performDeletion(of project: RemoteProject) async {
+        do {
+            // If deleteFromServer is true, delete from server first
+            if deleteFromServer {
+                try await ServiceManager.shared.projectService.deleteProject(project)
+            }
+            
+            // Delete locally
+            modelContext.delete(project)
+            try modelContext.save()
+            
+            // Clear selection and reset state
+            projectToDelete = nil
+            deleteFromServer = false
+            showingDeleteConfirmation = false
+            
+        } catch {
+            // Failed to delete project
+            // TODO: Show error alert
         }
     }
 }
@@ -322,6 +375,93 @@ struct AddProjectSheet: View {
             SSHLogger.log("Failed to detect project path: \(error)", level: .warning)
             detectedPath = "/root/projects" // Explicitly set the fallback
         }
+    }
+}
+
+
+struct DeleteProjectConfirmationSheet: View {
+    let project: RemoteProject?
+    @Binding var deleteFromServer: Bool
+    let onDelete: () -> Void
+    let onCancel: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            if let project = project {
+                Form {
+                    Section {
+                        Text("Are you sure you want to delete '\(project.name)'?")
+                            .font(.body)
+                        
+                        Label {
+                            Text("This action cannot be undone.")
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                        }
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    }
+                    
+                    Section {
+                        Toggle("Also delete from server", isOn: $deleteFromServer)
+                            .tint(.red)
+                        
+                        if deleteFromServer {
+                            Label {
+                                Text("The project folder and all its contents will be permanently deleted from the server.")
+                            } icon: {
+                                Image(systemName: "server.rack")
+                                    .foregroundColor(.red)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        } else {
+                            Label {
+                                Text("The project will only be removed from this app. Files on the server will remain intact.")
+                            } icon: {
+                                Image(systemName: "iphone")
+                                    .foregroundColor(.blue)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .navigationTitle("Delete Project")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            onCancel()
+                            dismiss()
+                        }
+                    }
+                    
+                    ToolbarItem(placement: .destructiveAction) {
+                        Button("Delete", role: .destructive) {
+                            dismiss()
+                            onDelete()
+                        }
+                        .foregroundColor(.red)
+                    }
+                }
+            } else {
+                Text("No project selected")
+                    .navigationTitle("Delete Project")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                onCancel()
+                                dismiss()
+                            }
+                        }
+                    }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

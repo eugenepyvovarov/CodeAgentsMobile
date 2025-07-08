@@ -16,10 +16,9 @@ final class Server {
     var port: Int = 22
     var username: String
     var authMethodType: String = "password" // "password" or "key"
-    // TODO: Add password storage using Keychain Services
-    // TODO: Add SSH private key storage using Keychain Services
-    // TODO: Consider converting authMethodType to enum for type safety
+    var sshKeyId: UUID? // Reference to SSHKey when authMethodType is "key"
     // Password is stored securely in Keychain Services
+    // SSH private keys are stored separately in SSHKey model
     var createdAt: Date = Date()
     var lastConnected: Date?
     

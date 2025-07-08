@@ -187,8 +187,35 @@ class SwiftSHSession: SSHSession {
     
     /// Establish SSH connection to the server
     private func establishConnection() async throws {
-        // Retrieve password from keychain
-        let password = (try? server.retrieveCredentials()) ?? ""
+        // Create the appropriate authentication delegate based on auth method
+        let authDelegate: NIOSSHClientUserAuthenticationDelegate
+        
+        if server.authMethodType == "key", let sshKeyId = server.sshKeyId {
+            // Use SSH key authentication
+            SSHLogger.log("Using SSH key authentication for \(server.name)", level: .info)
+            
+            // Create a passphrase provider that could prompt the user if needed
+            // For now, we'll use stored passphrase or nil
+            authDelegate = PrivateKeyAuthenticationDelegate(
+                username: server.username,
+                keyId: sshKeyId
+            ) { [weak self] in
+                // In the future, this could prompt the user for passphrase
+                // For now, return nil to use stored passphrase only
+                return nil
+            }
+        } else {
+            // Use password authentication
+            SSHLogger.log("Using password authentication for \(server.name)", level: .info)
+            
+            // Retrieve password from keychain
+            let password = (try? server.retrieveCredentials()) ?? ""
+            
+            authDelegate = PasswordAuthenticationDelegate(
+                username: server.username,
+                password: password
+            )
+        }
         
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
@@ -197,10 +224,7 @@ class SwiftSHSession: SSHSession {
                 channel.pipeline.addHandlers([
                     NIOSSHHandler(
                         role: .client(.init(
-                            userAuthDelegate: PasswordAuthenticationDelegate(
-                                username: self.server.username,
-                                password: password
-                            ),
+                            userAuthDelegate: authDelegate,
                             serverAuthDelegate: AcceptAllHostKeysDelegate()
                         )),
                         allocator: channel.allocator,

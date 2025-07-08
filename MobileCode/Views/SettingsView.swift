@@ -51,6 +51,12 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section("Security") {
+                    NavigationLink(destination: SSHKeyListView()) {
+                        Label("SSH Keys", systemImage: "key.horizontal")
+                    }
+                }
+                
                 Section("About") {
                     HStack {
                         Text("Version")
@@ -98,9 +104,9 @@ struct SettingsView: View {
     private func loadAPIKey() {
         do {
             apiKey = try KeychainManager.shared.retrieveAPIKey()
-            print("✅ Loaded API key from keychain")
+            // Loaded API key from keychain
         } catch {
-            print("ℹ️ No API key found in keychain: \(error)")
+            // No API key found in keychain
             apiKey = ""
         }
     }
@@ -108,11 +114,20 @@ struct SettingsView: View {
 
 struct ServerRow: View {
     let server: Server
+    @State private var showingEditSheet = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(server.name)
-                .font(.headline)
+            HStack {
+                Text(server.name)
+                    .font(.headline)
+                Spacer()
+                if server.authMethodType == "key" {
+                    Image(systemName: "key.horizontal.fill")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
             
             Text("\(server.username)@\(server.host):\(server.port)")
                 .font(.caption)
@@ -120,6 +135,13 @@ struct ServerRow: View {
                 .fontDesign(.monospaced)
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            showingEditSheet = true
+        }
+        .sheet(isPresented: $showingEditSheet) {
+            EditServerSheet(server: server)
+        }
     }
 }
 
@@ -171,10 +193,10 @@ struct APIKeyEntrySheet: View {
             // Save to keychain
             try KeychainManager.shared.storeAPIKey(tempKey)
             apiKey = tempKey
-            print("✅ API Key saved to keychain")
+            // API Key saved to keychain
             dismiss()
         } catch {
-            print("❌ Failed to save API key: \(error)")
+            // Failed to save API key
         }
     }
 }

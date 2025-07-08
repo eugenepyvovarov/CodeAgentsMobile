@@ -1,25 +1,27 @@
 //
-//  AddServerSheet.swift
+//  EditServerSheet.swift
 //  CodeAgentsMobile
 //
-//  Created by Claude on 2025-07-08.
-//
-//  Purpose: Reusable sheet for adding new servers
+//  Purpose: Sheet for editing existing server configurations
+//  - Allows changing authentication method between password and SSH key
+//  - Updates server connection details
 //
 
 import SwiftUI
 import SwiftData
 
-struct AddServerSheet: View {
+struct EditServerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SSHKey.name) private var sshKeys: [SSHKey]
     
-    @State private var serverName = ""
-    @State private var host = ""
-    @State private var port = "22"
-    @State private var username = ""
-    @State private var authMethod: AuthMethod = .password
+    let server: Server
+    
+    @State private var serverName: String
+    @State private var host: String
+    @State private var port: String
+    @State private var username: String
+    @State private var authMethod: AuthMethod
     @State private var password = ""
     @State private var selectedKeyId: UUID?
     @State private var isTestingConnection = false
@@ -27,22 +29,41 @@ struct AddServerSheet: View {
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var showingImportKey = false
+    @State private var hasPasswordChanged = false
     
     enum AuthMethod: String, CaseIterable {
         case password = "Password"
         case key = "SSH Key"
     }
     
-    // Completion handler for when a server is successfully added
-    var onServerAdded: ((Server) -> Void)?
+    init(server: Server) {
+        self.server = server
+        self._serverName = State(initialValue: server.name)
+        self._host = State(initialValue: server.host)
+        self._port = State(initialValue: String(server.port))
+        self._username = State(initialValue: server.username)
+        self._authMethod = State(initialValue: server.authMethodType == "key" ? .key : .password)
+        self._selectedKeyId = State(initialValue: server.sshKeyId)
+    }
     
     var isAuthValid: Bool {
         switch authMethod {
         case .password:
-            return !password.isEmpty
+            // For existing servers, password is valid if unchanged or if new password is provided
+            return !hasPasswordChanged || !password.isEmpty
         case .key:
             return selectedKeyId != nil
         }
+    }
+    
+    var hasChanges: Bool {
+        serverName != server.name ||
+        host != server.host ||
+        port != String(server.port) ||
+        username != server.username ||
+        (authMethod == .password ? "password" : "key") != server.authMethodType ||
+        selectedKeyId != server.sshKeyId ||
+        hasPasswordChanged
     }
     
     var body: some View {
@@ -70,6 +91,14 @@ struct AddServerSheet: View {
                     
                     if authMethod == .password {
                         SecureField("Password", text: $password)
+                            .onChange(of: password) { _, _ in
+                                hasPasswordChanged = true
+                            }
+                        if !hasPasswordChanged {
+                            Text("Leave empty to keep current password")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     } else {
                         if sshKeys.isEmpty {
                             VStack(spacing: 12) {
@@ -127,7 +156,7 @@ struct AddServerSheet: View {
                     }
                 }
             }
-            .navigationTitle("Add Server")
+            .navigationTitle("Edit Server")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -138,9 +167,9 @@ struct AddServerSheet: View {
                 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        saveServer()
+                        saveChanges()
                     }
-                    .disabled(serverName.isEmpty || host.isEmpty || username.isEmpty || !isAuthValid)
+                    .disabled(!hasChanges || serverName.isEmpty || host.isEmpty || username.isEmpty || !isAuthValid)
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -159,7 +188,7 @@ struct AddServerSheet: View {
         testResult = nil
         
         Task {
-            // Create temporary server for testing
+            // Create temporary server for testing with new values
             let testServer = Server(
                 name: "Test",
                 host: host,
@@ -172,18 +201,23 @@ struct AddServerSheet: View {
             do {
                 // Store credentials temporarily if using password
                 if authMethod == .password {
-                    try KeychainManager.shared.storePassword(password, for: testServer.id)
+                    if hasPasswordChanged && !password.isEmpty {
+                        // Use new password for test
+                        try KeychainManager.shared.storePassword(password, for: testServer.id)
+                    } else if !hasPasswordChanged {
+                        // Use existing password for test
+                        if let existingPassword = try? server.retrieveCredentials() {
+                            try KeychainManager.shared.storePassword(existingPassword, for: testServer.id)
+                        }
+                    }
                 }
                 
                 // Test connection
-                // Testing SSH connection
                 let sshService = ServiceManager.shared.sshService
                 let session = try await sshService.connect(to: testServer)
                 
                 // Try to execute a simple command to verify connection
-                let testCommand = "echo 'Connection test successful'"
-                _ = try await session.execute(testCommand)
-                // Test command succeeded
+                let result = try await session.execute("echo 'Connection test successful'")
                 
                 // If successful, disconnect and clean up
                 session.disconnect()
@@ -196,35 +230,8 @@ struct AddServerSheet: View {
                     isTestingConnection = false
                 }
             } catch {
-                // Test connection failed
-                
-                // Provide more specific error messages
-                let errorMessage: String
-                if let sshError = error as? SSHError {
-                    switch sshError {
-                    case .connectionFailed(let reason):
-                        errorMessage = "Connection failed: \(reason)"
-                    case .authenticationFailed:
-                        errorMessage = "Authentication failed. Check username/password"
-                    case .notConnected:
-                        errorMessage = "Could not establish connection"
-                    case .commandFailed(let reason):
-                        errorMessage = "Command failed: \(reason)"
-                    case .fileTransferFailed(let reason):
-                        errorMessage = "File transfer failed: \(reason)"
-                    }
-                } else if error.localizedDescription.contains("Network is unreachable") {
-                    errorMessage = "Network unreachable. Check host/port"
-                } else if error.localizedDescription.contains("Connection refused") {
-                    errorMessage = "Connection refused. SSH service may not be running"
-                } else if error.localizedDescription.contains("Operation timed out") {
-                    errorMessage = "Connection timed out. Check host/port"
-                } else {
-                    errorMessage = error.localizedDescription
-                }
-                
                 await MainActor.run {
-                    testResult = "Failed: \(errorMessage)"
+                    testResult = "Failed: \(error.localizedDescription)"
                     isTestingConnection = false
                 }
                 
@@ -236,37 +243,46 @@ struct AddServerSheet: View {
         }
     }
     
-    private func saveServer() {
-        let server = Server(
-            name: serverName,
-            host: host,
-            port: Int(port) ?? 22,
-            username: username,
-            authMethodType: authMethod == .password ? "password" : "key"
-        )
-        server.sshKeyId = selectedKeyId
+    private func saveChanges() {
+        // Update server properties
+        server.name = serverName
+        server.host = host
+        server.port = Int(port) ?? 22
+        server.username = username
+        server.authMethodType = authMethod == .password ? "password" : "key"
+        server.sshKeyId = authMethod == .key ? selectedKeyId : nil
         
-        // Save server to database
-        modelContext.insert(server)
-        
-        // Store credentials in keychain if using password
-        do {
-            if authMethod == .password {
+        // Update password if changed
+        if authMethod == .password && hasPasswordChanged && !password.isEmpty {
+            do {
                 try KeychainManager.shared.storePassword(password, for: server.id)
+            } catch {
+                errorMessage = "Failed to update password: \(error.localizedDescription)"
+                showError = true
+                return
             }
-            
-            // Call completion handler if provided
-            onServerAdded?(server)
-            
+        }
+        
+        // If switching from password to key, we keep the password in keychain
+        // in case user switches back
+        
+        do {
+            try modelContext.save()
             dismiss()
         } catch {
-            errorMessage = "Failed to store credentials: \(error.localizedDescription)"
+            errorMessage = "Failed to save changes: \(error.localizedDescription)"
             showError = true
         }
     }
 }
 
 #Preview {
-    AddServerSheet()
-        .modelContainer(for: [Server.self], inMemory: true)
+    EditServerSheet(server: Server(
+        name: "Test Server",
+        host: "example.com",
+        port: 22,
+        username: "user",
+        authMethodType: "password"
+    ))
+    .modelContainer(for: [Server.self, SSHKey.self], inMemory: true)
 }

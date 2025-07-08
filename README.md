@@ -1,4 +1,4 @@
-# MobileCode
+# CodeAgents Mobile
 
 An mobile client to Claude Code for iOS.
 Allows you to run Claude code on any Linux ssh server.

@@ -96,22 +96,89 @@ class KeychainManager {
         return apiKey
     }
     
+    // MARK: - SSH Key Methods
+    
+    /// Store an SSH private key
+    /// - Parameters:
+    ///   - privateKey: The private key data
+    ///   - keyId: Unique identifier for the SSH key
+    func storeSSHKey(_ privateKey: Data, for keyId: UUID) throws {
+        let key = sshKeyKey(for: keyId)
+        try store(data: privateKey, for: key, syncToiCloud: true)
+    }
+    
+    /// Retrieve an SSH private key
+    /// - Parameter keyId: SSH key identifier
+    /// - Returns: The stored private key data
+    func retrieveSSHKey(for keyId: UUID) throws -> Data {
+        let key = sshKeyKey(for: keyId)
+        return try retrieve(for: key, syncToiCloud: true)
+    }
+    
+    /// Delete SSH key
+    /// - Parameter keyId: SSH key identifier
+    func deleteSSHKey(for keyId: UUID) throws {
+        let key = sshKeyKey(for: keyId)
+        try delete(for: key, syncToiCloud: true)
+        
+        // Also delete associated passphrase if exists
+        let passphraseKey = sshKeyPassphraseKey(for: keyId)
+        try? delete(for: passphraseKey, syncToiCloud: true)
+    }
+    
+    /// Store passphrase for an SSH key
+    /// - Parameters:
+    ///   - passphrase: The passphrase to store
+    ///   - keyId: SSH key identifier
+    func storeSSHKeyPassphrase(_ passphrase: String, for keyId: UUID) throws {
+        let key = sshKeyPassphraseKey(for: keyId)
+        let data = passphrase.data(using: .utf8)!
+        try store(data: data, for: key, syncToiCloud: true)
+    }
+    
+    /// Retrieve passphrase for an SSH key
+    /// - Parameter keyId: SSH key identifier
+    /// - Returns: The stored passphrase, or nil if not stored
+    func retrieveSSHKeyPassphrase(for keyId: UUID) -> String? {
+        let key = sshKeyPassphraseKey(for: keyId)
+        
+        do {
+            let data = try retrieve(for: key, syncToiCloud: true)
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+    
     // MARK: - Private Methods
     
     private func passwordKey(for serverId: UUID) -> String {
         return "password_\(serverId.uuidString)"
     }
     
+    private func sshKeyKey(for keyId: UUID) -> String {
+        return "sshkey_\(keyId.uuidString)"
+    }
+    
+    private func sshKeyPassphraseKey(for keyId: UUID) -> String {
+        return "sshkey_passphrase_\(keyId.uuidString)"
+    }
+    
     
     /// Store data in keychain
-    private func store(data: Data, for key: String) throws {
-        let query: [String: Any] = [
+    private func store(data: Data, for key: String, syncToiCloud: Bool = false) throws {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrAccessible as String: syncToiCloud ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
+        
+        // Enable iCloud sync if requested
+        if syncToiCloud {
+            query[kSecAttrSynchronizable as String] = true
+        }
         
         // Try to delete existing item first
         SecItemDelete(query as CFDictionary)
@@ -125,14 +192,19 @@ class KeychainManager {
     }
     
     /// Retrieve data from keychain
-    private func retrieve(for key: String) throws -> Data {
-        let query: [String: Any] = [
+    private func retrieve(for key: String, syncToiCloud: Bool = false) throws -> Data {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
+        
+        // Enable iCloud sync if requested
+        if syncToiCloud {
+            query[kSecAttrSynchronizable as String] = true
+        }
         
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -152,12 +224,17 @@ class KeychainManager {
     }
     
     /// Delete item from keychain
-    private func delete(for key: String) throws {
-        let query: [String: Any] = [
+    private func delete(for key: String, syncToiCloud: Bool = false) throws {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: key
         ]
+        
+        // Enable iCloud sync if requested
+        if syncToiCloud {
+            query[kSecAttrSynchronizable as String] = true
+        }
         
         let status = SecItemDelete(query as CFDictionary)
         

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 877CE6C72DF8902900B93778 /* NIOSSH */; };
+		87AD5F8C2E1D6B750035A296 /* SwiftASN1 in Frameworks */ = {isa = PBXBuildFile; productRef = 87AD5F8B2E1D6B750035A296 /* SwiftASN1 */; };
 		87CEB3292E156C1F00AC3F71 /* LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 87CEB3282E156C1F00AC3F71 /* LICENSE.txt */; };
 /* End PBXBuildFile section */
 
@@ -59,6 +60,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */,
+				87AD5F8C2E1D6B750035A296 /* SwiftASN1 in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,6 +123,7 @@
 			name = CodeAgentsMobile;
 			packageProductDependencies = (
 				877CE6C72DF8902900B93778 /* NIOSSH */,
+				87AD5F8B2E1D6B750035A296 /* SwiftASN1 */,
 			);
 			productName = CodeAgentsMobile;
 			productReference = 877CE6662DF8632600B93778 /* CodeAgentsMobile.app */;
@@ -206,6 +209,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
+				87AD5E842E1D349A0035A296 /* XCRemoteSwiftPackageReference "OpenSSL-Package" */,
+				87AD5F8A2E1D69DF0035A296 /* XCRemoteSwiftPackageReference "swift-asn1" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 877CE6672DF8632600B93778 /* Products */;
@@ -601,6 +606,22 @@
 				minimumVersion = 0.10.0;
 			};
 		};
+		87AD5E842E1D349A0035A296 /* XCRemoteSwiftPackageReference "OpenSSL-Package" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/krzyzanowskim/OpenSSL-Package.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.3.3001;
+			};
+		};
+		87AD5F8A2E1D69DF0035A296 /* XCRemoteSwiftPackageReference "swift-asn1" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-asn1.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.4.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -608,6 +629,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
 			productName = NIOSSH;
+		};
+		87AD5F8B2E1D6B750035A296 /* SwiftASN1 */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 87AD5F8A2E1D69DF0035A296 /* XCRemoteSwiftPackageReference "swift-asn1" */;
+			productName = SwiftASN1;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

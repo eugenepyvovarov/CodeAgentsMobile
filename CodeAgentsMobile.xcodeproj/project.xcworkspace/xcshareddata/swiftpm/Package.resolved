@@ -1,6 +1,15 @@
 {
-  "originHash" : "718e74679dc66d430cd4ebfd867d48d8f68dccad4333e0520c546427f9fee129",
+  "originHash" : "ab085205ddefc6c78c3fd5abfb44539c8092bda18ce5205ecfb0f4a65431d4d3",
   "pins" : [
+    {
+      "identity" : "openssl-package",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/krzyzanowskim/OpenSSL-Package.git",
+      "state" : {
+        "revision" : "71dbe0b4514cdaad95961470db72e8231f5943a6",
+        "version" : "3.3.3001"
+      }
+    },
     {
       "identity" : "swift-asn1",
       "kind" : "remoteSourceControl",
