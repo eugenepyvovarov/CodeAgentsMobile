@@ -23,11 +23,16 @@ final class Server {
     var createdAt: Date = Date()
     var lastConnected: Date?
     
+    /// Default directory path for projects on this server
+    /// nil means it hasn't been detected yet (will use ~/projects when detected)
+    var defaultProjectsPath: String?
+    
     init(name: String, host: String, port: Int = 22, username: String, authMethodType: String = "password") {
         self.name = name
         self.host = host
         self.port = port
         self.username = username
         self.authMethodType = authMethodType
+        self.defaultProjectsPath = nil // Will be auto-detected on first use
     }
 }

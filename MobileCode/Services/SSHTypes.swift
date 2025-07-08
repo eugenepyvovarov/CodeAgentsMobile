@@ -76,9 +76,6 @@ protocol SSHSession {
     /// List files in a directory
     func listDirectory(_ path: String) async throws -> [RemoteFile]
     
-    /// Discover projects on the server
-    func discoverProjects() async throws -> [RemoteProject]
-    
     /// Close the session
     func disconnect()
 }

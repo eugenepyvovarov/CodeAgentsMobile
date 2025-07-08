@@ -152,71 +152,38 @@ class SwiftSHSession: SSHSession {
         }
     }
     
-    // MARK: - Project Discovery Methods
+    // MARK: - Home Directory Detection
     
-    /// Ensure projects directory exists and discover all projects
-    func discoverProjects() async throws -> [RemoteProject] {
+    /// Detect the user's home directory on the remote server
+    func detectHomeDirectory() async throws -> String {
         guard isConnected else {
             throw SSHError.connectionFailed("Not connected")
         }
         
-        // Check if /root/projects exists, create if not
-        let projectsDir = "/root/projects"
-        let checkDirCommand = "[ -d '\(projectsDir)' ] && echo 'exists' || echo 'missing'"
-        let dirStatus = try await execute(checkDirCommand)
+        let output = try await execute("echo $HOME")
+        let homeDir = output.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        if dirStatus.trimmingCharacters(in: .whitespacesAndNewlines) == "missing" {
-            SSHLogger.log("Creating /root/projects directory...", level: .info)
-            let createDirCommand = "mkdir -p '\(projectsDir)'"
-            _ = try await execute(createDirCommand)
+        // Validate the output looks like a proper path
+        guard !homeDir.isEmpty && homeDir.hasPrefix("/") else {
+            SSHLogger.log("Invalid home directory detected: '\(homeDir)', falling back to /root", level: .warning)
+            return "/root"
         }
         
-        // List all directories in /root/projects
-        let listCommand = "find '\(projectsDir)' -maxdepth 1 -type d -not -path '\(projectsDir)' 2>/dev/null || echo ''"
-        let output = try await execute(listCommand)
-        
-        var projects: [RemoteProject] = []
-        let projectPaths = output.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { line in
-                // Filter out empty lines and SSH warning messages
-                !line.isEmpty &&
-                !line.lowercased().contains("password") &&
-                !line.lowercased().contains("warning") &&
-                !line.contains("TTY") &&
-                !line.contains("expired") &&
-                line.hasPrefix("/") // Only keep actual file paths
-            }
-        
-        for projectPath in projectPaths {
-            let projectName = URL(fileURLWithPath: projectPath).lastPathComponent
-            // Skip if project name looks like an error message
-            guard !projectName.contains("change required") else { continue }
-            
-            let project = try await analyzeProject(path: projectPath, name: projectName)
-            projects.append(project)
-        }
-        
-        return projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return homeDir
     }
     
-    /// Analyze a project directory to determine its metadata
-    private func analyzeProject(path: String, name: String) async throws -> RemoteProject {
-        // Check for Git repository
-        // Check for Git repository (for future use)
-        let gitCommand = "[ -d '\(path)/.git' ] && echo 'git' || echo ''"
-        let gitResult = try await execute(gitCommand)
-        // let hasGit = !gitResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// Ensure the server has a default projects path configured
+    func ensureDefaultProjectsPath() async throws {
+        // Skip if already configured
+        guard server.defaultProjectsPath == nil else { return }
         
-        let project = RemoteProject(
-            name: name,
-            serverId: server.id
-        )
-        project.path = path
-        return project
+        let homeDir = try await detectHomeDirectory()
+        server.defaultProjectsPath = "\(homeDir)/projects"
+        
+        SSHLogger.log("Set default projects path to: \(server.defaultProjectsPath ?? "unknown")", level: .info)
     }
     
-    // MARK: - Real SSH Implementation (Placeholder)
+    // MARK: - Real SSH Implementation
     
     /// Establish SSH connection to the server
     private func establishConnection() async throws {

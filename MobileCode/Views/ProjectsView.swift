@@ -160,6 +160,8 @@ struct AddProjectSheet: View {
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var showingAddServer = false
+    @State private var isDetectingPath = false
+    @State private var detectedPath: String?
     
     var body: some View {
         NavigationStack {
@@ -173,6 +175,10 @@ struct AddProjectSheet: View {
                         ForEach(servers) { server in
                             Button(server.name) {
                                 selectedServer = server
+                                detectedPath = nil // Reset detected path when changing servers
+                                Task {
+                                    await detectProjectPath(for: server)
+                                }
                             }
                         }
                         
@@ -187,10 +193,16 @@ struct AddProjectSheet: View {
                         HStack {
                             Text("Server")
                             Spacer()
-                            Text(selectedServer?.name ?? "Select a server")
-                                .foregroundColor(selectedServer == nil ? .secondary : .primary)
+                            if isDetectingPath {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else {
+                                Text(selectedServer?.name ?? "Select a server")
+                                    .foregroundColor(selectedServer == nil ? .secondary : .primary)
+                            }
                         }
                     }
+                    .disabled(isDetectingPath)
                 }
                 
                 if let server = selectedServer {
@@ -198,9 +210,15 @@ struct AddProjectSheet: View {
                         HStack {
                             Text("Path:")
                                 .foregroundColor(.secondary)
-                            Text("/root/projects/\(projectName.isEmpty ? "[name]" : projectName)")
-                                .fontDesign(.monospaced)
-                                .font(.caption)
+                            if isDetectingPath {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                            } else {
+                                let basePath = detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
+                                Text("\(basePath)/\(projectName.isEmpty ? "[name]" : projectName)")
+                                    .fontDesign(.monospaced)
+                                    .font(.caption)
+                            }
                         }
                         
                         HStack {
@@ -241,6 +259,10 @@ struct AddProjectSheet: View {
                 AddServerSheet { newServer in
                     // When a new server is added, automatically select it
                     selectedServer = newServer
+                    detectedPath = nil // Reset detected path
+                    Task {
+                        await detectProjectPath(for: newServer)
+                    }
                 }
             }
         }
@@ -258,7 +280,8 @@ struct AddProjectSheet: View {
             try await projectService.createProject(name: projectName, on: server)
             
             // Create and save the project locally
-            let project = RemoteProject(name: projectName, serverId: server.id)
+            let basePath = detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
+            let project = RemoteProject(name: projectName, serverId: server.id, basePath: basePath)
             modelContext.insert(project)
             
             try modelContext.save()
@@ -267,6 +290,37 @@ struct AddProjectSheet: View {
         } catch {
             errorMessage = error.localizedDescription
             showError = true
+        }
+    }
+    
+    private func detectProjectPath(for server: Server) async {
+        // If already detected, just use the cached value
+        if let existingPath = server.defaultProjectsPath {
+            detectedPath = existingPath
+            return
+        }
+        
+        isDetectingPath = true
+        defer { isDetectingPath = false }
+        
+        do {
+            // Connect to the server and detect home directory
+            let sshService = ServiceManager.shared.sshService
+            let session = try await sshService.connect(to: server)
+            
+            if let swiftSHSession = session as? SwiftSHSession {
+                try await swiftSHSession.ensureDefaultProjectsPath()
+                
+                // Update our local state immediately
+                detectedPath = server.defaultProjectsPath
+                
+                // Save the updated server
+                try modelContext.save()
+            }
+        } catch {
+            // If detection fails, we'll just use the default
+            SSHLogger.log("Failed to detect project path: \(error)", level: .warning)
+            detectedPath = "/root/projects" // Explicitly set the fallback
         }
     }
 }

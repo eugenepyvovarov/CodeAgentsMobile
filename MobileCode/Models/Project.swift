@@ -30,10 +30,10 @@ final class RemoteProject {
     
     var hasActiveFileOperation: Bool = false
     
-    init(name: String, serverId: UUID) {
+    init(name: String, serverId: UUID, basePath: String = "/root/projects") {
         self.id = UUID()
         self.name = name
-        self.path = "/root/projects/\(name)"
+        self.path = "\(basePath)/\(name)"
         self.serverId = serverId
         self.lastModified = Date()
         self.createdAt = Date()
