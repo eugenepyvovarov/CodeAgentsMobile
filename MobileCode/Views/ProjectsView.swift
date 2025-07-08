@@ -159,6 +159,7 @@ struct AddProjectSheet: View {
     @State private var isCreating = false
     @State private var errorMessage: String?
     @State private var showError = false
+    @State private var showingAddServer = false
     
     var body: some View {
         NavigationStack {
@@ -168,10 +169,26 @@ struct AddProjectSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     
-                    Picker("Server", selection: $selectedServer) {
-                        Text("Select a server").tag(nil as Server?)
+                    Menu {
                         ForEach(servers) { server in
-                            Text(server.name).tag(server as Server?)
+                            Button(server.name) {
+                                selectedServer = server
+                            }
+                        }
+                        
+                        Divider()
+                        
+                        Button {
+                            showingAddServer = true
+                        } label: {
+                            Label("Add New Server", systemImage: "plus.circle")
+                        }
+                    } label: {
+                        HStack {
+                            Text("Server")
+                            Spacer()
+                            Text(selectedServer?.name ?? "Select a server")
+                                .foregroundColor(selectedServer == nil ? .secondary : .primary)
                         }
                     }
                 }
@@ -220,6 +237,12 @@ struct AddProjectSheet: View {
                 Text(errorMessage ?? "An error occurred")
             }
             .interactiveDismissDisabled(isCreating)
+            .sheet(isPresented: $showingAddServer) {
+                AddServerSheet { newServer in
+                    // When a new server is added, automatically select it
+                    selectedServer = newServer
+                }
+            }
         }
     }
     
