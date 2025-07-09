@@ -13,8 +13,10 @@ import SwiftData
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var servers: [Server]
+    @Query(sort: \SSHKey.createdAt, order: .reverse) private var sshKeys: [SSHKey]
     @State private var showingAddServer = false
     @State private var showingAPIKeyEntry = false
+    @State private var showingImportSSHKey = false
     @State private var apiKey = ""
     
     var body: some View {
@@ -51,9 +53,16 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section("Security") {
-                    NavigationLink(destination: SSHKeyListView()) {
-                        Label("SSH Keys", systemImage: "key.horizontal")
+                Section("SSH Keys") {
+                    ForEach(sshKeys) { key in
+                        SSHKeyRowInline(sshKey: key, usageCount: getUsageCount(for: key))
+                    }
+                    .onDelete(perform: deleteSSHKey)
+                    
+                    Button {
+                        showingImportSSHKey = true
+                    } label: {
+                        Label("Add SSH Key", systemImage: "plus.circle")
                     }
                 }
                 
@@ -92,6 +101,9 @@ struct SettingsView: View {
             .sheet(isPresented: $showingAPIKeyEntry) {
                 APIKeyEntrySheet(apiKey: $apiKey)
             }
+            .sheet(isPresented: $showingImportSSHKey) {
+                ImportSSHKeySheet()
+            }
         }
         .onAppear {
             loadAPIKey()
@@ -116,6 +128,48 @@ struct SettingsView: View {
             // No API key found in keychain
             apiKey = ""
         }
+    }
+    
+    private func getUsageCount(for key: SSHKey) -> Int {
+        servers.filter { $0.sshKeyId == key.id }.count
+    }
+    
+    private func deleteSSHKey(at offsets: IndexSet) {
+        for index in offsets {
+            let key = sshKeys[index]
+            // Only allow deletion if key is not in use
+            if getUsageCount(for: key) == 0 {
+                // Delete from keychain
+                try? KeychainManager.shared.deleteSSHKey(for: key.id)
+                // Delete from database
+                modelContext.delete(key)
+            }
+        }
+    }
+}
+
+struct SSHKeyRowInline: View {
+    let sshKey: SSHKey
+    let usageCount: Int
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(sshKey.name)
+                    .font(.headline)
+                Spacer()
+                if usageCount > 0 {
+                    Text("\(usageCount) server\(usageCount == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            Text("Type: \(sshKey.keyType)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 4)
     }
 }
 
