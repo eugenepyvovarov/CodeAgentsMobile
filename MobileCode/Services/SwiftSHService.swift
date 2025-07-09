@@ -417,7 +417,10 @@ class SwiftSHSession: SSHSession {
         
         var files: [RemoteFile] = []
         let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "MMM dd HH:mm"
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        
+        let currentYear = Calendar.current.component(.year, from: Date())
         
         for line in lines {
             let components = line.components(separatedBy: .whitespaces)
@@ -430,12 +433,32 @@ class SwiftSHSession: SSHSession {
             let sizeString = components[4]
             let size = isDirectory ? nil : Int64(sizeString)
             
-            // Parse date (simplified - assumes current year)
+            // Parse date - ls shows year for old files, time for recent files
             let month = components[5]
             let day = components[6]
-            let time = components[7]
-            let dateString = "\(month) \(day) \(time)"
-            let modificationDate = dateFormatter.date(from: dateString)
+            let timeOrYear = components[7]
+            
+            var modificationDate: Date?
+            
+            // Check if it's a year (4 digits) or time (HH:mm)
+            if timeOrYear.contains(":") {
+                // Recent file - shows time, assume current year
+                dateFormatter.dateFormat = "MMM dd HH:mm yyyy"
+                let dateString = "\(month) \(day) \(timeOrYear) \(currentYear)"
+                modificationDate = dateFormatter.date(from: dateString)
+                
+                // If the date is in the future, it's probably from last year
+                if let date = modificationDate, date > Date() {
+                    dateFormatter.dateFormat = "MMM dd HH:mm yyyy"
+                    let lastYearString = "\(month) \(day) \(timeOrYear) \(currentYear - 1)"
+                    modificationDate = dateFormatter.date(from: lastYearString)
+                }
+            } else {
+                // Older file - shows year instead of time
+                dateFormatter.dateFormat = "MMM dd yyyy"
+                let dateString = "\(month) \(day) \(timeOrYear)"
+                modificationDate = dateFormatter.date(from: dateString)
+            }
             
             // File name (rest of the components joined)
             let name = components[8...].joined(separator: " ")

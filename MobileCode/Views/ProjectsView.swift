@@ -25,20 +25,21 @@ struct ProjectsView: View {
     
     var body: some View {
         NavigationStack {
-            List {
-                if !projects.isEmpty {
-                    ForEach(projects) { project in
-                        ProjectRow(project: project)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button {
-                                    projectToDelete = project
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+            VStack(spacing: 0) {
+                List {
+                    if !projects.isEmpty {
+                        ForEach(projects) { project in
+                            ProjectRow(project: project)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button {
+                                        projectToDelete = project
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    .tint(.red)
                                 }
-                                .tint(.red)
-                            }
-                    }
-                } else {
+                        }
+                    } else {
                     // Empty state
                     VStack(spacing: 16) {
                         Image(systemName: "folder.badge.plus")
@@ -48,11 +49,6 @@ struct ProjectsView: View {
                         Text("No Projects Yet")
                             .font(.title2)
                             .fontWeight(.semibold)
-                        
-                        Text("Tap the + button to create your first project")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
                         
                         Button {
                             showingAddProject = true
@@ -68,20 +64,32 @@ struct ProjectsView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 40)
+                    }
                 }
-            }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Projects")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                .listStyle(.insetGrouped)
+                
+                // Add new project button at the bottom (only when projects exist)
+                if !projects.isEmpty {
                     Button {
                         showingAddProject = true
                     } label: {
-                        Image(systemName: "plus")
+                        HStack {
+                            Image(systemName: "plus.circle.fill")
+                            Text("Create Project")
+                        }
+                        .font(.body)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
                     }
+                    .padding()
                 }
-                
-                ToolbarItem(placement: .automatic) {
+            }
+            .navigationTitle("Projects")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showingSettings = true
                     } label: {

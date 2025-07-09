@@ -65,7 +65,14 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
                     
-                    Link("GitHub Repository", destination: URL(string: "https://github.com/eugenepyvovarov/CodeAgentsMobile")!)
+                    Link(destination: URL(string: "https://github.com/eugenepyvovarov/CodeAgentsMobile")!) {
+                        HStack {
+                            Text("GitHub Repository")
+                            Spacer()
+                            Image(systemName: "arrow.up.right.square")
+                                .foregroundColor(.secondary)
+                        }
+                    }
                     
                     Link(destination: URL(string: "https://x.com/selfhosted_ai")!) {
                         HStack {
