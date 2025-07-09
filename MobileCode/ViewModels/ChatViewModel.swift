@@ -88,12 +88,68 @@ class ChatViewModel {
             for try await chunk in stream {
                 if chunk.isError {
                     print("🔴 Error chunk received: \(chunk.content)")
-                    fullContent = chunk.content.isEmpty ? "Authentication error occurred" : chunk.content
                     
-                    // For error chunks, we need to ensure they're displayed
-                    // Create a simple text block for the error message
+                    // Extract error message from metadata if available
+                    var errorText = chunk.content
+                    
+                    // Check metadata for more detailed error information
+                    if errorText.isEmpty {
+                        if let type = chunk.metadata?["type"] as? String {
+                            if type == "assistant" {
+                                // Look for error in content blocks
+                                if let content = chunk.metadata?["content"] as? [[String: Any]] {
+                                    for block in content {
+                                        if let blockType = block["type"] as? String,
+                                           blockType == "text",
+                                           let text = block["text"] as? String {
+                                            errorText = text
+                                            break
+                                        }
+                                    }
+                                }
+                            } else if type == "result" {
+                                // Look for error in result field
+                                if let result = chunk.metadata?["result"] as? String {
+                                    errorText = result
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If still empty, provide a default message
+                    if errorText.isEmpty {
+                        errorText = """
+                        Authentication failed. Please check:
+                        1. Your API key or token in Settings
+                        2. Claude CLI is installed on the server
+                        3. Network connection to the server
+                        """
+                    }
+                    
+                    fullContent = errorText
                     streamingBlocks = [.text(fullContent)]
-                    updateStreamingMessage(assistantMessage, blocks: streamingBlocks)
+                    
+                    // Create a proper error message structure
+                    let errorMessage: [String: Any] = [
+                        "type": "assistant",
+                        "message": [
+                            "id": UUID().uuidString,
+                            "role": "assistant",
+                            "content": [
+                                [
+                                    "type": "text",
+                                    "text": fullContent
+                                ]
+                            ]
+                        ]
+                    ]
+                    
+                    // Add to jsonMessages so it gets properly saved
+                    if let jsonString = try? JSONSerialization.data(withJSONObject: errorMessage, options: []),
+                       let stringData = String(data: jsonString, encoding: .utf8) {
+                        jsonMessages.append(stringData)
+                    }
+                    
                     hasReceivedContent = true
                     break
                 }
@@ -275,21 +331,8 @@ class ChatViewModel {
             if !jsonMessages.isEmpty {
                 let jsonData = jsonMessages.joined(separator: "\n").data(using: .utf8)
                 updateMessageWithJSON(assistantMessage, content: fullContent, originalJSON: jsonData)
-                
-                // Also update structured content if we have streaming blocks
-                if !streamingBlocks.isEmpty && hasReceivedContent {
-                    updateStreamingMessage(assistantMessage, blocks: streamingBlocks)
-                }
             } else if !fullContent.isEmpty {
                 updateMessage(assistantMessage, with: fullContent)
-                
-                // Also update structured content if we have streaming blocks
-                if !streamingBlocks.isEmpty && hasReceivedContent {
-                    updateStreamingMessage(assistantMessage, blocks: streamingBlocks)
-                }
-            } else if hasReceivedContent && !streamingBlocks.isEmpty {
-                // Even if fullContent is empty, update with streaming blocks
-                updateStreamingMessage(assistantMessage, blocks: streamingBlocks)
             }
             
         } catch {
@@ -372,56 +415,9 @@ class ChatViewModel {
         // Update the streaming blocks for real-time display
         self.streamingBlocks = blocks
         
-        // Create structured content for proper rendering
-        var contentBlocks: [[String: Any]] = []
-        var textContent = ""
-        
-        for block in blocks {
-            switch block {
-            case .text(let text):
-                contentBlocks.append([
-                    "type": "text",
-                    "text": text
-                ])
-                textContent += text
-            case .toolUse(let id, let name, let input):
-                contentBlocks.append([
-                    "type": "tool_use",
-                    "id": id,
-                    "name": name,
-                    "input": input
-                ])
-                textContent += "\n🔧 \(name)"
-            case .toolResult(let toolUseId, let isError, let content):
-                contentBlocks.append([
-                    "type": "tool_result",
-                    "tool_use_id": toolUseId,
-                    "is_error": isError,
-                    "content": content
-                ])
-                let prefix = isError ? "❌" : "✓"
-                textContent += "\n\(prefix) Tool Result\n\(content)"
-            case .system(let sessionId, let cwd, let model):
-                textContent += "\n📋 Session Info"
-            }
-        }
-        
-        // Create a structured message JSON
-        let structuredMessage: [String: Any] = [
-            "type": "assistant",
-            "message": [
-                "id": UUID().uuidString,
-                "role": "assistant",
-                "content": contentBlocks
-            ]
-        ]
-        
-        // Convert to JSON data
-        if let jsonData = try? JSONSerialization.data(withJSONObject: structuredMessage, options: []) {
-            updateMessageWithJSON(message, content: textContent, originalJSON: jsonData)
-        } else if !textContent.isEmpty {
-            updateMessage(message, with: textContent)
-        }
+        // Don't update the message content during streaming
+        // The final update will happen when streaming is complete
+        // This preserves the original JSON structure with proper tool formatting
     }
     
     /// Save a message to persistence
