@@ -41,11 +41,17 @@ class LineBuffer {
     }
 }
 
+/// Authentication method for Claude Code
+enum ClaudeAuthMethod: String, CaseIterable {
+    case apiKey = "apiKey"
+    case token = "token"
+}
+
 /// Authentication status for Claude Code
 enum ClaudeAuthStatus {
     case authenticated
-    case missingAPIKey
-    case invalidAPIKey
+    case missingCredentials
+    case invalidCredentials
     case notChecked
 }
 
@@ -258,12 +264,76 @@ class ClaudeCodeService: ObservableObject {
     /// Project context reference
     private let projectContext = ProjectContext.shared
     
+    /// UserDefaults key for auth method preference
+    private let claudeAuthMethodKey = "claudeAuthMethod"
+    
     
     // MARK: - Initialization
     
     private init() {}
     
     // MARK: - Public Methods
+    
+    /// Get the current authentication method
+    func getCurrentAuthMethod() -> ClaudeAuthMethod {
+        let rawValue = UserDefaults.standard.string(forKey: claudeAuthMethodKey) ?? ClaudeAuthMethod.apiKey.rawValue
+        return ClaudeAuthMethod(rawValue: rawValue) ?? .apiKey
+    }
+    
+    /// Set the authentication method
+    func setAuthMethod(_ method: ClaudeAuthMethod) {
+        UserDefaults.standard.set(method.rawValue, forKey: claudeAuthMethodKey)
+        
+        // Reset auth status when method changes
+        authStatus = .notChecked
+    }
+    
+    /// Build authentication export command based on current method
+    private func buildAuthExportCommand() throws -> String {
+        let authMethod = getCurrentAuthMethod()
+        
+        switch authMethod {
+        case .apiKey:
+            guard KeychainManager.shared.hasAPIKey() else {
+                authStatus = .missingCredentials
+                throw ClaudeError.authenticationRequired
+            }
+            let apiKey = try KeychainManager.shared.retrieveAPIKey()
+            return "export ANTHROPIC_API_KEY=\"\(apiKey)\" && "
+            
+        case .token:
+            guard KeychainManager.shared.hasAuthToken() else {
+                authStatus = .missingCredentials
+                throw ClaudeError.authenticationRequired
+            }
+            let token = try KeychainManager.shared.retrieveAuthToken()
+            return "export CLAUDE_CODE_OAUTH_TOKEN=\"\(token)\" && "
+        }
+    }
+    
+    /// Check if credentials are configured for the current auth method
+    func hasCredentials() -> Bool {
+        let authMethod = getCurrentAuthMethod()
+        
+        switch authMethod {
+        case .apiKey:
+            return KeychainManager.shared.hasAPIKey()
+        case .token:
+            return KeychainManager.shared.hasAuthToken()
+        }
+    }
+    
+    /// Clear credentials when switching auth methods
+    func clearOtherCredentials(keepingMethod method: ClaudeAuthMethod) {
+        switch method {
+        case .apiKey:
+            // Keep API key, delete token
+            try? KeychainManager.shared.deleteAuthToken()
+        case .token:
+            // Keep token, delete API key
+            try? KeychainManager.shared.deleteAPIKey()
+        }
+    }
     
     
     
@@ -308,7 +378,7 @@ class ClaudeCodeService: ObservableObject {
                             command += "echo 'Step 2: Changing to project directory' && "
                             command += "cd '\(project.path)' 2>&1 && pwd && "
                             command += "echo 'Step 3: Setting API key' && "
-                            command += "export ANTHROPIC_API_KEY=\"\(try KeychainManager.shared.retrieveAPIKey())\" && "
+                            command += try buildAuthExportCommand()
                             command += "echo 'Step 4: Checking Claude installation' && "
                             command += "which claude && echo 'Claude found at above path' || echo 'Claude NOT found in PATH' && "
                             command += "echo 'Step 5: Checking Claude version' && "
@@ -321,7 +391,7 @@ class ClaudeCodeService: ObservableObject {
                         } else {
                             // Use streaming JSON with verbose and allowedTools
                             command = "cd '\(project.path)' && "
-                            command += "export ANTHROPIC_API_KEY=\"\(try KeychainManager.shared.retrieveAPIKey())\" && "
+                            command += try buildAuthExportCommand()
                             // Full command with streaming, verbose, and allowedTools
                             // CRITICAL: DO NOT MODIFY ANY FLAGS IN THIS COMMAND!
                             // --print: REQUIRED to run in non-interactive mode (without it, Claude hangs waiting for input)
@@ -382,20 +452,89 @@ class ClaudeCodeService: ObservableObject {
                                 
                                 // Parse JSON line using StreamingJSONParser
                                 if let parsedChunk = StreamingJSONParser.parseStreamingLine(line) {
-                                    continuation.yield(parsedChunk)
+                                    // Check for authentication errors and enhance the message
+                                    var enhancedChunk = parsedChunk
+                                    if let type = parsedChunk.metadata?["type"] as? String {
+                                        var errorText: String? = nil
+                                        
+                                        // Check for errors in different places based on message type
+                                        if type == "assistant" {
+                                            if let content = parsedChunk.metadata?["content"] as? [[String: Any]] {
+                                                for block in content {
+                                                    if let blockType = block["type"] as? String,
+                                                       blockType == "text",
+                                                       let text = block["text"] as? String {
+                                                        errorText = text
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                        } else if type == "result" {
+                                            // Result messages may have error text in the "result" field
+                                            errorText = parsedChunk.metadata?["result"] as? String
+                                        }
+                                        
+                                        // Check if we have an authentication error
+                                        if let text = errorText,
+                                           (text.contains("Invalid API key") || 
+                                            text.contains("API Error: 401") || 
+                                            text.contains("authentication_error") ||
+                                            text.contains("Invalid bearer token")) {
+                                            
+                                            // Replace with more helpful error message
+                                            let authMethod = getCurrentAuthMethod()
+                                            let credentialType = authMethod == .apiKey ? "API key" : "authentication token"
+                                            
+                                            let helpfulMessage = """
+                                            Authentication failed. This could be due to:
+                                            • Incorrect \(credentialType)
+                                            • Outdated Claude CLI version on the server
+                                            
+                                            To fix:
+                                            1. Update Claude CLI on the server with:
+                                               npm install -g @anthropic-ai/claude-code
+                                            
+                                            2. Verify your \(credentialType) is correct in Settings
+                                            """
+                                            
+                                            var updatedMetadata = parsedChunk.metadata ?? [:]
+                                            
+                                            if type == "assistant" {
+                                                updatedMetadata["content"] = [[
+                                                    "type": "text",
+                                                    "text": helpfulMessage
+                                                ]]
+                                            } else if type == "result" {
+                                                updatedMetadata["result"] = helpfulMessage
+                                            }
+                                            
+                                            // Also update the content property for backward compatibility
+                                            enhancedChunk = MessageChunk(
+                                                content: helpfulMessage,
+                                                isComplete: parsedChunk.isComplete,
+                                                isError: true,
+                                                metadata: updatedMetadata
+                                            )
+                                            
+                                            // Update auth status
+                                            authStatus = .invalidCredentials
+                                        }
+                                    }
+                                    
+                                    continuation.yield(enhancedChunk)
                                     
                                     // Extract session ID from system messages
-                                    if let type = parsedChunk.metadata?["type"] as? String,
+                                    if let type = enhancedChunk.metadata?["type"] as? String,
                                        type == "system",
-                                       let sessionId = parsedChunk.metadata?["sessionId"] as? String {
+                                       let sessionId = enhancedChunk.metadata?["sessionId"] as? String {
                                         receivedSessionId = sessionId
                                         print("📌 Captured session ID: \(sessionId)")
                                     }
                                     
                                     // Check for result message to capture session ID
-                                    if let type = parsedChunk.metadata?["type"] as? String,
+                                    if let type = enhancedChunk.metadata?["type"] as? String,
                                        type == "result",
-                                       let sessionId = parsedChunk.metadata?["sessionId"] as? String {
+                                       let sessionId = enhancedChunk.metadata?["sessionId"] as? String {
                                         receivedSessionId = sessionId
                                         print("📌 Captured session ID from result: \(sessionId)")
                                     }
@@ -466,6 +605,7 @@ enum ClaudeError: LocalizedError {
     case notAuthenticated
     case sessionNotFound
     case invalidResponse
+    case authenticationRequired
     
     var errorDescription: String? {
         switch self {
@@ -477,6 +617,8 @@ enum ClaudeError: LocalizedError {
             return "Session not found"
         case .invalidResponse:
             return "Invalid response from Claude Code"
+        case .authenticationRequired:
+            return "Authentication credentials are required"
         }
     }
 }

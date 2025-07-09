@@ -11,9 +11,10 @@ https://testflight.apple.com/join/eUpweBZV
 
 - Connect to remote servers via SSH
 - Interact with Claude Code through a native iOS interface
+- Supports both API key and subscription-based authentication (OAuth tokens)
 - Browse and edit files on remote servers
 - Execute terminal commands
-- Real-time chat with Claude
+- Real-time chat with Claude Code
 
 ## Requirements
 

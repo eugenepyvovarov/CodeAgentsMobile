@@ -96,6 +96,57 @@ class KeychainManager {
         return apiKey
     }
     
+    /// Delete API key
+    func deleteAPIKey() throws {
+        try delete(for: "anthropic_api_key")
+    }
+    
+    /// Check if API key exists
+    /// - Returns: True if API key is stored
+    func hasAPIKey() -> Bool {
+        do {
+            _ = try retrieveAPIKey()
+            return true
+        } catch {
+            return false
+        }
+    }
+    
+    /// Store authentication token (for Claude Code OAuth)
+    /// - Parameter token: The authentication token to store
+    func storeAuthToken(_ token: String) throws {
+        let data = token.data(using: .utf8)!
+        try store(data: data, for: "claude_auth_token")
+    }
+    
+    /// Retrieve authentication token
+    /// - Returns: The stored authentication token
+    func retrieveAuthToken() throws -> String {
+        let data = try retrieve(for: "claude_auth_token")
+        
+        guard let token = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        
+        return token
+    }
+    
+    /// Delete authentication token
+    func deleteAuthToken() throws {
+        try delete(for: "claude_auth_token")
+    }
+    
+    /// Check if authentication token exists
+    /// - Returns: True if authentication token is stored
+    func hasAuthToken() -> Bool {
+        do {
+            _ = try retrieveAuthToken()
+            return true
+        } catch {
+            return false
+        }
+    }
+    
     // MARK: - SSH Key Methods
     
     /// Store an SSH private key

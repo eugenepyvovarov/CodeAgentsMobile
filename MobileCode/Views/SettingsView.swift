@@ -17,26 +17,58 @@ struct SettingsView: View {
     @State private var showingAddServer = false
     @State private var showingAPIKeyEntry = false
     @State private var showingImportSSHKey = false
+    @State private var showingTokenEntry = false
     @State private var apiKey = ""
+    @State private var authToken = ""
+    @State private var selectedAuthMethod = ClaudeCodeService.shared.getCurrentAuthMethod()
     
     var body: some View {
         NavigationStack {
             Form {
                 Section("Account") {
-                    HStack {
-                        Label("API Key", systemImage: "key")
-                        Spacer()
-                        if apiKey.isEmpty {
-                            Text("Not Set")
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("••••••••")
-                                .foregroundColor(.secondary)
-                        }
+                    // Authentication Method Picker
+                    Picker("Authentication Method", selection: $selectedAuthMethod) {
+                        Text("API Key").tag(ClaudeAuthMethod.apiKey)
+                        Text("Authentication Token").tag(ClaudeAuthMethod.token)
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        showingAPIKeyEntry = true
+                    .pickerStyle(SegmentedPickerStyle())
+                    .onChange(of: selectedAuthMethod) { _, newMethod in
+                        handleAuthMethodChange(newMethod)
+                    }
+                    
+                    // Show appropriate credential entry based on selection
+                    if selectedAuthMethod == .apiKey {
+                        HStack {
+                            Label("API Key", systemImage: "key")
+                            Spacer()
+                            if apiKey.isEmpty {
+                                Text("Not Set")
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("••••••••")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            showingAPIKeyEntry = true
+                        }
+                    } else {
+                        HStack {
+                            Label("Auth Token", systemImage: "lock.shield")
+                            Spacer()
+                            if authToken.isEmpty {
+                                Text("Not Set")
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("••••••••")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            showingTokenEntry = true
+                        }
                     }
                 }
                 
@@ -101,12 +133,15 @@ struct SettingsView: View {
             .sheet(isPresented: $showingAPIKeyEntry) {
                 APIKeyEntrySheet(apiKey: $apiKey)
             }
+            .sheet(isPresented: $showingTokenEntry) {
+                AuthTokenEntrySheet(authToken: $authToken)
+            }
             .sheet(isPresented: $showingImportSSHKey) {
                 ImportSSHKeySheet()
             }
         }
         .onAppear {
-            loadAPIKey()
+            loadCredentials()
         }
     }
     
@@ -120,14 +155,34 @@ struct SettingsView: View {
         }
     }
     
-    private func loadAPIKey() {
+    private func loadCredentials() {
+        // Load API key
         do {
             apiKey = try KeychainManager.shared.retrieveAPIKey()
-            // Loaded API key from keychain
         } catch {
-            // No API key found in keychain
             apiKey = ""
         }
+        
+        // Load auth token
+        do {
+            authToken = try KeychainManager.shared.retrieveAuthToken()
+        } catch {
+            authToken = ""
+        }
+        
+        // Update auth status
+        ClaudeCodeService.shared.authStatus = ClaudeCodeService.shared.hasCredentials() ? .authenticated : .missingCredentials
+    }
+    
+    private func handleAuthMethodChange(_ newMethod: ClaudeAuthMethod) {
+        // Update the service
+        ClaudeCodeService.shared.setAuthMethod(newMethod)
+        
+        // Clear the other credential
+        ClaudeCodeService.shared.clearOtherCredentials(keepingMethod: newMethod)
+        
+        // Reload credentials to update UI
+        loadCredentials()
     }
     
     private func getUsageCount(for key: SSHKey) -> Int {
@@ -258,6 +313,72 @@ struct APIKeyEntrySheet: View {
             dismiss()
         } catch {
             // Failed to save API key
+        }
+    }
+}
+
+struct AuthTokenEntrySheet: View {
+    @Binding var authToken: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var tempToken = ""
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("Authentication Token", text: $tempToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Claude Code Authentication Token")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Generate a token using:")
+                            .font(.caption)
+                        Text("claude setup-token")
+                            .font(.caption)
+                            .fontDesign(.monospaced)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.gray.opacity(0.2))
+                            .cornerRadius(4)
+                        Text("Your token is stored securely in the device keychain.")
+                            .font(.caption)
+                    }
+                }
+            }
+            .navigationTitle("Token Configuration")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveAuthToken()
+                    }
+                    .disabled(tempToken.isEmpty)
+                }
+            }
+        }
+        .onAppear {
+            tempToken = authToken
+        }
+    }
+    
+    private func saveAuthToken() {
+        do {
+            // Save to keychain
+            try KeychainManager.shared.storeAuthToken(tempToken)
+            authToken = tempToken
+            // Update auth status
+            ClaudeCodeService.shared.authStatus = .authenticated
+            dismiss()
+        } catch {
+            // Failed to save auth token
         }
     }
 }
