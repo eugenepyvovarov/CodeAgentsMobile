@@ -7,6 +7,10 @@ Allows you to run Claude code on any Linux ssh server.
 
 https://testflight.apple.com/join/eUpweBZV
 
+## Screenshots
+
+<img src="screenshots/screenshot_1.png" width="250" alt="Screenshot 1" /> <img src="screenshots/screenshot_2.png" width="250" alt="Screenshot 2" /> <img src="screenshots/screenshot_3.png" width="250" alt="Screenshot 3" /> <img src="screenshots/screenshot_4.png" width="250" alt="Screenshot 4" />
+
 ## Features
 
 - Connect to remote servers via SSH
@@ -34,6 +38,7 @@ open CodeAgentsMobile.xcodeproj
 # Build and run
 # Select your target device/simulator and press Cmd+R
 ```
+
 
 ## Architecture
 
