@@ -24,6 +24,9 @@ class SwiftSHSession: SSHSession {
     private var isConnected = false
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     
+    // Cache the detected shell to avoid repeated detection
+    private var detectedShell: String?
+    
     // MARK: - Initialization
     
     init(server: Server) {
@@ -63,7 +66,7 @@ class SwiftSHSession: SSHSession {
     
     // MARK: - SSHSession Protocol Implementation
     
-    func execute(_ command: String) async throws -> String {
+    func executeRaw(_ command: String) async throws -> String {
         guard isConnected else {
             throw SSHError.connectionFailed("Not connected")
         }
@@ -71,13 +74,61 @@ class SwiftSHSession: SSHSession {
         return try await executeCommand(command)
     }
     
-    func startProcess(_ command: String) async throws -> ProcessHandle {
+    func execute(_ command: String) async throws -> String {
+        guard isConnected else {
+            throw SSHError.connectionFailed("Not connected")
+        }
+        
+        // Detect shell if not already cached
+        if detectedShell == nil {
+            let detectShellCommand = "echo $SHELL"
+            let userShell = try await executeCommand(detectShellCommand).trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Use the detected shell or fall back to bash if detection fails
+            detectedShell = userShell.isEmpty || !userShell.hasPrefix("/") ? "/bin/bash" : userShell
+            print("🐚 Detected user shell: \(detectedShell!)")
+        }
+        
+        // Escape single quotes in the command to prevent shell injection
+        let escapedCommand = command.replacingOccurrences(of: "'", with: "'\"'\"'")
+        
+        // Use login shell (-l) to ensure all profile files are loaded
+        let shellWrapper = "\(detectedShell!) -l -c '\(escapedCommand)'"
+        
+        return try await executeCommand(shellWrapper)
+    }
+    
+    func startProcessRaw(_ command: String) async throws -> ProcessHandle {
         guard isConnected else {
             throw SSHError.connectionFailed("Not connected")
         }
         
         // Use direct process for command execution (not interactive shell)
         return try await createDirectProcess(command: command)
+    }
+    
+    func startProcess(_ command: String) async throws -> ProcessHandle {
+        guard isConnected else {
+            throw SSHError.connectionFailed("Not connected")
+        }
+        
+        // Detect shell if not already cached
+        if detectedShell == nil {
+            let detectShellCommand = "echo $SHELL"
+            let userShell = try await executeCommand(detectShellCommand).trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Use the detected shell or fall back to bash if detection fails
+            detectedShell = userShell.isEmpty || !userShell.hasPrefix("/") ? "/bin/bash" : userShell
+            print("🐚 Detected user shell: \(detectedShell!)")
+        }
+        
+        // Escape single quotes in the command to prevent shell injection
+        let escapedCommand = command.replacingOccurrences(of: "'", with: "'\"'\"'")
+        
+        // Use login shell (-l) to ensure all profile files are loaded
+        let shellWrapper = "\(detectedShell!) -l -c '\(escapedCommand)'"
+        
+        return try await createDirectProcess(command: shellWrapper)
     }
     
     func uploadFile(localPath: URL, remotePath: String) async throws {

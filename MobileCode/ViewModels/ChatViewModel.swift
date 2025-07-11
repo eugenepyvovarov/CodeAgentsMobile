@@ -57,6 +57,13 @@ class ChatViewModel {
         self.modelContext = modelContext
         self.projectId = projectId
         loadMessages()
+        
+        // Check Claude installation when configuring
+        Task {
+            if let server = ProjectContext.shared.activeServer {
+                await claudeService.checkClaudeInstallation(for: server)
+            }
+        }
     }
     
     // MARK: - Public Methods
@@ -66,6 +73,14 @@ class ChatViewModel {
     func sendMessage(_ text: String) async {
         guard let project = ProjectContext.shared.activeProject else {
             await addErrorMessage("No active project. Please select a project first.")
+            return
+        }
+        
+        // Check if Claude is installed
+        if let server = ProjectContext.shared.activeServer,
+           let isInstalled = claudeService.claudeInstallationStatus[server.id],
+           !isInstalled {
+            await addErrorMessage("Claude CLI is not installed on this server. Please install it first.")
             return
         }
         

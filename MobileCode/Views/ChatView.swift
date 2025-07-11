@@ -11,69 +11,73 @@ struct ChatView: View {
     @State private var viewModel = ChatViewModel()
     @State private var messageText = ""
     @StateObject private var projectContext = ProjectContext.shared
+    @StateObject private var claudeService = ClaudeCodeService.shared
     @Environment(\.modelContext) private var modelContext
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Messages List
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(viewModel.messages) { message in
-                                MessageBubble(message: message, viewModel: viewModel)
-                                    .id(message.id)
+            Group {
+                // Check if Claude is installed
+                if let server = projectContext.activeServer,
+                   let isInstalled = claudeService.claudeInstallationStatus[server.id],
+                   !isInstalled {
+                    // Replace entire chat UI with installation view
+                    ClaudeNotInstalledView(server: server)
+                } else {
+                    // Normal chat UI
+                    VStack(spacing: 0) {
+                        // Messages List
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                LazyVStack(spacing: 12) {
+                                    ForEach(viewModel.messages) { message in
+                                        MessageBubble(message: message, viewModel: viewModel)
+                                            .id(message.id)
+                                    }
+                                }
+                                .padding()
                             }
-                        }
-                        .padding()
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        // Dismiss keyboard when tapping on the chat area
-                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-                    .onChange(of: viewModel.messages.count) { oldValue, newValue in
-                        withAnimation {
-                            if let lastMessage = viewModel.messages.last {
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                // Dismiss keyboard when tapping on the chat area
+                                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                             }
-                        }
-                    }
-                }
-                        
-                
-                Divider()
-                
-                // Input Bar
-                HStack(spacing: 12) {
-                    TextField("Ask Claude...", text: $messageText, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(1...5)
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled(true)
-                        .onSubmit {
-                            sendMessage()
-                        }
-                        .toolbar {
-                            ToolbarItemGroup(placement: .keyboard) {
-                                Spacer()
-                                Button("Done") {
-                                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                            .onChange(of: viewModel.messages.count) { oldValue, newValue in
+                                withAnimation {
+                                    if let lastMessage = viewModel.messages.last {
+                                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                    }
                                 }
                             }
                         }
-                    
-                    Button {
-                        sendMessage()
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title)
-                            .foregroundColor(.blue)
+                                
+                        
+                        Divider()
+                        
+                        // Input Bar
+                        HStack(spacing: 12) {
+                            TextField("Ask Claude...", text: $messageText, axis: .vertical)
+                                .textFieldStyle(.roundedBorder)
+                                .lineLimit(1...5)
+                                .autocapitalization(.none)
+                                .autocorrectionDisabled(true)
+                                .onSubmit {
+                                    sendMessage()
+                                }
+                            
+                            Button {
+                                sendMessage()
+                            } label: {
+                                Image(systemName: "arrow.up.circle.fill")
+                                    .font(.title)
+                                    .foregroundColor(.blue)
+                            }
+                            .disabled(messageText.isEmpty)
+                        }
+                        .padding()
+                        .background(Color(.systemBackground))
                     }
-                    .disabled(messageText.isEmpty)
                 }
-                .padding()
-                .background(Color(.systemBackground))
             }
             .navigationTitle("Claude Chat")
             .navigationBarTitleDisplayMode(.inline)
@@ -92,12 +96,30 @@ struct ChatView: View {
                         Image(systemName: "ellipsis.circle")
                     }
                 }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                }
             }
         }
         .task {
             // Configure viewModel with current project
             if let project = projectContext.activeProject {
                 viewModel.configure(modelContext: modelContext, projectId: project.id)
+            }
+        }
+        .onAppear {
+            // Re-check Claude installation when view appears
+            Task {
+                if let server = projectContext.activeServer {
+                    // Only check if we don't have a cached status or if it was not installed
+                    if claudeService.claudeInstallationStatus[server.id] == nil || 
+                       claudeService.claudeInstallationStatus[server.id] == false {
+                        await claudeService.checkClaudeInstallation(for: server)
+                    }
+                }
             }
         }
         .onChange(of: projectContext.activeProject) { oldValue, newValue in

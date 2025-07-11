@@ -56,11 +56,17 @@ struct RemoteFile {
 
 /// SSH Session protocol - represents an active SSH connection
 protocol SSHSession {
-    /// Execute a command and return output
+    /// Execute a command with user's shell environment (default - loads .zshrc/.bashrc)
     func execute(_ command: String) async throws -> String
     
-    /// Start a long-running process (like Claude Code CLI)
+    /// Execute a command without shell (raw execution - no PATH or environment setup)
+    func executeRaw(_ command: String) async throws -> String
+    
+    /// Start a long-running process with user's shell environment (default)
     func startProcess(_ command: String) async throws -> ProcessHandle
+    
+    /// Start a long-running process without shell (raw execution)
+    func startProcessRaw(_ command: String) async throws -> ProcessHandle
     
     /// Upload a file to the server
     func uploadFile(localPath: URL, remotePath: String) async throws

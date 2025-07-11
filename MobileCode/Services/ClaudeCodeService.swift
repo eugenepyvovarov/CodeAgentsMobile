@@ -258,6 +258,9 @@ class ClaudeCodeService: ObservableObject {
     /// Current authentication status
     @Published var authStatus: ClaudeAuthStatus = .notChecked
     
+    /// Claude installation status per server
+    @Published var claudeInstallationStatus: [UUID: Bool] = [:]
+    
     /// SSH service reference
     private let sshService = ServiceManager.shared.sshService
     
@@ -278,6 +281,31 @@ class ClaudeCodeService: ObservableObject {
     func getCurrentAuthMethod() -> ClaudeAuthMethod {
         let rawValue = UserDefaults.standard.string(forKey: claudeAuthMethodKey) ?? ClaudeAuthMethod.apiKey.rawValue
         return ClaudeAuthMethod(rawValue: rawValue) ?? .apiKey
+    }
+    
+    /// Check if Claude is installed on the given server
+    func checkClaudeInstallation(for server: Server) async -> Bool {
+        do {
+            let sshSession = try await sshService.connect(to: server)
+            let result = try await withTimeout(seconds: 10) {
+                // execute() now loads shell profiles by default
+                try await sshSession.execute("which claude")
+            }
+            // Check if the result contains a valid path (not "not found" or empty)
+            let trimmedResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isInstalled = !trimmedResult.isEmpty && 
+                              !trimmedResult.contains("not found") && 
+                              !trimmedResult.contains("command not found") &&
+                              trimmedResult.hasPrefix("/") // Valid paths start with /
+            
+            claudeInstallationStatus[server.id] = isInstalled
+            print("🔍 Claude installation check result: '\(trimmedResult)' -> installed: \(isInstalled)")
+            return isInstalled
+        } catch {
+            print("❌ Claude installation check error: \(error)")
+            // Don't update cache on error
+            return claudeInstallationStatus[server.id] ?? false
+        }
     }
     
     /// Set the authentication method
@@ -417,7 +445,7 @@ class ClaudeCodeService: ObservableObject {
                     print("📤 Executing Claude command:")
                     print("📋 Command: \(command)")
                     
-                    // Start process for streaming output
+                    // Start process for streaming output (shell profiles loaded by default)
                     let processHandle = try await sshSession.startProcess(command)
                     let lineBuffer = LineBuffer()
                     var receivedSessionId: String?
@@ -449,6 +477,28 @@ class ClaudeCodeService: ObservableObject {
                             let lines = lineBuffer.addData(chunk)
                             for line in lines {
                                 print("📄 Processing line: \(line)")
+                                
+                                // Check for exit code 127 (command not found)
+                                if line.contains("claude: command not found") || 
+                                   line.contains("bash: claude: command not found") ||
+                                   line.contains("sh: claude: command not found") ||
+                                   line.contains("command not found: claude") {
+                                    // Update installation status cache
+                                    if let server = projectContext.activeServer {
+                                        claudeInstallationStatus[server.id] = false
+                                    }
+                                    
+                                    // Send user-friendly error message
+                                    let notInstalledChunk = MessageChunk(
+                                        content: "Claude CLI is not installed on this server. Please install it using:\nnpm install -g @anthropic-ai/claude-code",
+                                        isComplete: true,
+                                        isError: true,
+                                        metadata: ["type": "system", "exitCode": 127]
+                                    )
+                                    continuation.yield(notInstalledChunk)
+                                    continuation.finish()
+                                    return
+                                }
                                 
                                 // Parse JSON line using StreamingJSONParser
                                 if let parsedChunk = StreamingJSONParser.parseStreamingLine(line) {
@@ -620,5 +670,39 @@ enum ClaudeError: LocalizedError {
         case .authenticationRequired:
             return "Authentication credentials are required"
         }
+    }
+}
+
+// MARK: - Timeout Utility
+
+/// Execute an async operation with a timeout
+func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        // Add the main operation
+        group.addTask {
+            try await operation()
+        }
+        
+        // Add timeout task
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw TimeoutError()
+        }
+        
+        // Return the first result (either success or timeout)
+        guard let result = try await group.next() else {
+            throw TimeoutError()
+        }
+        
+        // Cancel remaining tasks
+        group.cancelAll()
+        
+        return result
+    }
+}
+
+struct TimeoutError: LocalizedError {
+    var errorDescription: String? {
+        return "Operation timed out"
     }
 }
