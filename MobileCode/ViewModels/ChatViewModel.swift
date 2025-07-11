@@ -47,6 +47,11 @@ class ChatViewModel {
     
     /// Configure the view model with model context and project
     func configure(modelContext: ModelContext, projectId: UUID) {
+        // Skip if already configured for the same project
+        if self.projectId == projectId && self.modelContext === modelContext {
+            return
+        }
+        
         self.modelContext = modelContext
         self.projectId = projectId
         loadMessages()
@@ -77,11 +82,26 @@ class ChatViewModel {
             return
         }
         
+        // If there's a previous message still streaming, mark it as interrupted
+        if let previousStreaming = messages.last(where: { $0.isStreaming }) {
+            previousStreaming.isStreaming = false
+            previousStreaming.isComplete = true
+            if previousStreaming.content.isEmpty && previousStreaming.originalJSON == nil {
+                updateMessage(previousStreaming, with: "[Response was interrupted by new message]")
+            }
+            saveChanges()
+        }
+        
+        // Clear any existing streaming state
+        streamingMessage = nil
+        streamingBlocks = []
+        isProcessing = false
+        
         // Create and save user message
         let userMessage = createMessage(content: text, role: .user)
         
-        // Create placeholder for assistant response
-        let assistantMessage = createMessage(content: "", role: .assistant)
+        // Create placeholder for assistant response with isComplete = false and isStreaming = true
+        let assistantMessage = createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
         streamingMessage = assistantMessage
         isProcessing = true
         
@@ -275,7 +295,24 @@ class ChatViewModel {
                         break
                         
                     case "result":
-                        // Result messages appear at the end
+                        // Result messages indicate session completion
+                        // Immediately mark the message as complete
+                        assistantMessage.isComplete = true
+                        assistantMessage.isStreaming = false
+                        
+                        // Update in messages array too
+                        if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
+                            messages[index].isStreaming = false
+                            messages[index].isComplete = true
+                        }
+                        
+                        // Save immediately to ensure persistence
+                        saveChanges()
+                        
+                        // Also clear UI streaming state since we're done
+                        streamingMessage = nil
+                        streamingBlocks = []
+                        isProcessing = false
                         break
                         
                     default:
@@ -297,8 +334,20 @@ class ChatViewModel {
             
         } catch {
             updateMessage(assistantMessage, with: "Failed to get response: \(error.localizedDescription)")
+            // Mark as complete and stop streaming even on error
+            assistantMessage.isComplete = true
+            assistantMessage.isStreaming = false
+            
+            // Ensure the message is properly updated in the messages array
+            if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
+                messages[index].isStreaming = false
+                messages[index].isComplete = true
+            }
+            
+            saveChanges()
         }
         
+        // Clear UI streaming state
         streamingMessage = nil
         streamingBlocks = []
         isProcessing = false
@@ -339,6 +388,51 @@ class ChatViewModel {
         
         do {
             messages = try modelContext.fetch(descriptor)
+            
+            // Clear any stale UI state first
+            streamingMessage = nil
+            streamingBlocks = []
+            isProcessing = false
+            
+            // Check if the last assistant message was streaming when app closed
+            if let lastMessage = messages.last,
+               lastMessage.role == .assistant,
+               lastMessage.isStreaming {
+                
+                // Check if the message actually completed (has a result message)
+                let hasCompletedSession = lastMessage.structuredMessages?.contains { $0.type == "result" } ?? false
+                
+                if hasCompletedSession {
+                    // Message completed successfully, just fix the streaming flag
+                    lastMessage.isStreaming = false
+                    lastMessage.isComplete = true
+                    saveChanges()
+                } else {
+                    // Message was truly interrupted - show streaming state
+                    streamingMessage = lastMessage
+                    isProcessing = true
+                    
+                    // Parse existing content to restore streaming blocks
+                    if let structuredMessages = lastMessage.structuredMessages {
+                        var blocks: [ContentBlock] = []
+                        
+                        for structured in structuredMessages {
+                            if structured.type == "assistant",
+                               let messageContent = structured.message {
+                                // Extract content blocks from the assistant message
+                                switch messageContent.content {
+                                case .blocks(let contentBlocks):
+                                    blocks.append(contentsOf: contentBlocks)
+                                case .text(let text):
+                                    blocks.append(.text(TextBlock(type: "text", text: text)))
+                                }
+                            }
+                        }
+                        
+                        streamingBlocks = blocks
+                    }
+                }
+            }
         } catch {
             print("Failed to load messages: \(error)")
             messages = []
@@ -346,8 +440,8 @@ class ChatViewModel {
     }
     
     /// Create and save a new message
-    private func createMessage(content: String, role: MessageRole) -> Message {
-        let message = Message(content: content, role: role, projectId: projectId)
+    private func createMessage(content: String, role: MessageRole, isComplete: Bool = true, isStreaming: Bool = false) -> Message {
+        let message = Message(content: content, role: role, projectId: projectId, originalJSON: nil, isComplete: isComplete, isStreaming: isStreaming)
         messages.append(message)
         saveMessage(message)
         return message

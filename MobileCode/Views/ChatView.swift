@@ -35,18 +35,24 @@ struct ChatView: View {
                                             .id(message.id)
                                     }
                                     
-                                    // Show streaming indicator if processing
-                                    if viewModel.isProcessing {
-                                        HStack {
-                                            ProgressView()
-                                                .progressViewStyle(CircularProgressViewStyle())
-                                                .scaleEffect(0.8)
-                                            Text("Claude is thinking...")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
+                                    // Show streaming indicator if processing and no completed session
+                                    if viewModel.isProcessing && viewModel.streamingMessage != nil {
+                                        // Double-check that the last message doesn't have a completed session
+                                        let lastMessage = viewModel.messages.last
+                                        let hasCompletedSession = lastMessage?.structuredMessages?.contains { $0.type == "result" } ?? false
+                                        
+                                        if !hasCompletedSession {
+                                            HStack {
+                                                ProgressView()
+                                                    .progressViewStyle(CircularProgressViewStyle())
+                                                    .scaleEffect(0.8)
+                                                Text("Claude is thinking...")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            .padding(.vertical, 8)
+                                            .id("streaming-indicator")
                                         }
-                                        .padding(.vertical, 8)
-                                        .id("streaming-indicator")
                                     }
                                 }
                                 .padding()

@@ -19,13 +19,21 @@ final class Message {
     // Store original JSON response from Claude for future UI rendering
     var originalJSON: Data?
     
-    init(content: String = "", role: MessageRole = .user, projectId: UUID? = nil, originalJSON: Data? = nil) {
+    // Track if message streaming is complete
+    var isComplete: Bool = true
+    
+    // Track if message is currently streaming
+    var isStreaming: Bool = false
+    
+    init(content: String = "", role: MessageRole = .user, projectId: UUID? = nil, originalJSON: Data? = nil, isComplete: Bool = true, isStreaming: Bool = false) {
         self.id = UUID()
         self.content = content
         self.role = role
         self.projectId = projectId
         self.timestamp = Date()
         self.originalJSON = originalJSON
+        self.isComplete = isComplete
+        self.isStreaming = isStreaming
     }
     
     // Computed property to decode original JSON when needed
