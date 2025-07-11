@@ -9,7 +9,14 @@ import SwiftUI
 
 struct ToolUseView: View {
     let toolUseBlock: ToolUseBlock
+    let isStreaming: Bool
     @State private var isExpanded: Bool = false
+    @State private var rotation: Double = 0
+    
+    init(toolUseBlock: ToolUseBlock, isStreaming: Bool = false) {
+        self.toolUseBlock = toolUseBlock
+        self.isStreaming = isStreaming
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -18,6 +25,14 @@ struct ToolUseView: View {
                 Image(systemName: BlockFormattingUtils.getToolIcon(for: toolUseBlock.name))
                     .font(.system(size: 16))
                     .foregroundColor(BlockFormattingUtils.getToolColor(for: toolUseBlock.name))
+                    .rotationEffect(.degrees(isStreaming ? rotation : 0))
+                    .onAppear {
+                        if isStreaming {
+                            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
+                                rotation = 360
+                            }
+                        }
+                    }
                 
                 Text(toolUseBlock.name)
                     .font(.headline)

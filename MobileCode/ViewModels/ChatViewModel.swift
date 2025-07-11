@@ -14,13 +14,6 @@ import SwiftUI
 import Observation
 import SwiftData
 
-/// Enum representing different types of streaming blocks
-enum StreamingBlock {
-    case text(String)
-    case toolUse(id: String, name: String, input: [String: Any])
-    case toolResult(toolUseId: String, isError: Bool, content: String)
-    case system(sessionId: String?, cwd: String?, model: String?)
-}
 
 /// ViewModel for the chat interface
 /// Handles message display, streaming, and persistence
@@ -39,7 +32,7 @@ class ChatViewModel {
     var streamingMessage: Message?
     
     /// Current streaming blocks being displayed
-    var streamingBlocks: [StreamingBlock] = []
+    var streamingBlocks: [ContentBlock] = []
     
     /// Model context for persistence
     private var modelContext: ModelContext?
@@ -142,7 +135,7 @@ class ChatViewModel {
                     }
                     
                     fullContent = errorText
-                    streamingBlocks = [.text(fullContent)]
+                    streamingBlocks = [.text(TextBlock(type: "text", text: fullContent))]
                     
                     // Create a proper error message structure
                     let errorMessage: [String: Any] = [
@@ -172,6 +165,10 @@ class ChatViewModel {
                 // Extract original JSON from metadata
                 if let originalJSON = chunk.metadata?["originalJSON"] as? String {
                     jsonMessages.append(originalJSON)
+                    
+                    // Update the message's originalJSON during streaming for proper rendering
+                    let currentJsonData = jsonMessages.joined(separator: "\n").data(using: .utf8)
+                    updateMessageWithJSON(assistantMessage, content: fullContent, originalJSON: currentJsonData)
                 }
                 
                 // Process content based on message type
@@ -182,113 +179,55 @@ class ChatViewModel {
                         
                         // Parse blocks and create streaming views
                         if let blocks = chunk.metadata?["content"] as? [[String: Any]] {
-                            // Keep track of completed blocks (text that's done, tool results)
-                            var completedBlocks: [StreamingBlock] = []
-                            var activeBlocks: [StreamingBlock] = []
-                            var currentTextBlock: StreamingBlock? = nil
+                            // Process blocks from JSON - this represents the complete state
+                            var accumulatedBlocks: [ContentBlock] = []
+                            var activeTextBlock: TextBlock? = nil
+                            var processedToolIds = Set<String>()
                             
-                            // First, preserve any existing completed blocks
+                            // First, preserve any tool results we already have
                             for existingBlock in streamingBlocks {
-                                switch existingBlock {
-                                case .toolResult(_, _, _):
-                                    // Always keep tool results
-                                    completedBlocks.append(existingBlock)
-                                case .text(let existingText):
-                                    // Check if this text block appears in the new blocks
-                                    var foundInNew = false
-                                    for newBlock in blocks {
-                                        if let blockType = newBlock["type"] as? String,
-                                           blockType == "text",
-                                           let newText = newBlock["text"] as? String {
-                                            // If the new text starts with the existing text, it's still being built
-                                            if newText.hasPrefix(existingText) {
-                                                foundInNew = true
-                                                currentTextBlock = .text(newText)
-                                                break
-                                            } else if existingText == newText {
-                                                // Exact match - text is complete
-                                                foundInNew = true
-                                                completedBlocks.append(existingBlock)
-                                                break
-                                            }
-                                        }
-                                    }
-                                    // If not found in new blocks, it's completed
-                                    if !foundInNew {
-                                        completedBlocks.append(existingBlock)
-                                    }
-                                case .toolUse(let id, _, _):
-                                    // Check if this tool has a result
-                                    let hasResult = streamingBlocks.contains { block in
-                                        if case .toolResult(let resultId, _, _) = block {
-                                            return resultId == id
-                                        }
-                                        return false
-                                    }
-                                    if !hasResult {
-                                        // Tool still active, will be handled below
-                                        break
-                                    }
-                                case .system(_, _, _):
-                                    // Keep system blocks
-                                    completedBlocks.append(existingBlock)
+                                if case .toolResult(let toolResult) = existingBlock {
+                                    accumulatedBlocks.append(existingBlock)
+                                    processedToolIds.insert(toolResult.toolUseId)
                                 }
                             }
                             
-                            // Process new blocks
+                            // Process new blocks from the stream
                             for block in blocks {
                                 if let blockType = block["type"] as? String {
                                     switch blockType {
                                     case "text":
                                         if let text = block["text"] as? String {
-                                            // Skip if we already handled this text block above
-                                            if currentTextBlock != nil {
-                                                if case .text(let currentText) = currentTextBlock!, currentText == text {
-                                                    continue
-                                                }
-                                            }
-                                            // Skip if this text is already in completed blocks
-                                            let alreadyCompleted = completedBlocks.contains { block in
-                                                if case .text(let completedText) = block {
-                                                    return completedText == text
-                                                }
-                                                return false
-                                            }
-                                            if !alreadyCompleted {
-                                                activeBlocks.append(.text(text))
-                                            }
+                                            // For text blocks, we always use the latest version
+                                            // since text can be incrementally built
+                                            activeTextBlock = TextBlock(type: "text", text: text)
                                         }
                                     case "tool_use":
                                         if let name = block["name"] as? String,
                                            let id = block["id"] as? String {
-                                            let input = block["input"] as? [String: Any] ?? [:]
-                                            // Check if this tool is already completed
-                                            let isCompleted = completedBlocks.contains { block in
-                                                if case .toolResult(let completedId, _, _) = block {
-                                                    return completedId == id
-                                                }
-                                                return false
-                                            }
-                                            if !isCompleted {
-                                                activeBlocks.append(.toolUse(id: id, name: name, input: input))
+                                            // Only add tool use if we don't already have its result
+                                            if !processedToolIds.contains(id) {
+                                                let input = block["input"] as? [String: Any] ?? [:]
+                                                accumulatedBlocks.append(.toolUse(ToolUseBlock(
+                                                    type: "tool_use",
+                                                    id: id,
+                                                    name: name,
+                                                    input: input
+                                                )))
                                             }
                                         }
-                                    case "tool_result":
-                                        // Tool results are handled in the "user" type messages
-                                        break
                                     default:
                                         break
                                     }
                                 }
                             }
                             
-                            // Add current text block if it exists
-                            if let currentText = currentTextBlock {
-                                activeBlocks.insert(currentText, at: 0)
+                            // Add the active text block at the beginning if it exists
+                            if let textBlock = activeTextBlock {
+                                accumulatedBlocks.insert(.text(textBlock), at: 0)
                             }
                             
-                            // Combine completed blocks with active blocks
-                            streamingBlocks = completedBlocks + activeBlocks
+                            streamingBlocks = accumulatedBlocks
                             updateStreamingMessage(assistantMessage, blocks: streamingBlocks)
                         }
                         
@@ -307,10 +246,18 @@ class ChatViewModel {
                                     
                                     // Find and replace the matching tool use with its result
                                     for (index, existingBlock) in updatedBlocks.enumerated() {
-                                        if case .toolUse(let id, _, _) = existingBlock,
-                                           id == toolUseId {
-                                            // Replace tool use with tool result
-                                            updatedBlocks[index] = .toolResult(toolUseId: toolUseId, isError: isError, content: content)
+                                        switch existingBlock {
+                                        case .toolUse(let toolUseBlock):
+                                            if toolUseBlock.id == toolUseId {
+                                                // Replace tool use with tool result
+                                                updatedBlocks[index] = .toolResult(createToolResultBlock(
+                                                    toolUseId: toolUseId,
+                                                    content: content,
+                                                    isError: isError
+                                                ))
+                                                break
+                                            }
+                                        default:
                                             break
                                         }
                                     }
@@ -322,15 +269,8 @@ class ChatViewModel {
                         }
                         
                     case "system":
-                        // Show system info during streaming
-                        if let subtype = chunk.metadata?["subtype"] as? String,
-                           subtype == "init" {
-                            let sessionId = chunk.metadata?["sessionId"] as? String
-                            let cwd = chunk.metadata?["cwd"] as? String
-                            let model = chunk.metadata?["model"] as? String
-                            streamingBlocks.append(.system(sessionId: sessionId, cwd: cwd, model: model))
-                            updateStreamingMessage(assistantMessage, blocks: streamingBlocks)
-                        }
+                        // System messages are handled separately, not as content blocks
+                        break
                         
                     case "result":
                         // Result messages appear at the end
@@ -426,7 +366,7 @@ class ChatViewModel {
     }
     
     /// Update streaming message with blocks
-    private func updateStreamingMessage(_ message: Message, blocks: [StreamingBlock]) {
+    private func updateStreamingMessage(_ message: Message, blocks: [ContentBlock]) {
         // Update the streaming blocks for real-time display
         self.streamingBlocks = blocks
         
@@ -457,5 +397,24 @@ class ChatViewModel {
     /// Add an error message to the chat
     private func addErrorMessage(_ text: String) {
         _ = createMessage(content: text, role: .assistant)
+    }
+    
+    /// Create a ToolResultBlock without decoder
+    private func createToolResultBlock(toolUseId: String, content: String, isError: Bool) -> ToolResultBlock {
+        // We need to create a dummy JSON data to decode the ToolResultBlock
+        let blockData: [String: Any] = [
+            "type": "tool_result",
+            "tool_use_id": toolUseId,
+            "content": content,
+            "is_error": isError
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: blockData),
+           let toolBlock = try? JSONDecoder().decode(ToolResultBlock.self, from: jsonData) {
+            return toolBlock
+        }
+        
+        // This should never happen but provide a fallback
+        fatalError("Failed to create ToolResultBlock")
     }
 }

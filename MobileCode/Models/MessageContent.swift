@@ -145,6 +145,13 @@ struct ToolUseBlock: Decodable {
         case type, id, name, input
     }
     
+    init(type: String, id: String, name: String, input: [String: Any]) {
+        self.type = type
+        self.id = id
+        self.name = name
+        self.input = input
+    }
+    
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         type = try container.decode(String.self, forKey: .type)

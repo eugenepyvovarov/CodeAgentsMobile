@@ -22,10 +22,10 @@ struct ContentBlockView: View {
     var body: some View {
         switch block {
         case .text(let textBlock):
-            TextBlockView(textBlock: textBlock, textColor: textColor)
+            TextBlockView(textBlock: textBlock, textColor: textColor, isStreaming: isStreaming)
             
         case .toolUse(let toolUseBlock):
-            ToolUseView(toolUseBlock: toolUseBlock)
+            ToolUseView(toolUseBlock: toolUseBlock, isStreaming: isStreaming)
             
         case .toolResult(let toolResultBlock):
             ToolResultView(
