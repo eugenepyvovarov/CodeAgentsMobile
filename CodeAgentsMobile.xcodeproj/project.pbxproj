@@ -33,6 +33,7 @@
 		877CE6662DF8632600B93778 /* CodeAgentsMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodeAgentsMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		877CE6752DF8632800B93778 /* CodeAgentsMobileTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodeAgentsMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		877CE67F2DF8632800B93778 /* CodeAgentsMobileUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodeAgentsMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		87A321332E21231E00E4A4D1 /* CodeAgentsMobileUITests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "CodeAgentsMobileUITests-Info.plist"; sourceTree = "<group>"; };
 		87CEB3282E156C1F00AC3F71 /* LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -84,6 +85,7 @@
 		877CE65D2DF8632600B93778 = {
 			isa = PBXGroup;
 			children = (
+				87A321332E21231E00E4A4D1 /* CodeAgentsMobileUITests-Info.plist */,
 				877CE6682DF8632600B93778 /* MobileCode */,
 				877CE6782DF8632800B93778 /* MobileCodeTests */,
 				877CE6822DF8632800B93778 /* MobileCodeUITests */,
@@ -528,6 +530,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "CodeAgentsMobileUITests-Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app needs to discover and communicate with devices on your local network.";
 				ITSAppUsesNonExemptEncryption = NO;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobileUITests;
@@ -547,6 +552,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "CodeAgentsMobileUITests-Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app needs to discover and communicate with devices on your local network.";
 				ITSAppUsesNonExemptEncryption = NO;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobileUITests;
