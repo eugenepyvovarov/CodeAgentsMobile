@@ -201,6 +201,8 @@ class ChatViewModel {
                                             // For text blocks, we always use the latest version
                                             // since text can be incrementally built
                                             activeTextBlock = TextBlock(type: "text", text: text)
+                                            // Update fullContent with the latest text
+                                            fullContent = text
                                         }
                                     case "tool_use":
                                         if let name = block["name"] as? String,
@@ -288,6 +290,9 @@ class ChatViewModel {
                 updateMessageWithJSON(assistantMessage, content: fullContent, originalJSON: jsonData)
             } else if !fullContent.isEmpty {
                 updateMessage(assistantMessage, with: fullContent)
+            } else {
+                // No content received - remove the empty assistant message
+                removeMessage(assistantMessage)
             }
             
         } catch {
@@ -397,6 +402,17 @@ class ChatViewModel {
     /// Add an error message to the chat
     private func addErrorMessage(_ text: String) {
         _ = createMessage(content: text, role: .assistant)
+    }
+    
+    /// Remove a message from the chat
+    private func removeMessage(_ message: Message) {
+        if let index = messages.firstIndex(where: { $0.id == message.id }) {
+            messages.remove(at: index)
+            if let modelContext = modelContext {
+                modelContext.delete(message)
+                saveChanges()
+            }
+        }
     }
     
     /// Create a ToolResultBlock without decoder

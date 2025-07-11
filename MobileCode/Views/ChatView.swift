@@ -34,6 +34,20 @@ struct ChatView: View {
                                         MessageBubble(message: message, viewModel: viewModel)
                                             .id(message.id)
                                     }
+                                    
+                                    // Show streaming indicator if processing
+                                    if viewModel.isProcessing {
+                                        HStack {
+                                            ProgressView()
+                                                .progressViewStyle(CircularProgressViewStyle())
+                                                .scaleEffect(0.8)
+                                            Text("Claude is thinking...")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .padding(.vertical, 8)
+                                        .id("streaming-indicator")
+                                    }
                                 }
                                 .padding()
                             }
@@ -51,7 +65,11 @@ struct ChatView: View {
                             }
                             // Also scroll when streaming blocks update
                             .onChange(of: viewModel.streamingBlocks.count) { oldValue, newValue in
-                                if let streamingMessage = viewModel.streamingMessage {
+                                if viewModel.isProcessing {
+                                    withAnimation {
+                                        proxy.scrollTo("streaming-indicator", anchor: .bottom)
+                                    }
+                                } else if let streamingMessage = viewModel.streamingMessage {
                                     withAnimation {
                                         proxy.scrollTo(streamingMessage.id, anchor: .bottom)
                                     }
@@ -59,9 +77,21 @@ struct ChatView: View {
                             }
                             // Scroll when streaming message content updates
                             .onChange(of: viewModel.streamingMessage?.originalJSON) { oldValue, newValue in
-                                if let streamingMessage = viewModel.streamingMessage {
+                                if viewModel.isProcessing {
+                                    withAnimation {
+                                        proxy.scrollTo("streaming-indicator", anchor: .bottom)
+                                    }
+                                } else if let streamingMessage = viewModel.streamingMessage {
                                     withAnimation {
                                         proxy.scrollTo(streamingMessage.id, anchor: .bottom)
+                                    }
+                                }
+                            }
+                            // Scroll to streaming indicator when processing starts
+                            .onChange(of: viewModel.isProcessing) { oldValue, newValue in
+                                if newValue {
+                                    withAnimation {
+                                        proxy.scrollTo("streaming-indicator", anchor: .bottom)
                                     }
                                 }
                             }
@@ -167,6 +197,39 @@ struct MessageBubble: View {
     var viewModel: ChatViewModel
     
     var body: some View {
+        // Check if message has visible content
+        let hasStructuredContent = (message.structuredMessages?.isEmpty == false) || 
+                                 (message.structuredContent != nil)
+        let hasVisibleContent = !message.content.isEmpty || 
+                              hasStructuredContent || 
+                              viewModel.streamingMessage?.id == message.id
+        
+        if hasVisibleContent {
+            VStack(spacing: 4) {
+                // Message content
+                messageContent
+                
+                // Timestamp
+                HStack {
+                    if message.role == MessageRole.user {
+                        Spacer()
+                    }
+                    
+                    Text(DateFormatter.smartFormat(message.timestamp))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                    
+                    if message.role == MessageRole.assistant {
+                        Spacer()
+                    }
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var messageContent: some View {
         // Check if this is the streaming message
         if viewModel.streamingMessage?.id == message.id {
             // First check if we have structured messages available
