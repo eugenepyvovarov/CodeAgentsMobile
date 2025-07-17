@@ -3,9 +3,9 @@
 An mobile client to Claude Code for iOS.
 Allows you to run Claude code on any Linux ssh server.
 
-**BETA VERSION AVAILABLE IN TESTFLIGHT**
+**AppStore**
 
-https://testflight.apple.com/join/eUpweBZV
+https://apps.apple.com/app/codeagents-mobile/id6748273716
 
 ## Screenshots
 
