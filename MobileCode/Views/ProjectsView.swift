@@ -219,6 +219,8 @@ struct AddProjectSheet: View {
     @State private var showingAddServer = false
     @State private var isDetectingPath = false
     @State private var detectedPath: String?
+    @State private var customPath: String?
+    @State private var showingFolderPicker = false
     
     var body: some View {
         NavigationStack {
@@ -233,6 +235,7 @@ struct AddProjectSheet: View {
                             Button(server.name) {
                                 selectedServer = server
                                 detectedPath = nil // Reset detected path when changing servers
+                                customPath = nil // Reset custom path when changing servers
                                 Task {
                                     await detectProjectPath(for: server)
                                 }
@@ -265,17 +268,29 @@ struct AddProjectSheet: View {
                 if let server = selectedServer {
                     Section("Project Location") {
                         HStack {
-                            Text("Path:")
-                                .foregroundColor(.secondary)
-                            if isDetectingPath {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                            } else {
-                                let basePath = detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
-                                Text("\(basePath)/\(projectName.isEmpty ? "[name]" : projectName)")
-                                    .fontDesign(.monospaced)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Path:")
+                                    .foregroundColor(.secondary)
                                     .font(.caption)
+                                if isDetectingPath {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                } else {
+                                    let effectivePath = customPath ?? server.lastUsedProjectPath ?? detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
+                                    Text("\(effectivePath)/\(projectName.isEmpty ? "[name]" : projectName)")
+                                        .fontDesign(.monospaced)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
                             }
+                            Spacer()
+                            Button("Change") {
+                                showingFolderPicker = true
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(isDetectingPath)
                         }
                         
                         HStack {
@@ -317,9 +332,22 @@ struct AddProjectSheet: View {
                     // When a new server is added, automatically select it
                     selectedServer = newServer
                     detectedPath = nil // Reset detected path
+                    customPath = nil // Reset custom path
                     Task {
                         await detectProjectPath(for: newServer)
                     }
+                }
+            }
+            .sheet(isPresented: $showingFolderPicker) {
+                if let server = selectedServer {
+                    let effectivePath = customPath ?? server.lastUsedProjectPath ?? detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
+                    FolderPickerView(
+                        server: server,
+                        initialPath: effectivePath,
+                        onSelect: { path in
+                            customPath = path
+                        }
+                    )
                 }
             }
         }
@@ -332,13 +360,20 @@ struct AddProjectSheet: View {
         defer { isCreating = false }
         
         do {
+            // Determine the effective path
+            let effectivePath = customPath ?? server.lastUsedProjectPath ?? detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
+            
             // First, create the project folder on the server
             let projectService = ServiceManager.shared.projectService
-            try await projectService.createProject(name: projectName, on: server)
+            try await projectService.createProject(name: projectName, on: server, customPath: effectivePath)
+            
+            // If a custom path was used, save it to the server
+            if let customPath = customPath {
+                server.lastUsedProjectPath = customPath
+            }
             
             // Create and save the project locally
-            let basePath = detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
-            let project = RemoteProject(name: projectName, serverId: server.id, basePath: basePath)
+            let project = RemoteProject(name: projectName, serverId: server.id, basePath: effectivePath)
             modelContext.insert(project)
             
             try modelContext.save()

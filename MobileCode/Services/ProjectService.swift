@@ -32,19 +32,24 @@ class ProjectService {
     /// - Parameters:
     ///   - name: Name of the project
     ///   - server: Server to create the project on
-    func createProject(name: String, on server: Server) async throws {
+    ///   - customPath: Optional custom path for the project (if nil, uses server default)
+    func createProject(name: String, on server: Server, customPath: String? = nil) async throws {
         SSHLogger.log("Creating project '\(name)' on server \(server.name)", level: .info)
         
         // Get a direct connection to the server
         let session = try await sshService.connect(to: server)
         
-        // Ensure the server has a default projects path
-        if let swiftSHSession = session as? SwiftSHSession {
-            try await swiftSHSession.ensureDefaultProjectsPath()
+        // Use custom path if provided, otherwise ensure the server has a default projects path
+        let basePath: String
+        if let customPath = customPath {
+            basePath = customPath
+        } else {
+            if let swiftSHSession = session as? SwiftSHSession {
+                try await swiftSHSession.ensureDefaultProjectsPath()
+            }
+            basePath = server.defaultProjectsPath ?? "/root/projects"
         }
         
-        // Get the base path (fallback to /root/projects if not set)
-        let basePath = server.defaultProjectsPath ?? "/root/projects"
         let projectPath = "\(basePath)/\(name)"
         
         SSHLogger.log("Creating project at path: \(projectPath)", level: .info)

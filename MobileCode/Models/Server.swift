@@ -26,6 +26,10 @@ final class Server {
     /// nil means it hasn't been detected yet (will use ~/projects when detected)
     var defaultProjectsPath: String?
     
+    /// Last custom path selected by the user for creating projects
+    /// nil means the user hasn't selected a custom path yet
+    var lastUsedProjectPath: String?
+    
     init(name: String, host: String, port: Int = 22, username: String, authMethodType: String = "password") {
         self.name = name
         self.host = host
@@ -33,5 +37,6 @@ final class Server {
         self.username = username
         self.authMethodType = authMethodType
         self.defaultProjectsPath = nil // Will be auto-detected on first use
+        self.lastUsedProjectPath = nil // Will be set when user selects custom path
     }
 }
