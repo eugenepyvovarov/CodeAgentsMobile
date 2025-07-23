@@ -30,6 +30,14 @@ final class RemoteProject {
     
     var hasActiveFileOperation: Bool = false
     
+    // Nohup tracking properties
+    var lastOutputFilePosition: Int?
+    var nohupProcessId: String?
+    var outputFilePath: String?
+    
+    // Active streaming message tracking
+    var activeStreamingMessageId: UUID?
+    
     init(name: String, serverId: UUID, basePath: String = "/root/projects") {
         self.id = UUID()
         self.name = name

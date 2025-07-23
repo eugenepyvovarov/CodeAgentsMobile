@@ -13,6 +13,7 @@
 
 import Foundation
 import SwiftUI
+import SwiftData
 
 /// Buffers partial lines and yields complete lines
 class LineBuffer {
@@ -245,6 +246,51 @@ enum ClaudeContent: Decodable {
     }
 }
 
+/// Connection state for recovery
+enum ConnectionState {
+    case idle
+    case connecting
+    case active
+    case backgroundSuspended(since: Date)
+    case recovering(attempt: Int)
+    case failed(Error)
+    
+    var canRecover: Bool {
+        switch self {
+        case .backgroundSuspended, .recovering:
+            return true
+        case .failed(let error):
+            // Check error patterns directly here
+            let errorString = error.localizedDescription.lowercased()
+            let recoverablePatterns = [
+                "connection", "network", "timeout", "broken pipe",
+                "socket", "disconnected", "lost", "reset", "abort",
+                "ebadf", "bad file descriptor", "closed channel", "already closed"
+            ]
+            return recoverablePatterns.contains { errorString.contains($0) }
+        default:
+            return false
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .idle:
+            return "idle"
+        case .connecting:
+            return "connecting"
+        case .active:
+            return "active"
+        case .backgroundSuspended(let date):
+            return "suspended since \(date)"
+        case .recovering(let attempt):
+            return "recovering (attempt \(attempt))"
+        case .failed(let error):
+            return "failed: \(error.localizedDescription)"
+        }
+    }
+}
+
 /// Service for managing Claude Code interactions
 @MainActor
 class ClaudeCodeService: ObservableObject {
@@ -270,10 +316,107 @@ class ClaudeCodeService: ObservableObject {
     /// UserDefaults key for auth method preference
     private let claudeAuthMethodKey = "claudeAuthMethod"
     
+    /// Track last read positions for output files
+    private var lastReadPositions: [UUID: Int] = [:]
+    
+    /// Track connection states per project
+    private var connectionStates: [UUID: ConnectionState] = [:]
+    
+    /// Track active stream continuations for recovery
+    private var activeStreamContinuations: [UUID: AsyncThrowingStream<MessageChunk, Error>.Continuation] = [:]
+    
+    /// Track the periodic cleanup task
+    private var cleanupTask: Task<Void, Never>?
+    
     
     // MARK: - Initialization
     
-    private init() {}
+    private init() {
+        // Set up app lifecycle notifications
+        setupLifecycleObservers()
+        
+        // Start periodic cleanup task
+        startPeriodicCleanup()
+    }
+    
+    deinit {
+        // Cancel cleanup task
+        cleanupTask?.cancel()
+        
+        // Clean up all active continuations
+        for (projectId, continuation) in activeStreamContinuations {
+            print("⚠️ Cleaning up abandoned continuation for project: \(projectId)")
+            continuation.finish()
+        }
+        activeStreamContinuations.removeAll()
+        
+        // Remove all notification observers
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    /// Set up observers for app lifecycle events
+    private func setupLifecycleObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+    
+    @objc private func appWillResignActive() {
+        // Mark all active connections as background suspended
+        for (projectId, state) in connectionStates {
+            if case .active = state {
+                transitionConnectionState(for: projectId, to: .backgroundSuspended(since: Date()))
+            }
+        }
+    }
+    
+    @objc private func appDidBecomeActive() {
+        // Recovery will be handled by ChatView when it checks for previous sessions
+    }
+    
+    /// Start periodic cleanup of orphaned files
+    private func startPeriodicCleanup() {
+        cleanupTask = Task {
+            // Run cleanup every hour
+            while !Task.isCancelled {
+                await cleanupOrphanedFiles()
+                
+                // Sleep for 1 hour
+                try? await Task.sleep(nanoseconds: 3_600_000_000_000)
+            }
+        }
+    }
+    
+    /// Clean up orphaned nohup files older than 24 hours
+    private func cleanupOrphanedFiles() async {
+        // Find and remove files older than 24 hours
+        let cleanupCommand = """
+            find /tmp -type f \\( -name '*_claude.out' -o -name '*_claude.pid' \\) -mmin +1440 -delete 2>/dev/null || true
+        """
+        
+        // Run cleanup on the active server if available
+        if let server = projectContext.activeServer,
+           let project = projectContext.activeProject {
+            do {
+                if let session = try? await sshService.getConnection(for: project, purpose: .claude) {
+                    let result = try await session.execute(cleanupCommand)
+                    print("🧹 Periodic cleanup on \(server.name): \(result.isEmpty ? "No orphaned files found" : result)")
+                }
+            } catch {
+                print("⚠️ Periodic cleanup failed: \(error)")
+            }
+        }
+    }
     
     // MARK: - Public Methods
     
@@ -369,9 +512,14 @@ class ClaudeCodeService: ObservableObject {
     func sendMessage(
         _ text: String,
         in project: RemoteProject,
-        sessionId: String? = nil
+        sessionId: String? = nil,
+        messageId: UUID? = nil
     ) -> AsyncThrowingStream<MessageChunk, Error> {
         AsyncThrowingStream { continuation in
+            // Store continuation for recovery
+            activeStreamContinuations[project.id] = continuation
+            transitionConnectionState(for: project.id, to: .connecting)
+            
             Task {
                 do {
                     guard let server = projectContext.activeServer else {
@@ -381,255 +529,122 @@ class ClaudeCodeService: ObservableObject {
                     // Get SSH session for this project and purpose
                     let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
                     
+                    // Generate output file paths using message ID if provided
+                    let fileIdentifier = messageId?.uuidString ?? "\(server.id.uuidString.prefix(8))_\(project.id.uuidString.prefix(8))"
+                    let outputFile = "/tmp/\(fileIdentifier)_claude.out"
+                    let pidFile = "/tmp/\(fileIdentifier)_claude.pid"
+                    
+                    // Kill any existing process and clean up
+                    let cleanupCommand = """
+                        if [ -f \(pidFile) ]; then
+                            kill $(cat \(pidFile)) 2>/dev/null || true
+                            rm -f \(pidFile)
+                        fi
+                        > \(outputFile)
+                    """
+                    _ = try await sshSession.execute(cleanupCommand)
+                    
                     // Prepare the message
                     let escapedMessage = text
                         .replacingOccurrences(of: "\\", with: "\\\\")
                         .replacingOccurrences(of: "\"", with: "\\\"")
                         .replacingOccurrences(of: "\n", with: "\\n")
                     
-                    // First, let's test with a simple echo command to verify streaming works
-                    let testSimpleCommand = false // Set to true to test
+                    // Build the Claude command
+                    var claudeCommand = "cd \"\(project.path)\" && "
+                    claudeCommand += try buildAuthExportCommand()
+                    claudeCommand += "claude --print \"\(escapedMessage)\" "
+                    claudeCommand += "--output-format stream-json --verbose "
+                    claudeCommand += "--allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob "
                     
-                    var command: String
-                    let debugSteps = false // Enable debug to test Claude installation
-                    
-                    if testSimpleCommand {
-                        // Simple test command that outputs immediately
-                        command = "echo 'Line 1: Testing SSH streaming' && echo 'Line 2: Buffer should catch this' && echo 'Line 3: All output captured'"
+                    if let claudeSessionId = project.claudeSessionId, !text.hasPrefix("/") {
+                        claudeCommand += "--resume \(claudeSessionId) "
+                        print("📌 Resuming existing Claude session: \(claudeSessionId)")
                     } else {
-                        // Build the Claude command - let's test with a simple version first
-                        
-                        if debugSteps {
-                            // Test each step separately to find where it hangs
-                            command = "echo '=== Testing Claude setup ===' && "
-                            command += "echo 'Step 1: Current directory' && pwd && "
-                            command += "echo 'Step 2: Changing to project directory' && "
-                            command += "cd '\(project.path)' 2>&1 && pwd && "
-                            command += "echo 'Step 3: Setting API key' && "
-                            command += try buildAuthExportCommand()
-                            command += "echo 'Step 4: Checking Claude installation' && "
-                            command += "which claude && echo 'Claude found at above path' || echo 'Claude NOT found in PATH' && "
-                            command += "echo 'Step 5: Checking Claude version' && "
-                            command += "claude --version || echo 'Claude version check failed' && "
-                            command += "echo 'Step 6: Testing Claude help' && "
-                            command += "claude --help | head -5 || echo 'Claude help failed' && "
-                            command += "echo 'Step 7: Running Claude with message \"\(escapedMessage)\"' && "
-                            command += "claude --print \"\(escapedMessage)\" --output-format stream-json --verbose "
-                            command += "--allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob 2>&1"
-                        } else {
-                            // Use streaming JSON with verbose and allowedTools
-                            command = "cd '\(project.path)' && "
-                            command += try buildAuthExportCommand()
-                            // Full command with streaming, verbose, and allowedTools
-                            // CRITICAL: DO NOT MODIFY ANY FLAGS IN THIS COMMAND!
-                            // --print: REQUIRED to run in non-interactive mode (without it, Claude hangs waiting for input)
-                            // --output-format stream-json: REQUIRED for streaming JSON responses that we parse
-                            // --verbose: REQUIRED to get session IDs and detailed output
-                            // --allowedTools: REQUIRED to specify which tools Claude can use
-                            // Removing ANY of these flags will break the integration!
-                            command += "claude --print \"\(escapedMessage)\" "
-                            command += "--output-format stream-json --verbose "
-                            command += "--allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob "
-                            
-                            // Add continuation flag if needed
-                            if let claudeSessionId = project.claudeSessionId, !text.hasPrefix("/") {
-                                // Use --resume with the saved session ID
-                                command += "--resume \(claudeSessionId) "
-                            }
-                            
-                            // Add stderr redirection at the end
-                            command += "2>&1"
-                        }
+                        print("📌 Starting new Claude session (no session ID or slash command)")
                     }
                     
-                    print("📤 Executing Claude command:")
-                    print("📋 Command: \(command)")
+                    // Add stdin redirection to prevent EBADF error
+                    claudeCommand += "< /dev/null"
                     
-                    // Start process for streaming output (shell profiles loaded by default)
-                    let processHandle = try await sshSession.startProcess(command)
-                    let lineBuffer = LineBuffer()
-                    var receivedSessionId: String?
+                    // Escape single quotes in the command by replacing ' with '\''
+                    let escapedCommand = claudeCommand.replacingOccurrences(of: "'", with: "'\\''")
                     
-                    // Read output as it arrives with timeout detection
-                    do {
-                        var hasReceivedOutput = false
-                        let startTime = Date()
+                    // Execute with nohup, wrapping the entire command in bash -c with single quotes
+                    let nohupCommand = "nohup bash -c '\(escapedCommand)' > \(outputFile) 2>&1 & echo $! > \(pidFile)"
+                    _ = try await sshSession.execute(nohupCommand)
+                    
+                    // Wait for PID file with exponential backoff
+                    var pidContent: String?
+                    let maxAttempts = 5
+                    for attempt in 0..<maxAttempts {
+                        let checkCommand = "[ -f \(pidFile) ] && cat \(pidFile) || echo ''"
+                        pidContent = try? await sshSession.execute(checkCommand)
                         
-                        // Create a timeout task
-                        let timeoutTask = Task {
-                            try await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
-                            if !hasReceivedOutput {
-                                print("⚠️ No output received after 10 seconds")
-                                print("🔍 Possible issues:")
-                                print("   - Claude CLI not installed or not in PATH")
-                                print("   - Command syntax error")
-                                print("   - SSH session issues")
-                            }
+                        if let pid = pidContent, !pid.isEmpty {
+                            project.nohupProcessId = pid.trimmingCharacters(in: .whitespacesAndNewlines)
+                            print("📝 PID file found after \(attempt + 1) attempt(s): \(project.nohupProcessId ?? "")")
+                            break
                         }
                         
-                        for try await chunk in processHandle.outputStream() {
-                            hasReceivedOutput = true
-                            timeoutTask.cancel()
-                            
-                            print("📥 Received chunk (\(chunk.count) chars)")
-                            print("📄 Raw chunk: \(chunk)")
-                            
-                            let lines = lineBuffer.addData(chunk)
-                            for line in lines {
-                                print("📄 Processing line: \(line)")
-                                
-                                // Check for exit code 127 (command not found)
-                                if line.contains("claude: command not found") || 
-                                   line.contains("bash: claude: command not found") ||
-                                   line.contains("sh: claude: command not found") ||
-                                   line.contains("command not found: claude") {
-                                    // Update installation status cache
-                                    if let server = projectContext.activeServer {
-                                        claudeInstallationStatus[server.id] = false
-                                    }
-                                    
-                                    // Send user-friendly error message
-                                    let notInstalledChunk = MessageChunk(
-                                        content: "Claude CLI is not installed on this server. Please install it using:\nnpm install -g @anthropic-ai/claude-code",
-                                        isComplete: true,
-                                        isError: true,
-                                        metadata: ["type": "system", "exitCode": 127]
-                                    )
-                                    continuation.yield(notInstalledChunk)
-                                    continuation.finish()
-                                    return
-                                }
-                                
-                                // Parse JSON line using StreamingJSONParser
-                                if let parsedChunk = StreamingJSONParser.parseStreamingLine(line) {
-                                    // Check for authentication errors and enhance the message
-                                    var enhancedChunk = parsedChunk
-                                    if let type = parsedChunk.metadata?["type"] as? String {
-                                        var errorText: String? = nil
-                                        
-                                        // Check for errors in different places based on message type
-                                        if type == "assistant" {
-                                            if let content = parsedChunk.metadata?["content"] as? [[String: Any]] {
-                                                for block in content {
-                                                    if let blockType = block["type"] as? String,
-                                                       blockType == "text",
-                                                       let text = block["text"] as? String {
-                                                        errorText = text
-                                                        break
-                                                    }
-                                                }
-                                            }
-                                        } else if type == "result" {
-                                            // Result messages may have error text in the "result" field
-                                            errorText = parsedChunk.metadata?["result"] as? String
-                                        }
-                                        
-                                        // Check if we have an authentication error
-                                        if let text = errorText,
-                                           (text.contains("Invalid API key") || 
-                                            text.contains("API Error: 401") || 
-                                            text.contains("authentication_error") ||
-                                            text.contains("Invalid bearer token")) {
-                                            
-                                            // Replace with more helpful error message
-                                            let authMethod = getCurrentAuthMethod()
-                                            let credentialType = authMethod == .apiKey ? "API key" : "authentication token"
-                                            
-                                            let helpfulMessage = """
-                                            Authentication failed. This could be due to:
-                                            • Incorrect \(credentialType)
-                                            • Outdated Claude CLI version on the server
-                                            
-                                            To fix:
-                                            1. Update Claude CLI on the server with:
-                                               npm install -g @anthropic-ai/claude-code
-                                            
-                                            2. Verify your \(credentialType) is correct in Settings
-                                            """
-                                            
-                                            var updatedMetadata = parsedChunk.metadata ?? [:]
-                                            
-                                            if type == "assistant" {
-                                                updatedMetadata["content"] = [[
-                                                    "type": "text",
-                                                    "text": helpfulMessage
-                                                ]]
-                                            } else if type == "result" {
-                                                updatedMetadata["result"] = helpfulMessage
-                                            }
-                                            
-                                            // Also update the content property for backward compatibility
-                                            enhancedChunk = MessageChunk(
-                                                content: helpfulMessage,
-                                                isComplete: parsedChunk.isComplete,
-                                                isError: true,
-                                                metadata: updatedMetadata
-                                            )
-                                            
-                                            // Update auth status
-                                            authStatus = .invalidCredentials
-                                        }
-                                    }
-                                    
-                                    continuation.yield(enhancedChunk)
-                                    
-                                    // Extract session ID from system messages
-                                    if let type = enhancedChunk.metadata?["type"] as? String,
-                                       type == "system",
-                                       let sessionId = enhancedChunk.metadata?["sessionId"] as? String {
-                                        receivedSessionId = sessionId
-                                        print("📌 Captured session ID: \(sessionId)")
-                                    }
-                                    
-                                    // Check for result message to capture session ID
-                                    if let type = enhancedChunk.metadata?["type"] as? String,
-                                       type == "result",
-                                       let sessionId = enhancedChunk.metadata?["sessionId"] as? String {
-                                        receivedSessionId = sessionId
-                                        print("📌 Captured session ID from result: \(sessionId)")
-                                    }
-                                } else if !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                                    // Fallback for non-JSON lines (shouldn't happen with Claude Code)
-                                    print("⚠️ Non-JSON line: \(line)")
-                                }
-                            }
-                        }
-                        
-                        // Process any remaining data in the buffer
-                        if let lastLine = lineBuffer.flush() {
-                            print("📄 Processing final line: \(lastLine)")
-                            if let parsedChunk = StreamingJSONParser.parseStreamingLine(lastLine) {
-                                continuation.yield(parsedChunk)
-                            } else if !lastLine.trimmingCharacters(in: .whitespaces).isEmpty {
-                                print("⚠️ Non-JSON final line: \(lastLine)")
-                            }
-                        }
-                    } catch {
-                        print("❌ Stream error: \(error)")
+                        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1.6s
+                        let delay = UInt64(100_000_000 * (1 << attempt))
+                        try await Task.sleep(nanoseconds: delay)
+                    }
+                    
+                    if pidContent?.isEmpty ?? true {
+                        print("⚠️ Warning: PID file not created after \(maxAttempts) attempts")
+                    }
+                    
+                    // Start tailing the output file
+                    let tailCommand = "tail -f \(outputFile)"
+                    let processHandle = try await sshSession.startProcess(tailCommand)
+                    
+                    // Track file position and nohup info for recovery
+                    self.lastReadPositions[project.id] = 0
+                    project.lastOutputFilePosition = 0
+                    project.outputFilePath = outputFile
+                    
+                    project.updateLastModified()
+                    
+                    // Mark connection as active before processing
+                    transitionConnectionState(for: project.id, to: .active)
+                    
+                    // Process streaming output
+                    await processStreamingOutput(
+                        from: processHandle,
+                        outputFile: outputFile,
+                        pidFile: pidFile,
+                        project: project,
+                        server: server,
+                        continuation: continuation
+                    )
+                    
+                    
+                } catch {
+                    // Handle disconnection and recovery
+                    if let activeServer = projectContext.activeServer,
+                       connectionStates[project.id]?.canRecover ?? false || isRecoverableError(error) {
+                        let recoveryFileIdentifier = messageId?.uuidString ?? "\(activeServer.id.uuidString.prefix(8))_\(project.id.uuidString.prefix(8))"
+                        await handleConnectionRecovery(
+                            project: project,
+                            server: activeServer,
+                            outputFile: "/tmp/\(recoveryFileIdentifier)_claude.out",
+                            pidFile: "/tmp/\(recoveryFileIdentifier)_claude.pid",
+                            continuation: continuation,
+                            error: error
+                        )
+                    } else {
+                        // Normal error handling
+                        cleanupContinuation(for: project.id)
                         continuation.yield(MessageChunk(
-                            content: "Stream error: \(error.localizedDescription)",
+                            content: getUserFriendlyErrorMessage(error),
                             isComplete: true,
                             isError: true,
                             metadata: nil
                         ))
+                        continuation.finish(throwing: error)
                     }
-                    
-                    // Save the session ID to the project if we received one
-                    if let sessionId = receivedSessionId {
-                        project.claudeSessionId = sessionId
-                        // Note: The caller should save the project to persist this change
-                    }
-                    
-                    continuation.finish()
-                    
-                } catch {
-                    continuation.yield(MessageChunk(
-                        content: error.localizedDescription,
-                        isComplete: true,
-                        isError: true,
-                        metadata: nil
-                    ))
-                    continuation.finish(throwing: error)
                 }
             }
         }
@@ -641,9 +656,593 @@ class ClaudeCodeService: ObservableObject {
         
         // Clear the session ID
         project.claudeSessionId = nil
+        project.updateLastModified()
         
         // Note: The caller should save the project context to persist this change
         // This is already handled in ChatViewModel which saves the modelContext
+    }
+    
+    /// Check for previous session and return recent output
+    func checkForPreviousSession(
+        project: RemoteProject,
+        server: Server
+    ) async -> (hasActiveSession: Bool, recentOutput: String?, messageId: UUID?) {
+        // Check if we have an active streaming message ID
+        guard let messageId = project.activeStreamingMessageId else {
+            return (hasActiveSession: false, recentOutput: nil, messageId: nil)
+        }
+        
+        let outputFile = "/tmp/\(messageId.uuidString)_claude.out"
+        let pidFile = "/tmp/\(messageId.uuidString)_claude.pid"
+        
+        do {
+            let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+            
+            // Check if output file exists and has content
+            let checkCommand = "[ -f \(outputFile) ] && [ -s \(outputFile) ] && echo 'EXISTS' || echo 'NO_FILE'"
+            let fileCheck = try await sshSession.execute(checkCommand)
+            
+            if fileCheck.contains("EXISTS") {
+                // Get last 10KB of output to show recent conversation
+                let tailCommand = "tail -c 10240 \(outputFile)"
+                let recentOutput = try await sshSession.execute(tailCommand)
+                
+                // Check if process is still running
+                let isRunning = await isProcessRunning(pidFile: pidFile, sshSession: sshSession)
+                
+                // If running, get current file size for position tracking
+                if isRunning {
+                    let sizeCommand = "stat -f%z \(outputFile) 2>/dev/null || stat -c%s \(outputFile)"
+                    let currentSize = try await sshSession.execute(sizeCommand)
+                    if let size = Int(currentSize.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                        lastReadPositions[project.id] = size
+                    }
+                }
+                
+                return (hasActiveSession: isRunning, recentOutput: recentOutput, messageId: messageId)
+            }
+        } catch {
+            print("Failed to check for previous session: \(error)")
+        }
+        
+        return (hasActiveSession: false, recentOutput: nil, messageId: nil)
+    }
+    
+    /// Clean up previous session files
+    func cleanupPreviousSessionFiles(project: RemoteProject, server: Server, messageId: UUID? = nil) async {
+        let fileIdentifier = messageId?.uuidString ?? project.activeStreamingMessageId?.uuidString ?? "\(server.id.uuidString.prefix(8))_\(project.id.uuidString.prefix(8))"
+        let outputFile = "/tmp/\(fileIdentifier)_claude.out"
+        let pidFile = "/tmp/\(fileIdentifier)_claude.pid"
+        
+        do {
+            let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+            await cleanupNohupFiles(outputFile: outputFile, pidFile: pidFile, sshSession: sshSession)
+            
+            // Clear the active streaming message ID when cleaning up
+            await MainActor.run {
+                if messageId != nil {
+                    project.activeStreamingMessageId = nil
+                }
+                project.updateLastModified()
+            }
+        } catch {
+            print("Failed to clean up previous session files: \(error)")
+        }
+    }
+    
+    /// Resume streaming from a previous session
+    func resumeStreamingFromPreviousSession(
+        project: RemoteProject,
+        server: Server,
+        messageId: UUID
+    ) -> AsyncThrowingStream<MessageChunk, Error> {
+        AsyncThrowingStream { continuation in
+            // Store continuation for recovery
+            activeStreamContinuations[project.id] = continuation
+            transitionConnectionState(for: project.id, to: .recovering(attempt: 1))
+            
+            Task {
+                do {
+                    let outputFile = "/tmp/\(messageId.uuidString)_claude.out"
+                    let pidFile = "/tmp/\(messageId.uuidString)_claude.pid"
+                    
+                    let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+                    
+                    // First, read any missed content from last position
+                    // Use the persisted position from the project, or fall back to in-memory position
+                    let lastPosition = project.lastOutputFilePosition ?? lastReadPositions[project.id] ?? 0
+                    
+                    // Get current file size to see if there's missed content
+                    let sizeCommand = "stat -f%z \(outputFile) 2>/dev/null || stat -c%s \(outputFile)"
+                    let currentSizeStr = try await sshSession.execute(sizeCommand)
+                    let currentSize = Int(currentSizeStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                    
+                    print("📝 Resume: Last position: \(lastPosition), Current size: \(currentSize)")
+                    
+                    // If there's missed content, read it first
+                    if currentSize > lastPosition {
+                        let missedCommand = "tail -c +\(lastPosition + 1) \(outputFile) | head -c \(currentSize - lastPosition)"
+                        let missedOutput = try await sshSession.execute(missedCommand)
+                        
+                        if !missedOutput.isEmpty {
+                            print("📝 Resume: Processing \(missedOutput.count) bytes of missed content")
+                            processMissedStreamingOutput(missedOutput, continuation: continuation)
+                            
+                            // Update position
+                            lastReadPositions[project.id] = currentSize
+                            project.lastOutputFilePosition = currentSize
+                        }
+                    }
+                    
+                    // Now tail from current position for new content
+                    let tailCommand = "tail -f -c +\(currentSize + 1) \(outputFile)"
+                    let processHandle = try await sshSession.startProcess(tailCommand)
+                    
+                    // Continue processing new output
+                    await processStreamingOutput(
+                        from: processHandle,
+                        outputFile: outputFile,
+                        pidFile: pidFile,
+                        project: project,
+                        server: server,
+                        continuation: continuation
+                    )
+                } catch {
+                    continuation.yield(MessageChunk(
+                        content: getUserFriendlyErrorMessage(error),
+                        isComplete: true,
+                        isError: true,
+                        metadata: nil
+                    ))
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Private Helper Methods
+    
+    /// Process streaming output with position tracking
+    private func processStreamingOutput(
+        from processHandle: ProcessHandle,
+        outputFile: String,
+        pidFile: String,
+        project: RemoteProject,
+        server: Server,
+        continuation: AsyncThrowingStream<MessageChunk, Error>.Continuation
+    ) async {
+        let lineBuffer = LineBuffer()
+        var currentPosition = lastReadPositions[project.id] ?? 0
+        var receivedSessionId: String?
+        
+        // Ensure cleanup on exit
+        defer {
+            processHandle.terminate()
+            cleanupContinuation(for: project.id)
+        }
+        
+        do {
+            for try await output in processHandle.outputStream() {
+                // Update position using byte count instead of UTF-8 character count
+                currentPosition += output.count
+                lastReadPositions[project.id] = currentPosition
+                project.lastOutputFilePosition = currentPosition
+                project.updateLastModified()
+                
+                // Parse streaming JSON
+                let lines = lineBuffer.addData(output)
+                for line in lines {
+                    // Skip the nohup: ignoring input line
+                    if line.contains("nohup: ignoring input") {
+                        continue
+                    }
+                    
+                    if let chunk = StreamingJSONParser.parseStreamingLine(line) {
+                        continuation.yield(enhanceChunkWithAuthError(chunk))
+                        
+                        // Extract session ID and save immediately
+                        if let type = chunk.metadata?["type"] as? String,
+                           (type == "system" || type == "result"),
+                           let sessionId = chunk.metadata?["sessionId"] as? String {
+                            receivedSessionId = sessionId
+                            print("📌 Captured session ID: \(sessionId)")
+                            
+                            // Save session ID immediately to ensure persistence
+                            Task { @MainActor in
+                                if project.claudeSessionId != sessionId {
+                                    project.claudeSessionId = sessionId
+                                    project.updateLastModified()
+                                    print("📌 Saved session ID to project: \(sessionId)")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Process any remaining data
+            if let lastLine = lineBuffer.flush() {
+                if let chunk = StreamingJSONParser.parseStreamingLine(lastLine) {
+                    continuation.yield(chunk)
+                }
+            }
+            
+            // Save session ID if received
+            if let sessionId = receivedSessionId {
+                project.claudeSessionId = sessionId
+                project.updateLastModified()
+            }
+            
+            // Clean up files after successful completion
+            await cleanupPreviousSessionFiles(project: project, server: server)
+            
+            continuation.finish()
+            
+        } catch {
+            // Store position for recovery
+            lastReadPositions[project.id] = currentPosition
+            // Don't rethrow, handle the error here
+            continuation.yield(MessageChunk(
+                content: getUserFriendlyErrorMessage(error),
+                isComplete: true,
+                isError: true,
+                metadata: nil
+            ))
+            continuation.finish()
+        }
+    }
+    
+    /// Convert error to user-friendly message
+    private func getUserFriendlyErrorMessage(_ error: Error) -> String {
+        // First check for specific error types
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet:
+                return "No internet connection. Please check your network settings."
+            case .timedOut:
+                return "Connection timed out. The server may be slow or unreachable."
+            case .cannotFindHost:
+                return "Cannot find server. Please verify the server address."
+            case .cannotConnectToHost:
+                return "Cannot connect to server. Please check:\n• Server is online\n• Port is correct\n• Firewall settings"
+            default:
+                break
+            }
+        }
+        
+        let errorString = error.localizedDescription.lowercased()
+        
+        // EBADF specific error (common with suspended connections)
+        if errorString.contains("ebadf") || errorString.contains("bad file descriptor") {
+            return "SSH session interrupted. This often happens when:\n" +
+                   "• The app was suspended for too long\n" +
+                   "• Network connection changed\n" +
+                   "• Server terminated the connection\n\n" +
+                   "Try sending your message again."
+        }
+        
+        // SSH connection errors
+        if errorString.contains("niossh") || errorString.contains("ssh") {
+            if errorString.contains("error 1") {
+                return "SSH connection failed. Please check:\n• Server is reachable\n• SSH service is running\n• Network connection is stable"
+            } else if errorString.contains("authentication") || errorString.contains("permission denied") {
+                return "SSH authentication failed. Please check:\n• Username and password/key are correct\n• SSH key has proper permissions\n• Server allows your authentication method"
+            } else if errorString.contains("timeout") {
+                return "SSH connection timed out. Please check:\n• Server address and port are correct\n• No firewall is blocking the connection\n• Server is online"
+            } else if errorString.contains("refused") {
+                return "SSH connection refused. Please check:\n• SSH service is running on the server\n• Port number is correct (usually 22)\n• Server firewall allows SSH connections"
+            } else if errorString.contains("host key") || errorString.contains("verification failed") {
+                return "SSH host key verification failed. This can happen when:\n• Connecting to a new server\n• Server was reinstalled\n• Security settings changed\n\nPlease verify the server identity."
+            }
+        }
+        
+        // Network errors
+        if errorString.contains("network") || errorString.contains("connection") {
+            if errorString.contains("lost") || errorString.contains("reset") {
+                return "Connection lost. This may be due to:\n• Unstable network\n• Server restart\n• Timeout from inactivity\n\nPlease try again."
+            }
+            return "Network error. Please check:\n• Internet connection is stable\n• VPN settings (if applicable)\n• Server is accessible from your network"
+        }
+        
+        // Generic fallback
+        return "Connection error: \(error.localizedDescription)\n\nTry:\n• Checking server settings\n• Verifying network connection\n• Restarting the app"
+    }
+    
+    /// Static method to check if an error is recoverable
+    @MainActor
+    static func checkIfRecoverable(_ error: Error) -> Bool {
+        return ClaudeCodeService.shared.isRecoverableError(error)
+    }
+    
+    /// Check if an error is recoverable (network/connection issues)
+    private func isRecoverableError(_ error: Error) -> Bool {
+        // Get error string once
+        let errorString = error.localizedDescription.lowercased()
+        
+        // Check for specific SSH error types in error description
+        if errorString.contains("closed channel") || errorString.contains("already closed") {
+            return true
+        }
+        
+        // Check for POSIX errors
+        if let posixError = error as? POSIXError {
+            switch posixError.code {
+            case .ECONNRESET, .ECONNABORTED, .ENETDOWN, .ENETUNREACH, .EHOSTDOWN, .EHOSTUNREACH:
+                return true
+            case .EPIPE:  // Broken pipe
+                return true
+            default:
+                break
+            }
+        }
+        
+        // Check error description patterns
+        let recoverablePatterns = [
+            "connection", "network", "timeout", "broken pipe",
+            "socket", "disconnected", "lost", "reset", "abort",
+            "ebadf", "bad file descriptor"
+        ]
+        
+        return recoverablePatterns.contains { errorString.contains($0) }
+    }
+    
+    /// Handle connection recovery after disconnection
+    private func handleConnectionRecovery(
+        project: RemoteProject,
+        server: Server,
+        outputFile: String,
+        pidFile: String,
+        continuation: AsyncThrowingStream<MessageChunk, Error>.Continuation,
+        error: Error
+    ) async {
+        // Track recovery attempts
+        let currentAttempt: Int
+        if case .recovering(let attempt) = connectionStates[project.id] {
+            currentAttempt = attempt + 1
+        } else {
+            currentAttempt = 1
+        }
+        
+        transitionConnectionState(for: project.id, to: .recovering(attempt: currentAttempt))
+        
+        do {
+            let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+            
+            if await isProcessRunning(pidFile: pidFile, sshSession: sshSession) {
+                // Process is still running, recover missed output
+                let lastPosition = lastReadPositions[project.id] ?? 0
+                let missedOutput = try await recoverMissedOutput(
+                    for: project,
+                    outputFile: outputFile,
+                    from: lastPosition,
+                    sshSession: sshSession
+                )
+                
+                // Process missed output
+                processMissedStreamingOutput(missedOutput, continuation: continuation)
+                
+                // Resume tailing from the current position
+                let currentPosition = lastReadPositions[project.id] ?? missedOutput.count
+                let tailCommand = "tail -f -c +\(currentPosition + 1) \(outputFile)"
+                let processHandle = try await sshSession.startProcess(tailCommand)
+                
+                transitionConnectionState(for: project.id, to: .active)
+                
+                // Continue processing
+                await processStreamingOutput(
+                    from: processHandle,
+                    outputFile: outputFile,
+                    pidFile: pidFile,
+                    project: project,
+                    server: server,
+                    continuation: continuation
+                )
+            } else {
+                // Process completed while disconnected
+                let fullOutput = try await sshSession.execute("cat \(outputFile)")
+                let lastPosition = lastReadPositions[project.id] ?? 0
+                let newOutput = String(fullOutput.dropFirst(lastPosition))
+                processMissedStreamingOutput(newOutput, continuation: continuation)
+                
+                // Clean up files after reading completed session
+                await cleanupNohupFiles(outputFile: outputFile, pidFile: pidFile, sshSession: sshSession)
+                
+                continuation.finish()
+            }
+        } catch {
+            transitionConnectionState(for: project.id, to: .failed(error))
+            cleanupContinuation(for: project.id)
+            continuation.yield(MessageChunk(
+                content: getUserFriendlyErrorMessage(error),
+                isComplete: true,
+                isError: true,
+                metadata: nil
+            ))
+            continuation.finish(throwing: error)
+        }
+    }
+    
+    /// Recover missed output after reconnection
+    private func recoverMissedOutput(
+        for project: RemoteProject,
+        outputFile: String,
+        from position: Int,
+        sshSession: SSHSession
+    ) async throws -> String {
+        // Read from last position using tail with byte offset
+        let readCommand = "tail -c +\(position + 1) \(outputFile)"
+        return try await sshSession.execute(readCommand)
+    }
+    
+    /// Process missed streaming output
+    private func processMissedStreamingOutput(
+        _ output: String,
+        continuation: AsyncThrowingStream<MessageChunk, Error>.Continuation
+    ) {
+        let lines = output.components(separatedBy: .newlines)
+        for line in lines where !line.isEmpty {
+            // Skip the nohup: ignoring input line
+            if line.contains("nohup: ignoring input") {
+                continue
+            }
+            
+            if let chunk = StreamingJSONParser.parseStreamingLine(line) {
+                let enhancedChunk = enhanceChunkWithAuthError(chunk)
+                continuation.yield(enhancedChunk)
+                
+                // Extract and save session ID immediately if found in missed content
+                if let type = chunk.metadata?["type"] as? String,
+                   (type == "system" || type == "result"),
+                   let sessionId = chunk.metadata?["sessionId"] as? String,
+                   let project = ProjectContext.shared.activeProject {
+                    
+                    Task { @MainActor in
+                        if project.claudeSessionId != sessionId {
+                            project.claudeSessionId = sessionId
+                            project.updateLastModified()
+                            print("📌 Saved session ID from missed content: \(sessionId)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Check if process is still running
+    private func isProcessRunning(pidFile: String, sshSession: SSHSession) async -> Bool {
+        do {
+            let checkCommand = "[ -f \(pidFile) ] && ps -p $(cat \(pidFile)) > /dev/null && echo 'RUNNING' || echo 'NOT_RUNNING'"
+            let result = try await sshSession.execute(checkCommand)
+            return result.contains("RUNNING")
+        } catch {
+            return false
+        }
+    }
+    
+    /// Clean up nohup output and pid files
+    private func cleanupNohupFiles(outputFile: String, pidFile: String, sshSession: SSHSession) async {
+        do {
+            let cleanupCommand = "rm -f \(outputFile) \(pidFile)"
+            _ = try await sshSession.execute(cleanupCommand)
+            print("🧹 Cleaned up nohup files: \(outputFile), \(pidFile)")
+        } catch {
+            print("Failed to clean up nohup files: \(error)")
+        }
+    }
+    
+    /// Enhance chunk with authentication error messages
+    private func enhanceChunkWithAuthError(_ chunk: MessageChunk) -> MessageChunk {
+        guard let type = chunk.metadata?["type"] as? String else { return chunk }
+        
+        var errorText: String? = nil
+        
+        // Extract error text based on message type
+        if type == "assistant" {
+            if let content = chunk.metadata?["content"] as? [[String: Any]] {
+                for block in content {
+                    if let blockType = block["type"] as? String,
+                       blockType == "text",
+                       let text = block["text"] as? String {
+                        errorText = text
+                        break
+                    }
+                }
+            }
+        } else if type == "result" {
+            errorText = chunk.metadata?["result"] as? String
+        }
+        
+        // Check for authentication errors
+        if let text = errorText,
+           (text.contains("Invalid API key") ||
+            text.contains("API Error: 401") ||
+            text.contains("authentication_error") ||
+            text.contains("Invalid bearer token")) {
+            
+            let authMethod = getCurrentAuthMethod()
+            let credentialType = authMethod == .apiKey ? "API key" : "authentication token"
+            
+            let helpfulMessage = """
+            Authentication failed. This could be due to:
+            • Incorrect \(credentialType)
+            • Outdated Claude CLI version on the server
+            
+            To fix:
+            1. Update Claude CLI on the server with:
+               npm install -g @anthropic-ai/claude-code
+            
+            2. Verify your \(credentialType) is correct in Settings
+            """
+            
+            var updatedMetadata = chunk.metadata ?? [:]
+            
+            if type == "assistant" {
+                updatedMetadata["content"] = [[
+                    "type": "text",
+                    "text": helpfulMessage
+                ]]
+            } else if type == "result" {
+                updatedMetadata["result"] = helpfulMessage
+            }
+            
+            // Update auth status
+            authStatus = .invalidCredentials
+            
+            return MessageChunk(
+                content: helpfulMessage,
+                isComplete: chunk.isComplete,
+                isError: true,
+                metadata: updatedMetadata
+            )
+        }
+        
+        return chunk
+    }
+    
+    /// Clean up continuation for a project
+    private func cleanupContinuation(for projectId: UUID) {
+        if let continuation = activeStreamContinuations[projectId] {
+            continuation.finish()
+            activeStreamContinuations.removeValue(forKey: projectId)
+        }
+    }
+    
+    /// Validate and perform connection state transitions
+    @discardableResult
+    private func transitionConnectionState(
+        for projectId: UUID,
+        to newState: ConnectionState
+    ) -> Bool {
+        guard let currentState = connectionStates[projectId] else {
+            connectionStates[projectId] = newState
+            print("📊 Connection state for \(projectId): nil -> \(newState.description)")
+            return true
+        }
+        
+        // Define valid transitions
+        let isValidTransition: Bool
+        switch (currentState, newState) {
+        case (.idle, .connecting),
+             (.connecting, .active),
+             (.active, .backgroundSuspended),
+             (.backgroundSuspended, .recovering),
+             (.recovering, .active),
+             (.recovering, .failed),
+             (.failed, .connecting),
+             (_, .idle):  // Can always go back to idle
+            isValidTransition = true
+        default:
+            isValidTransition = false
+        }
+        
+        if isValidTransition {
+            connectionStates[projectId] = newState
+            print("📊 Connection state for \(projectId): \(currentState.description) -> \(newState.description)")
+            return true
+        } else {
+            print("⚠️ Invalid state transition for \(projectId): \(currentState.description) -> \(newState.description)")
+            return false
+        }
     }
     
 }

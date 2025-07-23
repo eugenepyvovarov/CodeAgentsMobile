@@ -26,13 +26,32 @@ struct ChatView: View {
                 } else {
                     // Normal chat UI
                     VStack(spacing: 0) {
+                        // Loading indicator for session recovery
+                        if viewModel.isLoadingPreviousSession {
+                            HStack {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle())
+                                Text("Checking for previous session...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding()
+                            .background(Color(.systemGray6))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .padding()
+                        }
+                        
                         // Messages List
                         ScrollViewReader { proxy in
                             ScrollView {
                                 LazyVStack(spacing: 12) {
                                     ForEach(viewModel.messages) { message in
-                                        MessageBubble(message: message, viewModel: viewModel)
-                                            .id(message.id)
+                                        MessageBubble(
+                                            message: message, 
+                                            isStreaming: viewModel.streamingMessage?.id == message.id,
+                                            streamingBlocks: viewModel.streamingMessage?.id == message.id ? viewModel.streamingBlocks : []
+                                        )
+                                        .id(message.id)
                                     }
                                     
                                     // Show streaming indicator if processing and no completed session
@@ -46,7 +65,9 @@ struct ChatView: View {
                                                 ProgressView()
                                                     .progressViewStyle(CircularProgressViewStyle())
                                                     .scaleEffect(0.8)
-                                                Text("Claude is thinking...")
+                                                Text(viewModel.showActiveSessionIndicator ? 
+                                                     "Claude is still processing..." : 
+                                                     "Claude is thinking...")
                                                     .font(.caption)
                                                     .foregroundColor(.secondary)
                                             }
@@ -174,6 +195,12 @@ struct ChatView: View {
                 }
             }
         }
+        .onDisappear {
+            // Clear loading state when view disappears to prevent stuck UI
+            viewModel.clearLoadingStates()
+            // Clean up resources to prevent retain cycles
+            viewModel.cleanup()
+        }
         .onChange(of: projectContext.activeProject) { oldValue, newValue in
             // Update viewModel when project changes
             if let project = newValue {
@@ -200,7 +227,8 @@ struct ChatView: View {
 
 struct MessageBubble: View {
     let message: Message
-    var viewModel: ChatViewModel
+    let isStreaming: Bool
+    let streamingBlocks: [ContentBlock]
     
     var body: some View {
         // Check if message has visible content
@@ -208,7 +236,7 @@ struct MessageBubble: View {
                                  (message.structuredContent != nil)
         let hasVisibleContent = !message.content.isEmpty || 
                               hasStructuredContent || 
-                              viewModel.streamingMessage?.id == message.id
+                              isStreaming
         
         if hasVisibleContent {
             VStack(spacing: 4) {
@@ -237,7 +265,7 @@ struct MessageBubble: View {
     @ViewBuilder
     private var messageContent: some View {
         // Check if this is the streaming message
-        if viewModel.streamingMessage?.id == message.id {
+        if isStreaming {
             // First check if we have structured messages available
             if let messages = message.structuredMessages, !messages.isEmpty {
                 // Use the same rendering as final messages
@@ -265,11 +293,11 @@ struct MessageBubble: View {
                         ResultMessageView(message: msg)
                     }
                 }
-            } else if !viewModel.streamingBlocks.isEmpty {
+            } else if !streamingBlocks.isEmpty {
                 // Fallback to streaming blocks if no structured messages yet
                 VStack(spacing: 8) {
-                    ForEach(0..<viewModel.streamingBlocks.count, id: \.self) { index in
-                        let block = viewModel.streamingBlocks[index]
+                    ForEach(0..<streamingBlocks.count, id: \.self) { index in
+                        let block = streamingBlocks[index]
                         HStack {
                             if message.role == MessageRole.user {
                                 Spacer()
@@ -287,7 +315,7 @@ struct MessageBubble: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 20))
                                     .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
                                     .transition(.opacity)
-                                    .animation(.easeIn(duration: 0.2), value: viewModel.streamingBlocks.count)
+                                    .animation(.easeIn(duration: 0.2), value: streamingBlocks.count)
                                 
                             case .toolUse(_), .toolResult(_):
                                 // Tool use and results get their own special styling
@@ -298,7 +326,7 @@ struct MessageBubble: View {
                                 )
                                 .frame(maxWidth: UIScreen.main.bounds.width * 0.9, alignment: .leading)
                                 .transition(.opacity)
-                                .animation(.easeIn(duration: 0.2), value: viewModel.streamingBlocks.count)
+                                .animation(.easeIn(duration: 0.2), value: streamingBlocks.count)
                             }
                             
                             if message.role == MessageRole.assistant && block.isTextBlock {
@@ -358,23 +386,98 @@ struct MessageBubble: View {
 
 struct PlainMessageBubble: View {
     let message: Message
+    @State private var showActionButtons = false
     
     var body: some View {
-        HStack {
-            if message.role == MessageRole.user {
-                Spacer()
+        ZStack {
+            // Invisible background to catch taps outside
+            if showActionButtons {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showActionButtons = false
+                        }
+                    }
             }
             
-            Text(message.content)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
-                .foregroundColor(message.role == MessageRole.user ? .white : .primary)
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-                .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
-            
-            if message.role == MessageRole.assistant {
-                Spacer()
+            HStack {
+                if message.role == MessageRole.user {
+                    Spacer()
+                }
+                
+                VStack(alignment: message.role == MessageRole.user ? .trailing : .leading, spacing: 8) {
+                    Text(message.content)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
+                        .foregroundColor(message.role == MessageRole.user ? .white : .primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                        .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showActionButtons.toggle()
+                            }
+                        }
+                    
+                    // Action buttons (same style for both user and assistant)
+                    if showActionButtons {
+                        HStack(spacing: 12) {
+                            Button(action: {
+                                UIPasteboard.general.string = message.content
+                                // Haptic feedback
+                                let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                                impactFeedback.impactOccurred()
+                                
+                                // Hide button after copying
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showActionButtons = false
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 14))
+                                    Text("Copy")
+                                        .font(.system(size: 14))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.systemGray6))
+                                .foregroundColor(.primary)
+                                .clipShape(Capsule())
+                            }
+                            
+                            Button(action: {
+                                // Share functionality
+                                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                                   let rootViewController = windowScene.windows.first?.rootViewController {
+                                    let activityViewController = UIActivityViewController(
+                                        activityItems: [message.content],
+                                        applicationActivities: nil
+                                    )
+                                    rootViewController.present(activityViewController, animated: true)
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 14))
+                                    Text("Share...")
+                                        .font(.system(size: 14))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.systemGray6))
+                                .foregroundColor(.primary)
+                                .clipShape(Capsule())
+                            }
+                        }
+                        .transition(.opacity.combined(with: .scale))
+                    }
+                }
+                
+                if message.role == MessageRole.assistant {
+                    Spacer()
+                }
             }
         }
     }
@@ -383,23 +486,36 @@ struct PlainMessageBubble: View {
 struct StructuredMessageBubble: View {
     let message: Message
     let structuredMessages: [StructuredMessageContent]
+    @State private var showActionButtons = false
     
     var body: some View {
-        VStack(spacing: 8) {
-            // Collect all content blocks from all messages
-            let allBlocks = structuredMessages.compactMap { structured -> [ContentBlock]? in
-                if let messageContent = structured.message {
-                    switch messageContent.content {
-                    case .text(let text):
-                        return [ContentBlock.text(TextBlock(type: "text", text: text))]
-                    case .blocks(let blocks):
-                        return blocks
+        ZStack {
+            // Invisible background to catch taps outside
+            if showActionButtons {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showActionButtons = false
+                        }
                     }
-                }
-                return nil
-            }.flatMap { $0 }
+            }
             
-            if !allBlocks.isEmpty {
+            VStack(spacing: 8) {
+                // Collect all content blocks from all messages
+                let allBlocks = structuredMessages.compactMap { structured -> [ContentBlock]? in
+                    if let messageContent = structured.message {
+                        switch messageContent.content {
+                        case .text(let text):
+                            return [ContentBlock.text(TextBlock(type: "text", text: text))]
+                        case .blocks(let blocks):
+                            return blocks
+                        }
+                    }
+                    return nil
+                }.flatMap { $0 }
+                
+                if !allBlocks.isEmpty {
                 // Display each block as a separate bubble
                 ForEach(Array(allBlocks.enumerated()), id: \.offset) { index, block in
                     HStack {
@@ -418,6 +534,11 @@ struct StructuredMessageBubble: View {
                                 .foregroundColor(message.role == MessageRole.user ? .white : .primary)
                                 .clipShape(RoundedRectangle(cornerRadius: 20))
                                 .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                                .onTapGesture {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        showActionButtons.toggle()
+                                    }
+                                }
                             
                         case .toolUse(_), .toolResult(_):
                             // Tool use and results get their own special styling
@@ -433,27 +554,175 @@ struct StructuredMessageBubble: View {
                         }
                     }
                 }
+                
+                // Action buttons for the entire message
+                if showActionButtons {
+                    HStack {
+                        if message.role == MessageRole.user {
+                            Spacer()
+                        }
+                        
+                        HStack(spacing: 12) {
+                            Button(action: {
+                                // Extract all text content for copying
+                                let textContent = allBlocks.compactMap { block -> String? in
+                                    switch block {
+                                    case .text(let textBlock):
+                                        return textBlock.text
+                                    default:
+                                        return nil
+                                    }
+                                }.joined(separator: "\n")
+                                
+                                UIPasteboard.general.string = textContent.isEmpty ? message.content : textContent
+                                // Haptic feedback
+                                let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                                impactFeedback.impactOccurred()
+                                
+                                // Hide button after copying
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showActionButtons = false
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 14))
+                                    Text("Copy")
+                                        .font(.system(size: 14))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.systemGray6))
+                                .foregroundColor(.primary)
+                                .clipShape(Capsule())
+                            }
+                            
+                            Button(action: {
+                                // Extract all text content for sharing
+                                let textContent = allBlocks.compactMap { block -> String? in
+                                    switch block {
+                                    case .text(let textBlock):
+                                        return textBlock.text
+                                    default:
+                                        return nil
+                                    }
+                                }.joined(separator: "\n")
+                                
+                                let shareContent = textContent.isEmpty ? message.content : textContent
+                                
+                                // Share functionality
+                                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                                   let rootViewController = windowScene.windows.first?.rootViewController {
+                                    let activityViewController = UIActivityViewController(
+                                        activityItems: [shareContent],
+                                        applicationActivities: nil
+                                    )
+                                    rootViewController.present(activityViewController, animated: true)
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 14))
+                                    Text("Share...")
+                                        .font(.system(size: 14))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.systemGray6))
+                                .foregroundColor(.primary)
+                                .clipShape(Capsule())
+                            }
+                        }
+                        
+                        if message.role == MessageRole.assistant {
+                            Spacer()
+                        }
+                    }
+                    .transition(.opacity.combined(with: .scale))
+                }
             } else {
                 // Fallback to plain text if no blocks
-                HStack {
-                    if message.role == MessageRole.user {
-                        Spacer()
+                VStack(alignment: message.role == MessageRole.user ? .trailing : .leading, spacing: 8) {
+                    HStack {
+                        if message.role == MessageRole.user {
+                            Spacer()
+                        }
+                        
+                        Text(message.content)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
+                            .foregroundColor(message.role == MessageRole.user ? .white : .primary)
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                            .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showActionButtons.toggle()
+                                }
+                            }
+                        
+                        if message.role == MessageRole.assistant {
+                            Spacer()
+                        }
                     }
                     
-                    Text(message.content)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
-                        .foregroundColor(message.role == MessageRole.user ? .white : .primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                        .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
-                    
-                    if message.role == MessageRole.assistant {
-                        Spacer()
+                    // Action buttons for fallback case
+                    if showActionButtons {
+                        HStack(spacing: 12) {
+                            Button(action: {
+                                UIPasteboard.general.string = message.content
+                                // Haptic feedback
+                                let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                                impactFeedback.impactOccurred()
+                                
+                                // Hide button after copying
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showActionButtons = false
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 14))
+                                    Text("Copy")
+                                        .font(.system(size: 14))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.systemGray6))
+                                .foregroundColor(.primary)
+                                .clipShape(Capsule())
+                            }
+                            
+                            Button(action: {
+                                // Share functionality
+                                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                                   let rootViewController = windowScene.windows.first?.rootViewController {
+                                    let activityViewController = UIActivityViewController(
+                                        activityItems: [message.content],
+                                        applicationActivities: nil
+                                    )
+                                    rootViewController.present(activityViewController, animated: true)
+                                }
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 14))
+                                    Text("Share...")
+                                        .font(.system(size: 14))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color(.systemGray6))
+                                .foregroundColor(.primary)
+                                .clipShape(Capsule())
+                            }
+                        }
+                        .transition(.opacity.combined(with: .scale))
                     }
                 }
             }
-        }
+            } // End of VStack
+        } // End of ZStack
     }
 }
 
