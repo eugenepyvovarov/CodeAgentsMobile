@@ -14,6 +14,11 @@ import SwiftUI
 import Observation
 import SwiftData
 
+// MARK: - Notifications
+extension Notification.Name {
+    static let mcpConfigurationChanged = Notification.Name("mcpConfigurationChanged")
+}
+
 
 /// ViewModel for the chat interface
 /// Handles message display, streaming, and persistence
@@ -43,6 +48,9 @@ class ChatViewModel {
     /// Claude Code service reference
     private let claudeService = ClaudeCodeService.shared
     
+    /// MCP service reference
+    private let mcpService = MCPService.shared
+    
     /// Loading state for previous session
     var isLoadingPreviousSession = false
     
@@ -61,10 +69,27 @@ class ChatViewModel {
     /// Track if configuration is in progress to prevent race conditions
     private var isConfiguring = false
     
+    /// Cached MCP servers for the current project
+    private var cachedMCPServers: [MCPServer] = []
+    
+    /// Track if MCP servers are being fetched
+    private var isFetchingMCPServers = false
+    
     // MARK: - Lifecycle
+    
+    init() {
+        // Listen for MCP configuration changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMCPConfigurationChanged),
+            name: .mcpConfigurationChanged,
+            object: nil
+        )
+    }
     
     deinit {
         print("📝 ChatViewModel deinit: Called")
+        NotificationCenter.default.removeObserver(self)
     }
     
     // MARK: - Configuration
@@ -103,16 +128,23 @@ class ChatViewModel {
             // Also reset loading states when switching projects
             isLoadingPreviousSession = false
             showActiveSessionIndicator = false
+            // Clear cached MCP servers when switching projects
+            cachedMCPServers = []
         }
         
         self.modelContext = modelContext
         self.projectId = projectId
         loadMessages()
         
-        // Check Claude installation when configuring
+        // Check Claude installation and fetch MCP servers when configuring
         Task {
             if let server = ProjectContext.shared.activeServer {
                 _ = await claudeService.checkClaudeInstallation(for: server)
+            }
+            
+            // Fetch MCP servers only if cache is empty
+            if cachedMCPServers.isEmpty {
+                await fetchMCPServers()
             }
         }
         
@@ -189,9 +221,13 @@ class ChatViewModel {
         print("📝 Stored active streaming message ID: \(assistantMessage.id)")
         print("📝 Project active streaming ID: \(project.activeStreamingMessageId?.uuidString ?? "nil")")
         
+        // Use cached MCP servers or fetch if not available
+        let mcpServers = cachedMCPServers
+        print("📝 Using \(mcpServers.count) cached MCP servers for message")
+        
         // Stream response from Claude
         do {
-            let stream = claudeService.sendMessage(text, in: project, messageId: assistantMessage.id)
+            let stream = claudeService.sendMessage(text, in: project, messageId: assistantMessage.id, mcpServers: mcpServers)
             var fullContent = ""
             var jsonMessages: [String] = []
             self.streamingBlocks = [] // Clear previous streaming blocks
@@ -490,6 +526,60 @@ class ChatViewModel {
         streamingBlocks = []
         
         print("📝 cleanup: Cleaned up all resources")
+    }
+    
+    /// Fetch MCP servers for the current project
+    @MainActor
+    func fetchMCPServers() async {
+        guard let project = ProjectContext.shared.activeProject else {
+            print("📝 fetchMCPServers: No active project")
+            return
+        }
+        
+        guard !isFetchingMCPServers else {
+            print("📝 fetchMCPServers: Already fetching")
+            return
+        }
+        
+        isFetchingMCPServers = true
+        defer { isFetchingMCPServers = false }
+        
+        do {
+            cachedMCPServers = try await mcpService.fetchServers(for: project)
+            print("📝 Fetched and cached \(cachedMCPServers.count) MCP servers")
+            
+            // Log connected servers
+            let connectedServers = cachedMCPServers.filter { $0.status == .connected }
+            print("📝 Connected MCP servers: \(connectedServers.map { $0.name }.joined(separator: ", "))")
+        } catch {
+            print("⚠️ Failed to fetch MCP servers: \(error)")
+            cachedMCPServers = []
+        }
+    }
+    
+    /// Refresh MCP servers (useful after configuration changes)
+    func refreshMCPServers() async {
+        cachedMCPServers = []
+        await fetchMCPServers()
+    }
+    
+    /// Invalidate MCP cache (call when configuration changes)
+    func invalidateMCPCache() {
+        cachedMCPServers = []
+        print("📝 MCP cache invalidated")
+    }
+    
+    /// Handle MCP configuration changed notification
+    @objc private func handleMCPConfigurationChanged() {
+        print("📝 MCP configuration changed notification received")
+        print("📝 Current cached MCP servers before invalidation: \(cachedMCPServers.count)")
+        invalidateMCPCache()
+        
+        // Fetch new servers in background
+        Task {
+            await fetchMCPServers()
+            print("📝 MCP servers after refresh: \(cachedMCPServers.count)")
+        }
     }
     
     /// Batch update streaming state to prevent UI flicker

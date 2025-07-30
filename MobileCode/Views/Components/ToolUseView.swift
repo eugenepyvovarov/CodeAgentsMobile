@@ -36,9 +36,18 @@ struct ToolUseView: View {
                         }
                     }
                 
-                Text(toolUseBlock.name)
-                    .font(.headline)
-                    .foregroundColor(.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(BlockFormattingUtils.getToolDisplayName(for: toolUseBlock.name))
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    // Show MCP function name if it's an MCP tool
+                    if let functionName = BlockFormattingUtils.getMCPFunctionName(for: toolUseBlock.name) {
+                        Text(functionName)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
                 
                 Spacer()
                 

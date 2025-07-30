@@ -9,8 +9,49 @@ import SwiftUI
 
 struct BlockFormattingUtils {
     
+    // MARK: - MCP Tool Parsing
+    static func parseMCPToolName(_ tool: String) -> (isMCP: Bool, serverName: String?, toolName: String) {
+        if tool.starts(with: "mcp__") {
+            // Remove "mcp__" prefix
+            let withoutPrefix = String(tool.dropFirst(5))
+            // Split by "__" to separate server name and tool name
+            if let separatorRange = withoutPrefix.range(of: "__") {
+                let serverName = String(withoutPrefix[..<separatorRange.lowerBound])
+                let toolName = String(withoutPrefix[separatorRange.upperBound...])
+                return (true, serverName, toolName)
+            }
+        }
+        return (false, nil, tool)
+    }
+    
+    // MARK: - Tool Display Name
+    static func getToolDisplayName(for tool: String) -> String {
+        let (isMCP, serverName, _) = parseMCPToolName(tool)
+        if isMCP, let serverName = serverName {
+            // For MCP tools, return the server name with first letter capitalized
+            return serverName.prefix(1).uppercased() + serverName.dropFirst()
+        }
+        return tool
+    }
+    
+    // MARK: - MCP Function Name
+    static func getMCPFunctionName(for tool: String) -> String? {
+        let (isMCP, _, toolName) = parseMCPToolName(tool)
+        if isMCP {
+            // Replace underscores with spaces for better readability
+            return toolName.replacingOccurrences(of: "_", with: " ")
+        }
+        return nil
+    }
+    
     // MARK: - Tool Icons
     static func getToolIcon(for tool: String) -> String {
+        // Check if it's an MCP tool
+        let (isMCP, _, _) = parseMCPToolName(tool)
+        if isMCP {
+            return "server.rack"
+        }
+        
         switch tool.lowercased() {
         case "todowrite", "todoread":
             return "checklist"
@@ -43,6 +84,12 @@ struct BlockFormattingUtils {
     
     // MARK: - Tool Colors
     static func getToolColor(for tool: String) -> Color {
+        // Check if it's an MCP tool
+        let (isMCP, _, _) = parseMCPToolName(tool)
+        if isMCP {
+            return .teal
+        }
+        
         switch tool.lowercased() {
         case "todowrite", "todoread":
             return .blue
