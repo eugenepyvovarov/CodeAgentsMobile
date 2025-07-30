@@ -513,7 +513,8 @@ class ClaudeCodeService: ObservableObject {
         _ text: String,
         in project: RemoteProject,
         sessionId: String? = nil,
-        messageId: UUID? = nil
+        messageId: UUID? = nil,
+        mcpServers: [MCPServer] = []
     ) -> AsyncThrowingStream<MessageChunk, Error> {
         AsyncThrowingStream { continuation in
             // Store continuation for recovery
@@ -555,7 +556,18 @@ class ClaudeCodeService: ObservableObject {
                     claudeCommand += try buildAuthExportCommand()
                     claudeCommand += "claude --print \"\(escapedMessage)\" "
                     claudeCommand += "--output-format stream-json --verbose "
-                    claudeCommand += "--allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob "
+                    
+                    // Build allowed tools list including MCP servers
+                    var allowedTools = ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "LS", "Grep", "Glob"]
+                    
+                    // Add MCP tools with mcp__ prefix
+                    for server in mcpServers {
+                        if server.status == .connected {
+                            allowedTools.append("mcp__\(server.name)")
+                        }
+                    }
+                    
+                    claudeCommand += "--allowedTools \(allowedTools.joined(separator: ",")) "
                     
                     if let claudeSessionId = project.claudeSessionId, !text.hasPrefix("/") {
                         claudeCommand += "--resume \(claudeSessionId) "

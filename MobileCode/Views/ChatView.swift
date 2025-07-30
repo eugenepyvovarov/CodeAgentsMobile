@@ -13,6 +13,7 @@ struct ChatView: View {
     @StateObject private var projectContext = ProjectContext.shared
     @StateObject private var claudeService = ClaudeCodeService.shared
     @Environment(\.modelContext) private var modelContext
+    @State private var showingMCPServers = false
     
     var body: some View {
         NavigationStack {
@@ -161,6 +162,14 @@ struct ChatView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button {
+                            showingMCPServers = true
+                        } label: {
+                            Label("MCP Servers", systemImage: "server.rack")
+                        }
+                        
+                        Divider()
+                        
+                        Button {
                             clearChat()
                         } label: {
                             Label("Clear Chat", systemImage: "trash")
@@ -206,6 +215,15 @@ struct ChatView: View {
             if let project = newValue {
                 viewModel.configure(modelContext: modelContext, projectId: project.id)
             }
+        }
+        .sheet(isPresented: $showingMCPServers) {
+            MCPServersListView()
+                .onDisappear {
+                    // Refresh MCP servers when sheet is dismissed
+                    Task {
+                        await viewModel.refreshMCPServers()
+                    }
+                }
         }
     }
     
