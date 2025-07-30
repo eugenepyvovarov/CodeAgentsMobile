@@ -17,11 +17,11 @@ https://apps.apple.com/app/codeagents-mobile/id6748273716
 
 ## Features
 
+- **NEW** MCP servers support 
 - Connect to remote servers via SSH
 - Interact with Claude Code through a native iOS interface
 - Supports both API key and subscription-based authentication (OAuth tokens)
-- Browse and edit files on remote servers
-- Execute terminal commands
+- Browse files on remote servers
 - Real-time chat with Claude Code
 
 ## Requirements
