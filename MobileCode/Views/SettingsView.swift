@@ -14,6 +14,7 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var servers: [Server]
     @Query(sort: \SSHKey.createdAt, order: .reverse) private var sshKeys: [SSHKey]
+    @Query private var projects: [RemoteProject]
     @State private var showingAddServer = false
     @State private var showingAPIKeyEntry = false
     @State private var showingImportSSHKey = false
@@ -24,7 +25,7 @@ struct SettingsView: View {
     
     var body: some View {
         NavigationStack {
-            Form {
+            Form(content: {
                 Section("Account") {
                     // Authentication Method Picker
                     Picker("Authentication Method", selection: $selectedAuthMethod) {
@@ -74,7 +75,8 @@ struct SettingsView: View {
                 
                 Section("Servers") {
                     ForEach(servers) { server in
-                        ServerRow(server: server)
+                        ServerRow(server: server, projectCount: getProjectCount(for: server))
+                            .deleteDisabled(getProjectCount(for: server) > 0)
                     }
                     .onDelete(perform: deleteServer)
                     
@@ -88,6 +90,7 @@ struct SettingsView: View {
                 Section("SSH Keys") {
                     ForEach(sshKeys) { key in
                         SSHKeyRowInline(sshKey: key, usageCount: getUsageCount(for: key))
+                            .deleteDisabled(getUsageCount(for: key) > 0)
                     }
                     .onDelete(perform: deleteSSHKey)
                     
@@ -124,7 +127,7 @@ struct SettingsView: View {
                         }
                     }
                 }
-            }
+            })
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingAddServer) {
@@ -189,6 +192,10 @@ struct SettingsView: View {
         servers.filter { $0.sshKeyId == key.id }.count
     }
     
+    private func getProjectCount(for server: Server) -> Int {
+        projects.filter { $0.serverId == server.id }.count
+    }
+    
     private func deleteSSHKey(at offsets: IndexSet) {
         for index in offsets {
             let key = sshKeys[index]
@@ -212,11 +219,17 @@ struct SSHKeyRowInline: View {
             HStack {
                 Text(sshKey.name)
                     .font(.headline)
+                    .foregroundColor(usageCount > 0 ? .secondary : .primary)
                 Spacer()
                 if usageCount > 0 {
-                    Text("\(usageCount) server\(usageCount == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: "lock.fill")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Text("\(usageCount) server\(usageCount == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
             
@@ -230,6 +243,7 @@ struct SSHKeyRowInline: View {
 
 struct ServerRow: View {
     let server: Server
+    let projectCount: Int
     @State private var showingEditSheet = false
     
     var body: some View {
@@ -237,11 +251,24 @@ struct ServerRow: View {
             HStack {
                 Text(server.name)
                     .font(.headline)
+                    .foregroundColor(projectCount > 0 ? .secondary : .primary)
                 Spacer()
-                if server.authMethodType == "key" {
-                    Image(systemName: "key.horizontal.fill")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                HStack(spacing: 6) {
+                    if server.authMethodType == "key" {
+                        Image(systemName: "key.horizontal.fill")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    if projectCount > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "lock.fill")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                            Text("\(projectCount) project\(projectCount == 1 ? "" : "s")")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
             
