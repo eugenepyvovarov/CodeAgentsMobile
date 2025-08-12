@@ -558,7 +558,7 @@ class ClaudeCodeService: ObservableObject {
                     claudeCommand += "--output-format stream-json --verbose "
                     
                     // Build allowed tools list including MCP servers
-                    var allowedTools = ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "LS", "Grep", "Glob"]
+                    var allowedTools = ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "LS", "Grep", "Glob", "WebFetch"]
                     
                     // Add MCP tools with mcp__ prefix
                     for server in mcpServers {
