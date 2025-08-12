@@ -144,9 +144,9 @@ private enum MarkdownBlock: Identifiable {
     
     var id: String {
         switch self {
-        case .paragraph(let text): return "p_\(text.prefix(20))"
-        case .bulletPoint(let text): return "b_\(text.prefix(20))"
-        case .codeBlock(let text): return "c_\(text.prefix(20))"
+        case .paragraph(let text): return "p_\(text.hashValue)"
+        case .bulletPoint(let text): return "b_\(text.hashValue)"
+        case .codeBlock(let text): return "c_\(text.hashValue)"
         }
     }
     
