@@ -10,6 +10,7 @@ import SwiftUI
 struct ChatView: View {
     @State private var viewModel = ChatViewModel()
     @State private var messageText = ""
+    @State private var hasInitiallyLoaded = false
     @StateObject private var projectContext = ProjectContext.shared
     @StateObject private var claudeService = ClaudeCodeService.shared
     @Environment(\.modelContext) private var modelContext
@@ -26,26 +27,26 @@ struct ChatView: View {
                     ClaudeNotInstalledView(server: server)
                 } else {
                     // Normal chat UI
-                    VStack(spacing: 0) {
-                        // Loading indicator for session recovery
-                        if viewModel.isLoadingPreviousSession {
-                            HStack {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle())
-                                Text("Checking for previous session...")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                    ScrollViewReader { proxy in
+                        VStack(spacing: 0) {
+                            // Loading indicator for session recovery
+                            if viewModel.isLoadingPreviousSession {
+                                HStack {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle())
+                                    Text("Checking for previous session...")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding()
+                                .background(Color(.systemGray6))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .padding()
                             }
-                            .padding()
-                            .background(Color(.systemGray6))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .padding()
-                        }
-                        
-                        // Messages List
-                        ScrollViewReader { proxy in
+                            
+                            // Messages List
                             ScrollView {
-                                LazyVStack(spacing: 12) {
+                                VStack(spacing: 12) {  // Changed from LazyVStack to VStack for accurate height calculation
                                     ForEach(viewModel.messages) { message in
                                         MessageBubble(
                                             message: message, 
@@ -85,45 +86,100 @@ struct ChatView: View {
                                 UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                             }
                             .onChange(of: viewModel.messages.count) { oldValue, newValue in
-                                withAnimation {
-                                    if let lastMessage = viewModel.messages.last {
-                                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                // Skip scrolling on initial load (when oldValue is 0 and we're loading existing messages)
+                                if oldValue == 0 && !hasInitiallyLoaded {
+                                    hasInitiallyLoaded = true
+                                    if newValue > 1 {
+                                        return
+                                    }
+                                }
+                                
+                                // Only scroll for new messages (single message additions)
+                                if newValue > oldValue {
+                                    // Add multiple attempts to ensure content is fully rendered
+                                    Task {
+                                        // First attempt - quick scroll for immediate feedback
+                                        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                                        await MainActor.run {
+                                            if let lastMessage = viewModel.messages.last {
+                                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                            }
+                                        }
+                                        
+                                        // Second attempt - after content should be rendered
+                                        try? await Task.sleep(nanoseconds: 400_000_000) // 0.4 seconds more
+                                        await MainActor.run {
+                                            if let lastMessage = viewModel.messages.last {
+                                                withAnimation(.easeInOut(duration: 0.2)) {
+                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            // Also scroll when streaming blocks update
+                            // Re-enable streaming content scroll triggers for Claude's responses
                             .onChange(of: viewModel.streamingBlocks.count) { oldValue, newValue in
-                                if viewModel.isProcessing {
-                                    withAnimation {
-                                        proxy.scrollTo("streaming-indicator", anchor: .bottom)
-                                    }
-                                } else if let streamingMessage = viewModel.streamingMessage {
-                                    withAnimation {
-                                        proxy.scrollTo(streamingMessage.id, anchor: .bottom)
-                                    }
-                                }
-                            }
-                            // Scroll when streaming message content updates
-                            .onChange(of: viewModel.streamingMessage?.originalJSON) { oldValue, newValue in
-                                if viewModel.isProcessing {
-                                    withAnimation {
-                                        proxy.scrollTo("streaming-indicator", anchor: .bottom)
-                                    }
-                                } else if let streamingMessage = viewModel.streamingMessage {
-                                    withAnimation {
-                                        proxy.scrollTo(streamingMessage.id, anchor: .bottom)
+                                if newValue > oldValue && viewModel.isProcessing {
+                                    Task {
+                                        try? await Task.sleep(nanoseconds: 50_000_000) // 0.05 seconds
+                                        await MainActor.run {
+                                            if let lastMessage = viewModel.messages.last {
+                                                withAnimation(.easeInOut(duration: 0.2)) {
+                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            // Scroll to streaming indicator when processing starts
+                            // Scroll when streaming message gets final content
+                            .onChange(of: viewModel.streamingMessage?.structuredMessages?.count) { oldValue, newValue in
+                                if let newValue = newValue, let oldValue = oldValue, newValue > oldValue {
+                                    Task {
+                                        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                                        await MainActor.run {
+                                            if let lastMessage = viewModel.messages.last {
+                                                withAnimation(.easeInOut(duration: 0.2)) {
+                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Also scroll when processing state changes (Claude starts/stops responding)
                             .onChange(of: viewModel.isProcessing) { oldValue, newValue in
                                 if newValue {
-                                    withAnimation {
-                                        proxy.scrollTo("streaming-indicator", anchor: .bottom)
+                                    // Claude started responding, ensure we're scrolled to bottom
+                                    Task {
+                                        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                                        await MainActor.run {
+                                            if let lastMessage = viewModel.messages.last {
+                                                withAnimation(.easeInOut(duration: 0.2)) {
+                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
+                            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+                                if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                                    // Always scroll to bottom when keyboard appears to keep latest message visible
+                                    Task {
+                                        // Small delay to let keyboard animation start
+                                        try? await Task.sleep(nanoseconds: 50_000_000) // 0.05 seconds
+                                        await MainActor.run {
+                                            if let lastMessage = viewModel.messages.last {
+                                                withAnimation(.easeOut(duration: 0.25)) {
+                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                                 
                         
                         Divider()
@@ -136,11 +192,11 @@ struct ChatView: View {
                                 .autocapitalization(.none)
                                 .autocorrectionDisabled(true)
                                 .onSubmit {
-                                    sendMessage()
+                                    sendMessage(proxy: proxy)
                                 }
                             
                             Button {
-                                sendMessage()
+                                sendMessage(proxy: proxy)
                             } label: {
                                 Image(systemName: "arrow.up.circle.fill")
                                     .font(.title)
@@ -150,6 +206,7 @@ struct ChatView: View {
                         }
                         .padding()
                         .background(Color(.systemBackground))
+                        }
                     }
                 }
             }
@@ -211,6 +268,8 @@ struct ChatView: View {
             viewModel.cleanup()
         }
         .onChange(of: projectContext.activeProject) { oldValue, newValue in
+            // Reset initial load flag when switching projects
+            hasInitiallyLoaded = false
             // Update viewModel when project changes
             if let project = newValue {
                 viewModel.configure(modelContext: modelContext, projectId: project.id)
@@ -227,14 +286,17 @@ struct ChatView: View {
         }
     }
     
-    private func sendMessage() {
+    private func sendMessage(proxy: ScrollViewProxy) {
         guard !messageText.isEmpty else { return }
         
         let text = messageText
         messageText = ""
         
+        // Don't dismiss keyboard - user might want to continue typing
+        
         Task {
             await viewModel.sendMessage(text)
+            // The onChange handler will handle scrolling automatically
         }
     }
     
