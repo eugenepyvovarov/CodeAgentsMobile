@@ -77,7 +77,7 @@ struct SSHClaudeIntegrationTest {
             export ANTHROPIC_API_KEY="\(TestConfig.apiKey)" && \
             claude -p "Say 'Hello from integration test' and nothing else" \
             --output-format stream-json --verbose \
-            --allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob
+            --allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob,WebFetch
             """
         
         // Start process with streaming

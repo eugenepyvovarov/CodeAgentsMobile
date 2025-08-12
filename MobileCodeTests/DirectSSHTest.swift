@@ -69,7 +69,7 @@ struct DirectSSHTest {
             export ANTHROPIC_API_KEY="" && \
             timeout 20 claude --print "Say hello" \
             --output-format stream-json --verbose \
-            --allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob 2>&1
+            --allowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,Read,LS,Grep,Glob,WebFetch 2>&1
             """
         
         print("🤖 Starting Claude process...")
