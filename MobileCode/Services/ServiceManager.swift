@@ -39,7 +39,7 @@ class ServiceManager {
     
     private init() {
         // Initialize services
-        self.sshService = SSHService()
+        self.sshService = SSHService.shared
         self.projectService = ProjectService(sshService: sshService)
         
         print("🚀 ServiceManager: Initialized")

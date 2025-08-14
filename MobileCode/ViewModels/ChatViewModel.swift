@@ -239,6 +239,14 @@ class ChatViewModel {
                 if chunk.isError {
                     print("🔴 Error chunk received: \(chunk.content)")
                     
+                    // Check if this is a Claude not installed error
+                    if let error = chunk.metadata?["error"] as? String, error == "claude_not_installed" {
+                        // Mark Claude as not installed for this server
+                        if let server = ProjectContext.shared.activeServer {
+                            ClaudeCodeService.shared.claudeInstallationStatus[server.id] = false
+                        }
+                    }
+                    
                     // Extract error message from metadata if available
                     var errorText = chunk.content
                     

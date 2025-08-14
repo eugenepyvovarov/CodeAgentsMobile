@@ -30,6 +30,15 @@ final class Server {
     /// nil means the user hasn't selected a custom path yet
     var lastUsedProjectPath: String?
     
+    // Cloud Provider fields
+    var providerId: UUID? // Reference to ServerProvider
+    var providerServerId: String? // Droplet/Server ID from provider
+    
+    // Cloud-init status tracking
+    var cloudInitComplete: Bool = false
+    var cloudInitLastChecked: Date?
+    var cloudInitStatus: String? // "running", "done", "error", "unknown"
+    
     init(name: String, host: String, port: Int = 22, username: String, authMethodType: String = "password") {
         self.name = name
         self.host = host

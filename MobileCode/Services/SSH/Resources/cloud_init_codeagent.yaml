@@ -1,0 +1,21 @@
+#cloud-config
+users:
+  - name: codeagent
+    groups: users, admin, sudo
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+{{SSH_KEYS_PLACEHOLDER}}
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - nodejs
+  - npm
+  - curl
+  - build-essential
+  - git
+
+runcmd:
+  - npm install -g @anthropic-ai/claude-code

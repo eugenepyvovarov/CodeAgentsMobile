@@ -12,6 +12,7 @@ enum ConnectionPurpose: String, CaseIterable {
     case claude = "claude"
     case terminal = "terminal"
     case fileOperations = "files"
+    case cloudInit = "cloudInit"
     
     var description: String {
         switch self {
@@ -21,6 +22,8 @@ enum ConnectionPurpose: String, CaseIterable {
             return "Terminal"
         case .fileOperations:
             return "File Operations"
+        case .cloudInit:
+            return "Cloud Init Status Check"
         }
     }
 }

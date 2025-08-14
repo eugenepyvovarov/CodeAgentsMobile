@@ -211,6 +211,10 @@ struct AddProjectSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var servers: [Server]
     
+    let preselectedServer: Server?
+    let onProjectCreated: (() -> Void)?
+    let onSkip: (() -> Void)?
+    
     @State private var projectName = ""
     @State private var selectedServer: Server?
     @State private var isCreating = false
@@ -222,6 +226,12 @@ struct AddProjectSheet: View {
     @State private var customPath: String?
     @State private var showingFolderPicker = false
     
+    init(preselectedServer: Server? = nil, onProjectCreated: (() -> Void)? = nil, onSkip: (() -> Void)? = nil) {
+        self.preselectedServer = preselectedServer
+        self.onProjectCreated = onProjectCreated
+        self.onSkip = onSkip
+    }
+    
     var body: some View {
         NavigationStack {
             Form {
@@ -232,12 +242,20 @@ struct AddProjectSheet: View {
                     
                     Menu {
                         ForEach(servers) { server in
-                            Button(server.name) {
+                            Button {
                                 selectedServer = server
                                 detectedPath = nil // Reset detected path when changing servers
                                 customPath = nil // Reset custom path when changing servers
                                 Task {
                                     await detectProjectPath(for: server)
+                                }
+                            } label: {
+                                HStack {
+                                    Text(server.name)
+                                    if !server.cloudInitComplete && server.providerId != nil {
+                                        Image(systemName: "clock.arrow.circlepath")
+                                            .foregroundColor(.orange)
+                                    }
                                 }
                             }
                         }
@@ -266,6 +284,38 @@ struct AddProjectSheet: View {
                 }
                 
                 if let server = selectedServer {
+                    // Show warning if server cloud-init is not complete
+                    if !server.cloudInitComplete && server.providerId != nil {
+                        Section {
+                            HStack(spacing: 12) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.title2)
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Server Still Configuring")
+                                        .font(.headline)
+                                        .foregroundColor(.primary)
+                                    
+                                    Text("This server is still installing Claude Code. Creating a project now may fail.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    
+                                    HStack(spacing: 4) {
+                                        Text("Status:")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        CloudInitStatusBadge(status: server.cloudInitStatus)
+                                    }
+                                }
+                                
+                                Spacer()
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    
                     Section("Project Location") {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
@@ -307,7 +357,13 @@ struct AddProjectSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    // Show "Skip" when coming from server creation, "Cancel" otherwise
+                    Button(preselectedServer != nil && onSkip != nil ? "Skip" : "Cancel") {
+                        if let onSkip = onSkip, preselectedServer != nil {
+                            // If we have a skip handler and a preselected server,
+                            // call the skip handler to dismiss entire navigation chain
+                            onSkip()
+                        }
                         dismiss()
                     }
                 }
@@ -327,6 +383,15 @@ struct AddProjectSheet: View {
                 Text(errorMessage ?? "An error occurred")
             }
             .interactiveDismissDisabled(isCreating)
+            .onAppear {
+                // If we have a preselected server, use it
+                if let preselectedServer = preselectedServer {
+                    selectedServer = preselectedServer
+                    Task {
+                        await detectProjectPath(for: preselectedServer)
+                    }
+                }
+            }
             .sheet(isPresented: $showingAddServer) {
                 AddServerSheet { newServer in
                     // When a new server is added, automatically select it
@@ -378,7 +443,13 @@ struct AddProjectSheet: View {
             
             try modelContext.save()
             
-            dismiss()
+            // Call the completion handler if provided
+            if let onProjectCreated = onProjectCreated {
+                onProjectCreated()
+            } else {
+                // Otherwise just dismiss normally
+                dismiss()
+            }
         } catch {
             errorMessage = error.localizedDescription
             showError = true

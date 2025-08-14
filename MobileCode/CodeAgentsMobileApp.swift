@@ -15,7 +15,8 @@ struct CodeAgentsMobileApp: App {
             RemoteProject.self,
             Server.self,
             Message.self,
-            SSHKey.self
+            SSHKey.self,
+            ServerProvider.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
