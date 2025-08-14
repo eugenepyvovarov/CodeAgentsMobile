@@ -14,10 +14,16 @@ https://apps.apple.com/app/codeagents-mobile/id6748273716
 ## Screenshots
 
 <img src="screenshots/screenshot_1.png" width="250" alt="Screenshot 1" /> <img src="screenshots/screenshot_2.png" width="250" alt="Screenshot 2" /> <img src="screenshots/screenshot_3.png" width="250" alt="Screenshot 3" /> <img src="screenshots/screenshot_4.png" width="250" alt="Screenshot 4" />
+<img src="screenshots/screenshot_5.png" width="250" alt="Screenshot 5" />
+<img src="screenshots/screenshot_6.png" width="250" alt="Screenshot 6" />
+<img src="screenshots/screenshot_7.png" width="250" alt="Screenshot 7" />
+<img src="screenshots/screenshot_8.png" width="250" alt="Screenshot 8" />
 
 ## Features
-
-- **NEW** MCP servers support 
+- **NEW** Provision servers with Digital Ocean / Hetzner 
+- **NEW** Auto install Claude Code for provisioned servers
+- **NEW** Auto create SSH keys
+- MCP servers support 
 - Connect to remote servers via SSH
 - Interact with Claude Code through a native iOS interface
 - Supports both API key and subscription-based authentication (OAuth tokens)
