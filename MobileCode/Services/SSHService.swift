@@ -18,6 +18,9 @@ import Foundation
 /// Main SSH Service for managing connections
 @MainActor
 class SSHService {
+    // MARK: - Singleton
+    static let shared = SSHService()
+    
     // MARK: - Properties
     
     /// Active SSH sessions keyed by ConnectionKey
@@ -25,6 +28,9 @@ class SSHService {
     
     /// Map to track which server each project belongs to
     private var projectServerMap: [UUID: UUID] = [:]
+    
+    // MARK: - Initialization
+    private init() {}
     
     // MARK: - Public Methods
     
@@ -36,6 +42,59 @@ class SSHService {
     func connect(to server: Server, purpose: ConnectionPurpose = .fileOperations) async throws -> SSHSession {
         SSHLogger.log("Creating direct connection to server: \(server.name) for \(purpose)", level: .info)
         return try await createSession(for: server)
+    }
+    
+    /// Authentication method for SSH connections
+    enum AuthMethod {
+        case password(String)
+        case key(String) // Private key content
+    }
+    
+    /// Connect to a server with explicit parameters (for cloud-init checking)
+    /// - Parameters:
+    ///   - host: Server hostname or IP
+    ///   - port: SSH port
+    ///   - username: SSH username
+    ///   - authMethod: Authentication method (password or key)
+    ///   - purpose: Purpose of the connection
+    /// - Returns: Active SSH session (not pooled)
+    func connectToServer(host: String, port: Int, username: String, authMethod: AuthMethod, purpose: ConnectionPurpose) async throws -> SSHSession {
+        SSHLogger.log("Creating direct connection to \(host):\(port) for \(purpose)", level: .info)
+        
+        // Create a temporary server object for the connection
+        let tempServer = Server(name: "temp-\(host)", host: host, port: port, username: username, authMethodType: "password")
+        
+        // Set up defer block to ensure cleanup happens
+        defer {
+            // Clean up temporary credentials
+            switch authMethod {
+            case .password:
+                try? KeychainManager.shared.deletePassword(for: tempServer.id)
+            case .key:
+                if let keyId = tempServer.sshKeyId {
+                    try? KeychainManager.shared.deleteSSHKey(for: keyId)
+                }
+            }
+        }
+        
+        // Handle authentication based on method
+        switch authMethod {
+        case .password(let password):
+            tempServer.authMethodType = "password"
+            // Store password temporarily in keychain
+            try KeychainManager.shared.storePassword(password, for: tempServer.id)
+        case .key(let privateKey):
+            tempServer.authMethodType = "key"
+            // Create temporary SSH key ID and store the private key in keychain
+            let tempKeyId = UUID()
+            tempServer.sshKeyId = tempKeyId
+            // Store the private key temporarily in keychain
+            try KeychainManager.shared.storeSSHKey(Data(privateKey.utf8), for: tempKeyId)
+        }
+        
+        let session = try await createSession(for: tempServer)
+        
+        return session
     }
     
     /// Get or create a connection for a specific project and purpose

@@ -29,6 +29,7 @@ class SSHKeyParserV2 {
     struct ParseResult {
         let privateKey: NIOSSHPrivateKey
         let keyType: String
+        let publicKeyData: Data? // Raw public key data for SSH formatting
     }
     
     /// OpenSSH format structure
@@ -105,7 +106,8 @@ class SSHKeyParserV2 {
             if let p256Key = try? P256.Signing.PrivateKey(pemRepresentation: pemString) {
                 return ParseResult(
                     privateKey: NIOSSHPrivateKey(p256Key: p256Key),
-                    keyType: "P256"
+                    keyType: "P256",
+                    publicKeyData: p256Key.publicKey.rawRepresentation
                 )
             }
             
@@ -113,7 +115,8 @@ class SSHKeyParserV2 {
             if let p384Key = try? P384.Signing.PrivateKey(pemRepresentation: pemString) {
                 return ParseResult(
                     privateKey: NIOSSHPrivateKey(p384Key: p384Key),
-                    keyType: "P384"
+                    keyType: "P384",
+                    publicKeyData: p384Key.publicKey.rawRepresentation
                 )
             }
             
@@ -121,7 +124,8 @@ class SSHKeyParserV2 {
             if let p521Key = try? P521.Signing.PrivateKey(pemRepresentation: pemString) {
                 return ParseResult(
                     privateKey: NIOSSHPrivateKey(p521Key: p521Key),
-                    keyType: "P521"
+                    keyType: "P521",
+                    publicKeyData: p521Key.publicKey.rawRepresentation
                 )
             }
         }
@@ -152,8 +156,15 @@ class SSHKeyParserV2 {
         
         return ParseResult(
             privateKey: NIOSSHPrivateKey(ed25519Key: ed25519Key),
-            keyType: "Ed25519"
+            keyType: "Ed25519",
+            publicKeyData: ed25519Key.publicKey.rawRepresentation
         )
+    }
+    
+    /// Parse OpenSSH format and return the private key
+    func parseOpenSSHPrivateKey(from keyData: Data, passphrase: String? = nil) throws -> NIOSSHPrivateKey {
+        let result = try Self.parseOpenSSHKey(keyData: keyData, passphrase: passphrase)
+        return result.privateKey
     }
     
     /// Parse OpenSSH format using ByteBuffer
@@ -260,28 +271,32 @@ class SSHKeyParserV2 {
             let ed25519Key = try Curve25519.Signing.PrivateKey.read(consuming: &privateKeyBuffer)
             return ParseResult(
                 privateKey: NIOSSHPrivateKey(ed25519Key: ed25519Key),
-                keyType: "Ed25519"
+                keyType: "Ed25519",
+                publicKeyData: ed25519Key.publicKey.rawRepresentation
             )
             
         case "ecdsa-sha2-nistp256":
             let p256Key = try P256.Signing.PrivateKey.read(consuming: &privateKeyBuffer)
             return ParseResult(
                 privateKey: NIOSSHPrivateKey(p256Key: p256Key),
-                keyType: "P256"
+                keyType: "P256",
+                publicKeyData: p256Key.publicKey.rawRepresentation
             )
             
         case "ecdsa-sha2-nistp384":
             let p384Key = try P384.Signing.PrivateKey.read(consuming: &privateKeyBuffer)
             return ParseResult(
                 privateKey: NIOSSHPrivateKey(p384Key: p384Key),
-                keyType: "P384"
+                keyType: "P384",
+                publicKeyData: p384Key.publicKey.rawRepresentation
             )
             
         case "ecdsa-sha2-nistp521":
             let p521Key = try P521.Signing.PrivateKey.read(consuming: &privateKeyBuffer)
             return ParseResult(
                 privateKey: NIOSSHPrivateKey(p521Key: p521Key),
-                keyType: "P521"
+                keyType: "P521",
+                publicKeyData: p521Key.publicKey.rawRepresentation
             )
             
         default:

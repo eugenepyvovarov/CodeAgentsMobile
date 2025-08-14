@@ -14,6 +14,7 @@ struct EditServerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SSHKey.name) private var sshKeys: [SSHKey]
+    @Query private var providers: [ServerProvider]
     
     let server: Server
     
@@ -46,6 +47,10 @@ struct EditServerSheet: View {
         self._selectedKeyId = State(initialValue: server.sshKeyId)
     }
     
+    private var serverProvider: ServerProvider? {
+        providers.first { $0.id == server.providerId }
+    }
+    
     var isAuthValid: Bool {
         switch authMethod {
         case .password:
@@ -69,6 +74,44 @@ struct EditServerSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // Show provider info if this is a managed server
+                if let provider = serverProvider {
+                    Section("Managed Server") {
+                        HStack {
+                            ProviderIcon(
+                                providerType: provider.providerType,
+                                size: 20,
+                                color: provider.providerType == "digitalocean" ? .blue : .orange
+                            )
+                                .frame(width: 30)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.name)
+                                    .font(.headline)
+                                Text(provider.providerType == "digitalocean" ? "DigitalOcean" : "Hetzner Cloud")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            // Show cloud-init status if provisioning is incomplete
+                            if !server.cloudInitComplete {
+                                CloudInitStatusBadge(status: server.cloudInitStatus)
+                            } else {
+                                // Use same pill style as CloudInitStatusBadge
+                                Text("Connected")
+                                    .font(.caption2)
+                                    .foregroundColor(.green)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Color.green.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                        }
+                    }
+                }
+                
                 Section("Server Details") {
                     TextField("Server Name", text: $serverName)
                     TextField("Host", text: $host)

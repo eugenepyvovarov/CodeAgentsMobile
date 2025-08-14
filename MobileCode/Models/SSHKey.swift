@@ -7,6 +7,8 @@ final class SSHKey {
     var name: String
     var keyType: String // e.g., "Ed25519", "P256", "P384", "P521"
     var privateKeyIdentifier: String // Reference to key stored in Keychain
+    var publicKey: String = "" // Store public key for upload to providers
+    var fingerprint: String? // SSH fingerprint from provider
     var createdAt = Date()
     
     init(name: String, keyType: String, privateKeyIdentifier: String) {

@@ -201,6 +201,36 @@ class KeychainManager {
         }
     }
     
+    // MARK: - Cloud Provider Token Methods
+    
+    /// Store API token for a cloud provider
+    /// - Parameters:
+    ///   - token: The API token to store
+    ///   - provider: The server provider
+    func storeProviderToken(_ token: String, for provider: ServerProvider) throws {
+        let data = token.data(using: .utf8)!
+        try store(data: data, for: provider.apiTokenKey)
+    }
+    
+    /// Retrieve API token for a cloud provider
+    /// - Parameter provider: The server provider
+    /// - Returns: The stored API token
+    func retrieveProviderToken(for provider: ServerProvider) throws -> String {
+        let data = try retrieve(for: provider.apiTokenKey)
+        
+        guard let token = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        
+        return token
+    }
+    
+    /// Delete API token for a cloud provider
+    /// - Parameter provider: The server provider
+    func deleteProviderToken(for provider: ServerProvider) throws {
+        try delete(for: provider.apiTokenKey)
+    }
+    
     // MARK: - Private Methods
     
     private func passwordKey(for serverId: UUID) -> String {

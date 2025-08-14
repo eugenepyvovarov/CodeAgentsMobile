@@ -11,6 +11,7 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import Crypto
 
 struct ImportSSHKeySheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -224,6 +225,11 @@ struct ImportSSHKeySheet: View {
             keyType: keyType,
             privateKeyIdentifier: UUID().uuidString
         )
+        
+        // Extract public key from private key using the formatter
+        if let publicKeyString = SSHKeyFormatter.extractPublicKey(from: keyData, keyType: keyType, passphrase: passphrase.isEmpty ? nil : passphrase, name: keyName) {
+            sshKey.publicKey = publicKeyString
+        }
         
         do {
             // Store the private key in Keychain

@@ -814,6 +814,39 @@ class ClaudeCodeService: ObservableObject {
     
     // MARK: - Private Helper Methods
     
+    /// Handle Claude not installed error
+    private func handleClaudeNotInstalledError(
+        for server: Server?,
+        continuation: AsyncThrowingStream<MessageChunk, Error>.Continuation,
+        processHandle: ProcessHandle?,
+        projectId: UUID?
+    ) {
+        // Mark Claude as not installed if server is available
+        if let server = server {
+            Task { @MainActor in
+                claudeInstallationStatus[server.id] = false
+            }
+        }
+        
+        // Send error chunk
+        continuation.yield(MessageChunk(
+            content: "Claude Code is not installed on this server. Please install it using:\nnpm install -g @anthropic-ai/claude-code",
+            isComplete: true,
+            isError: true,
+            metadata: ["error": "claude_not_installed"]
+        ))
+        
+        // Clean up if process handle and project ID are available
+        if let processHandle = processHandle {
+            processHandle.terminate()
+        }
+        if let projectId = projectId {
+            cleanupContinuation(for: projectId)
+        }
+        
+        continuation.finish()
+    }
+    
     /// Process streaming output with position tracking
     private func processStreamingOutput(
         from processHandle: ProcessHandle,
@@ -847,6 +880,17 @@ class ClaudeCodeService: ObservableObject {
                     // Skip the nohup: ignoring input line
                     if line.contains("nohup: ignoring input") {
                         continue
+                    }
+                    
+                    // Check for Claude not installed error
+                    if line.contains("claude: command not found") {
+                        handleClaudeNotInstalledError(
+                            for: server,
+                            continuation: continuation,
+                            processHandle: processHandle,
+                            projectId: project.id
+                        )
+                        return
                     }
                     
                     if let chunk = StreamingJSONParser.parseStreamingLine(line) {
@@ -1096,6 +1140,17 @@ class ClaudeCodeService: ObservableObject {
             // Skip the nohup: ignoring input line
             if line.contains("nohup: ignoring input") {
                 continue
+            }
+            
+            // Check for Claude not installed error
+            if line.contains("claude: command not found") {
+                handleClaudeNotInstalledError(
+                    for: nil,  // Server not available in this context
+                    continuation: continuation,
+                    processHandle: nil,
+                    projectId: nil
+                )
+                return
             }
             
             if let chunk = StreamingJSONParser.parseStreamingLine(line) {

@@ -43,7 +43,7 @@ final class PrivateKeyAuthenticationDelegate: NIOSSHClientUserAuthenticationDele
         // Load the private key from Keychain
         Task {
             do {
-                // Retrieve the private key data
+                // Retrieve the private key data from keychain
                 let privateKeyData = try KeychainManager.shared.retrieveSSHKey(for: keyId)
                 
                 // Check if we have a stored passphrase
