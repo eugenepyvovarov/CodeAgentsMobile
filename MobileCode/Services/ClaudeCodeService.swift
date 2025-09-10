@@ -381,7 +381,43 @@ class ClaudeCodeService: ObservableObject {
     }
     
     @objc private func appDidBecomeActive() {
-        // Recovery will be handled by ChatView when it checks for previous sessions
+        // Attempt to recover SSH connections when app becomes active
+        Task {
+            await recoverSSHConnectionsOnForeground()
+        }
+    }
+    
+    /// Recover SSH connections when app returns to foreground
+    private func recoverSSHConnectionsOnForeground() async {
+        print("🔄 Recovering SSH connections on app foreground")
+        
+        // First, clean up any stale connections
+        let cleanedCount = await sshService.cleanupStaleConnections()
+        if cleanedCount > 0 {
+            print("🧹 Cleaned up \(cleanedCount) stale SSH connections")
+        }
+        
+        // Then attempt to reconnect background-suspended connections
+        let reconnectedCount = await sshService.reconnectBackgroundConnections()
+        if reconnectedCount > 0 {
+            print("🔗 Reconnected \(reconnectedCount) SSH connections")
+            
+            // Notify that connections have been recovered
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .sshConnectionsRecovered,
+                    object: nil,
+                    userInfo: ["reconnectedCount": reconnectedCount]
+                )
+            }
+        }
+        
+        // Also trigger connection state transitions
+        for (projectId, state) in connectionStates {
+            if case .backgroundSuspended = state {
+                transitionConnectionState(for: projectId, to: .recovering(attempt: 1))
+            }
+        }
     }
     
     /// Start periodic cleanup of orphaned files

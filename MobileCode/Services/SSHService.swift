@@ -200,6 +200,95 @@ class SSHService {
         SSHLogger.log("Disconnect called for server \(serverId) - no action needed for direct connections", level: .debug)
     }
     
+    /// Validate if an SSH connection is still alive
+    /// - Parameter session: The SSH session to validate
+    /// - Returns: True if connection is responsive
+    func validateConnection(_ session: SSHSession) async -> Bool {
+        // First check if session reports as connected
+        guard session.isConnected else {
+            SSHLogger.log("Session reports as disconnected", level: .debug)
+            return false
+        }
+        
+        do {
+            // Send a simple echo command to test if the connection is actually responsive
+            let result = try await session.execute("echo 'connection-test'")
+            return !result.isEmpty && result.contains("connection-test")
+        } catch {
+            SSHLogger.log("Connection validation failed: \(error)", level: .debug)
+            return false
+        }
+    }
+    
+    /// Get all active sessions for health monitoring
+    /// - Returns: Array of active SSH sessions
+    func getActiveSessions() -> [SSHSession] {
+        return Array(connectionPool.values)
+    }
+    
+    /// Clean up stale connections from the pool
+    /// - Returns: Number of connections cleaned up
+    func cleanupStaleConnections() async -> Int {
+        var cleanedCount = 0
+        
+        for (key, session) in connectionPool {
+            let isValid = await validateConnection(session)
+            if !isValid {
+                SSHLogger.log("Cleaning up stale connection for \(key)", level: .info)
+                session.disconnect()
+                connectionPool.removeValue(forKey: key)
+                cleanedCount += 1
+                
+                // Also clean up project mapping if this was the last connection for the project
+                if let projectId = key.projectId,
+                   !connectionPool.keys.contains(where: { $0.projectId == projectId }) {
+                    projectServerMap.removeValue(forKey: projectId)
+                }
+            }
+        }
+        
+        if cleanedCount > 0 {
+            SSHLogger.log("Cleaned up \(cleanedCount) stale connections", level: .info)
+        }
+        
+        return cleanedCount
+    }
+    
+    /// Reconnect all background-suspended connections
+    /// - Returns: Number of connections reconnected
+    func reconnectBackgroundConnections() async -> Int {
+        var reconnectedCount = 0
+        
+        // Get all connections that need reconnection
+        let staleConnections = connectionPool.filter { key, session in
+            // For now, assume all connections need reconnection after backgrounding
+            // In a more sophisticated implementation, we'd track background state
+            return true
+        }
+        
+        for (key, _) in staleConnections {
+            do {
+                // Get server for this connection
+                guard let projectId = key.projectId,
+                      let serverId = projectServerMap[projectId],
+                      let server = ServerManager.shared.servers.first(where: { $0.id == serverId }) else {
+                    continue
+                }
+                
+                // Create new session
+                let newSession = try await createSession(for: server)
+                connectionPool[key] = newSession
+                reconnectedCount += 1
+                
+                SSHLogger.log("Reconnected background connection for \(key)", level: .info)
+            } catch {
+                SSHLogger.log("Failed to reconnect for \(key): \(error)", level: .error)
+            }
+        }
+        
+        return reconnectedCount
+    }
+    
     // MARK: - Private Methods
     
     /// Create a new SSH session

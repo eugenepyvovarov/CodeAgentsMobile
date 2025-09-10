@@ -17,6 +17,7 @@ import SwiftData
 // MARK: - Notifications
 extension Notification.Name {
     static let mcpConfigurationChanged = Notification.Name("mcpConfigurationChanged")
+    static let sshConnectionsRecovered = Notification.Name("sshConnectionsRecovered")
 }
 
 
@@ -536,6 +537,17 @@ class ChatViewModel {
         print("📝 cleanup: Cleaned up all resources")
     }
     
+    /// Clear all streaming states safely
+    private func clearAllStreamingStates() {
+        updateStreamingState(
+            isProcessing: false,
+            streamingMessage: nil as Message?,
+            streamingBlocks: [],
+            showActiveSessionIndicator: false,
+            isLoadingPreviousSession: false
+        )
+    }
+    
     /// Fetch MCP servers for the current project
     @MainActor
     func fetchMCPServers() async {
@@ -788,62 +800,33 @@ class ChatViewModel {
     func checkForPreviousSession() async {
         print("📝 checkForPreviousSession: Starting")
         
-        // Set a timeout for the entire operation
-        let timeoutTask = Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds timeout
-            await MainActor.run {
-                if isLoadingPreviousSession {
-                    print("⚠️ checkForPreviousSession: Timeout reached, forcing loading state to false")
-                    isLoadingPreviousSession = false
-                    showActiveSessionIndicator = false
-                }
+        // Prevent concurrent checks
+        guard !isLoadingPreviousSession else {
+            print("📝 checkForPreviousSession: Already checking, skipping")
+            return
+        }
+        
+        // Set loading state with timeout protection
+        isLoadingPreviousSession = true
+        
+        // Ensure loading state is cleared even if errors occur
+        defer {
+            Task { @MainActor in
+                isLoadingPreviousSession = false
             }
         }
         
-        defer {
-            timeoutTask.cancel()
-        }
-        
-        // Ensure we start with loading state true so UI shows feedback
-        await MainActor.run {
-            isLoadingPreviousSession = true
-            print("📝 checkForPreviousSession: Set isLoadingPreviousSession = true")
-        }
         guard let project = ProjectContext.shared.activeProject,
               let server = ProjectContext.shared.activeServer else { 
             print("📝 Recovery: No active project or server")
-            await MainActor.run {
-                isLoadingPreviousSession = false
-                showActiveSessionIndicator = false
-                print("📝 checkForPreviousSession: Set isLoadingPreviousSession = false (no project/server)")
-            }
+            clearAllStreamingStates()
             return 
-        }
-        
-        // Check if task was cancelled
-        if Task.isCancelled {
-            print("📝 Recovery: Task was cancelled")
-            await MainActor.run {
-                isLoadingPreviousSession = false
-                print("📝 checkForPreviousSession: Set isLoadingPreviousSession = false (task cancelled)")
-            }
-            return
         }
         
         // Check if we have an active streaming message to recover
         guard let messageId = project.activeStreamingMessageId else {
             print("📝 Recovery: No active streaming message ID found")
-            // Ensure clean state
-            await MainActor.run {
-                updateStreamingState(
-                    isProcessing: false,
-                    streamingMessage: nil as Message?,
-                    streamingBlocks: [],
-                    showActiveSessionIndicator: false,
-                    isLoadingPreviousSession: false
-                )
-                print("📝 checkForPreviousSession: Set isLoadingPreviousSession = false (no active streaming message)")
-            }
+            clearAllStreamingStates()
             return
         }
         

@@ -21,7 +21,7 @@ class SwiftSHSession: SSHSession {
     private let server: Server
     private var channel: Channel?
     private var childChannel: Channel?
-    private var isConnected = false
+    var isConnected = false
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     
     // Cache the detected shell to avoid repeated detection

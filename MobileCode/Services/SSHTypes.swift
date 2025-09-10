@@ -84,6 +84,9 @@ protocol SSHSession {
     
     /// Close the session
     func disconnect()
+    
+    /// Check if the session is currently connected
+    var isConnected: Bool { get }
 }
 
 /// Handle for a running process
