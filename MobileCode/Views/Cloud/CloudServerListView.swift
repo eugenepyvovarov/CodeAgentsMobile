@@ -232,11 +232,19 @@ struct AttachServerSheet: View {
     let onComplete: (Server) -> Void
     
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
     
     @Query private var sshKeys: [SSHKey]
     
-    @State private var selectedKey: SSHKey?
+    enum AuthMethod: String, CaseIterable, Identifiable {
+        case password = "Password"
+        case key = "SSH Key"
+        
+        var id: String { rawValue }
+    }
+    
+    @State private var authMethod: AuthMethod = .key
+    @State private var selectedKeyId: UUID?
+    @State private var password: String = ""
     @State private var serverName: String = ""
     @State private var username: String = "root"
     @State private var isTestingConnection = false
@@ -279,16 +287,41 @@ struct AttachServerSheet: View {
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
                     
-                    Picker("SSH Key", selection: $selectedKey) {
-                        Text("Select Key").tag(nil as SSHKey?)
-                        ForEach(sshKeys) { key in
-                            Text(key.name).tag(key as SSHKey?)
+                    Picker("Authentication", selection: $authMethod) {
+                        ForEach(AuthMethod.allCases) { method in
+                            Text(method.rawValue).tag(method)
                         }
                     }
+                    .pickerStyle(SegmentedPickerStyle())
                     
-                    if sshKeys.isEmpty {
-                        Button(action: { showCreateKey = true }) {
-                            Label("Create SSH Key", systemImage: "key")
+                    if authMethod == .password {
+                        SecureField("Password", text: $password)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                            .textContentType(.password)
+                    } else {
+                        if sshKeys.isEmpty {
+                            VStack(spacing: 12) {
+                                Text("No SSH keys available")
+                                    .foregroundColor(.secondary)
+                                Button(action: { showCreateKey = true }) {
+                                    Label("Create SSH Key", systemImage: "key")
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else {
+                            Picker("SSH Key", selection: $selectedKeyId) {
+                                Text("Select Key").tag(nil as UUID?)
+                                ForEach(sshKeys) { key in
+                                    Text(key.name).tag(key.id as UUID?)
+                                }
+                            }
+                            
+                            Button(action: { showCreateKey = true }) {
+                                Label("Create SSH Key", systemImage: "key")
+                            }
+                            .font(.footnote)
+                            .padding(.top, 4)
                         }
                     }
                 }
@@ -316,12 +349,12 @@ struct AttachServerSheet: View {
                             Text("Test Connection")
                         }
                     }
-                    .disabled(selectedKey == nil || cloudServer.publicIP == nil || isTestingConnection)
+                    .disabled(!isAuthValid || cloudServer.publicIP == nil || isTestingConnection)
                     
                     Button(action: attachServer) {
                         Text("Attach Server")
                     }
-                    .disabled(connectionTestResult != true)
+                    .disabled(connectionTestResult != true || !isAuthValid)
                 }
             }
             .navigationTitle("Attach Server")
@@ -342,48 +375,86 @@ struct AttachServerSheet: View {
                 AddSSHKeySheet()
             }
         }
-        .onAppear {
-            serverName = cloudServer.name
+        .onAppear(perform: configureDefaults)
+        .onChange(of: authMethod) { _, _ in resetTestState() }
+        .onChange(of: password) { _, _ in resetTestState() }
+        .onChange(of: selectedKeyId) { _, _ in resetTestState() }
+        .onChange(of: username) { _, _ in resetTestState() }
+    }
+    
+    private var selectedKey: SSHKey? {
+        guard let keyId = selectedKeyId else { return nil }
+        return sshKeys.first { $0.id == keyId }
+    }
+    
+    private var isAuthValid: Bool {
+        switch authMethod {
+        case .password:
+            return !password.isEmpty
+        case .key:
+            return selectedKeyId != nil
+        }
+    }
+    
+    private func configureDefaults() {
+        serverName = cloudServer.name
+        if sshKeys.isEmpty {
+            authMethod = .password
+        } else if selectedKeyId == nil {
+            selectedKeyId = sshKeys.first?.id
         }
     }
     
     private func testConnection() {
         guard let ip = cloudServer.publicIP,
-              let sshKey = selectedKey else { return }
+              isAuthValid else { return }
+        
+        let currentAuthMethod = authMethod
+        let currentPassword = password
+        let currentUsername = username
+        let currentKey = selectedKey
+        
+        if currentAuthMethod == .key && currentKey == nil {
+            return
+        }
         
         isTestingConnection = true
         connectionTestResult = nil
+        errorMessage = nil
         
         Task {
             do {
-                // Retrieve the private key from keychain
-                let privateKeyData = try KeychainManager.shared.retrieveSSHKey(for: sshKey.id)
-                guard let privateKeyString = String(data: privateKeyData, encoding: .utf8) else {
-                    throw NSError(domain: "SSHTest", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid private key format"])
-                }
-                
-                // Test the connection using SSHService
-                let session = try await SSHService.shared.connectToServer(
+                let testServer = Server(
+                    name: "Attach-\(cloudServer.name)",
                     host: ip,
                     port: 22,
-                    username: username,
-                    authMethod: .key(privateKeyString),
-                    purpose: .fileOperations
+                    username: currentUsername,
+                    authMethodType: currentAuthMethod == .password ? "password" : "key"
                 )
                 
-                // Try a simple command to verify connection works
+                defer {
+                    if currentAuthMethod == .password {
+                        try? KeychainManager.shared.deletePassword(for: testServer.id)
+                    }
+                }
+                
+                if currentAuthMethod == .key {
+                    testServer.sshKeyId = currentKey?.id
+                } else {
+                    try KeychainManager.shared.storePassword(currentPassword, for: testServer.id)
+                }
+                
+                let sshService = ServiceManager.shared.sshService
+                let session = try await sshService.connect(to: testServer)
+                
                 let testCommand = "echo 'Connection successful'"
                 _ = try await session.execute(testCommand)
+                session.disconnect()
                 
-                // If we get here, connection was successful
                 await MainActor.run {
                     connectionTestResult = true
                     isTestingConnection = false
                 }
-                
-                // Close the test session
-                try await session.disconnect()
-                
             } catch {
                 await MainActor.run {
                     connectionTestResult = false
@@ -397,22 +468,44 @@ struct AttachServerSheet: View {
     
     private func attachServer() {
         guard let ip = cloudServer.publicIP,
-              let sshKey = selectedKey else { return }
+              connectionTestResult == true,
+              isAuthValid else { return }
+        
+        if authMethod == .key && selectedKey == nil {
+            return
+        }
         
         let server = Server(
             name: serverName.isEmpty ? cloudServer.name : serverName,
             host: ip,
             port: 22,
             username: username,
-            authMethodType: "key"
+            authMethodType: authMethod == .password ? "password" : "key"
         )
         
-        server.sshKeyId = sshKey.id
         server.providerId = provider.id
         server.providerServerId = cloudServer.id
         
+        switch authMethod {
+        case .password:
+            do {
+                try KeychainManager.shared.storePassword(password, for: server.id)
+            } catch {
+                errorMessage = "Failed to store password: \(error.localizedDescription)"
+                showError = true
+                return
+            }
+        case .key:
+            server.sshKeyId = selectedKey?.id
+        }
+        
         onComplete(server)
         dismiss()
+    }
+    
+    private func resetTestState() {
+        connectionTestResult = nil
+        errorMessage = nil
     }
 }
 
