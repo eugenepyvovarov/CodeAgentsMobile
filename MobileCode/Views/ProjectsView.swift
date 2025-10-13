@@ -135,6 +135,7 @@ struct ProjectsView: View {
             // Delete locally
             modelContext.delete(project)
             try modelContext.save()
+            ShortcutSyncService.shared.sync(using: modelContext)
             
             // Clear selection and reset state
             projectToDelete = nil
@@ -442,6 +443,7 @@ struct AddProjectSheet: View {
             modelContext.insert(project)
             
             try modelContext.save()
+            ShortcutSyncService.shared.sync(using: modelContext)
             
             // Call the completion handler if provided
             if let onProjectCreated = onProjectCreated {

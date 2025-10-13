@@ -18,10 +18,11 @@ struct CodeAgentsMobileApp: App {
             SSHKey.self,
             ServerProvider.self
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        SwiftDataStoreMigrator.migrateIfNeeded(schema: schema, destinationURL: AppGroup.storeURL)
+        let configuration = ModelConfiguration(schema: schema, url: AppGroup.storeURL)
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(for: schema, configurations: [configuration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }

@@ -75,6 +75,7 @@ struct ContentView: View {
         serverManager.loadServers(from: modelContext)
         // Start cloud-init monitoring for servers that need it
         startCloudInitMonitoring()
+        ShortcutSyncService.shared.sync(using: modelContext)
     }
     
     private func startCloudInitMonitoring() {
