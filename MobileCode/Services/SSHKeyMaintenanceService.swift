@@ -63,7 +63,7 @@ class SSHKeyMaintenanceService {
             }
             
             // Check if we need a passphrase
-            let passphrase = try? KeychainManager.shared.retrieveSSHKeyPassphrase(for: sshKey.id)
+            let passphrase = try KeychainManager.shared.retrieveSSHKeyPassphrase(for: sshKey.id)
             
             // Use the SSHKeyFormatter to extract and format the public key
             return SSHKeyFormatter.extractPublicKey(

@@ -86,6 +86,14 @@ class ChatViewModel {
             name: .mcpConfigurationChanged,
             object: nil
         )
+        
+        // Listen for app backgrounding to clear streaming states
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
     }
     
     deinit {
@@ -539,6 +547,16 @@ class ChatViewModel {
     
     /// Clear all streaming states safely
     private func clearAllStreamingStates() {
+        // Clear the project's active streaming message ID if it exists
+        if let project = ProjectContext.shared.activeProject {
+            if project.activeStreamingMessageId != nil {
+                print("📝 Clearing active streaming message ID from project")
+                project.activeStreamingMessageId = nil
+                // Save changes to persist the cleared state
+                saveChanges()
+            }
+        }
+        
         updateStreamingState(
             isProcessing: false,
             streamingMessage: nil as Message?,
@@ -600,6 +618,11 @@ class ChatViewModel {
             await fetchMCPServers()
             print("📝 MCP servers after refresh: \(cachedMCPServers.count)")
         }
+    }
+    
+    @objc private func appDidEnterBackground() {
+        print("📝 App entered background - clearing streaming states")
+        clearAllStreamingStates()
     }
     
     /// Batch update streaming state to prevent UI flicker

@@ -240,9 +240,8 @@ class SSHService {
                 cleanedCount += 1
                 
                 // Also clean up project mapping if this was the last connection for the project
-                if let projectId = key.projectId,
-                   !connectionPool.keys.contains(where: { $0.projectId == projectId }) {
-                    projectServerMap.removeValue(forKey: projectId)
+                if !connectionPool.keys.contains(where: { $0.projectId == key.projectId }) {
+                    projectServerMap.removeValue(forKey: key.projectId)
                 }
             }
         }
@@ -269,8 +268,8 @@ class SSHService {
         for (key, _) in staleConnections {
             do {
                 // Get server for this connection
-                guard let projectId = key.projectId,
-                      let serverId = projectServerMap[projectId],
+                let projectId = key.projectId
+                guard let serverId = projectServerMap[projectId],
                       let server = ServerManager.shared.servers.first(where: { $0.id == serverId }) else {
                     continue
                 }
