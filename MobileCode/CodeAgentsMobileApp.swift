@@ -27,10 +27,16 @@ struct CodeAgentsMobileApp: App {
         }
     }()
 
+    @StateObject private var deepLinkManager = DeepLinkManager.shared
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(deepLinkManager)
         }
         .modelContainer(sharedModelContainer)
+        .onOpenURL { url in
+            deepLinkManager.handle(url: url)
+        }
     }
 }

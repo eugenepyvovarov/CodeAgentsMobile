@@ -13,6 +13,7 @@ struct ContentView: View {
     @StateObject private var projectContext = ProjectContext.shared
     @StateObject private var serverManager = ServerManager.shared
     @StateObject private var cloudInitMonitor = CloudInitMonitor.shared
+    @EnvironmentObject private var deepLinkManager: DeepLinkManager
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     
@@ -68,8 +69,23 @@ struct ContentView: View {
                 break
             }
         }
+        .sheet(item: $deepLinkManager.pendingRequest) { request in
+            MCPDeepLinkImportSheet(request: request)
+        }
+        .alert("Unable to Open Link", isPresented: Binding(
+            get: { deepLinkManager.error != nil },
+            set: { newValue in
+                if !newValue {
+                    deepLinkManager.clearError()
+                }
+            }
+        ), actions: {
+            Button("OK", role: .cancel) {}
+        }, message: {
+            Text(deepLinkManager.error?.message ?? "An unknown error occurred.")
+        })
     }
-    
+
     private func configureManagers() {
         // Load servers for ServerManager
         serverManager.loadServers(from: modelContext)
