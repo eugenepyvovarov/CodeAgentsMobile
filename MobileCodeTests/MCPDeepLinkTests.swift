@@ -39,6 +39,7 @@ struct MCPDeepLinkTests {
             #expect(server.args == ["-y", "firecrawl-mcp"])
             #expect(server.env?["FIRECRAWL_API_KEY"] == "test")
             #expect(server.scope == .project)
+            #expect(server.type == "stdio")
         default:
             Issue.record("Expected server payload")
         }
@@ -70,7 +71,7 @@ struct MCPDeepLinkTests {
         case .bundle(let bundle):
             #expect(bundle.name == "Starter")
             #expect(bundle.servers.count == 2)
-            #expect(bundle.servers.contains(where: { $0.name == "search" && $0.url == "https://example.com/mcp" }))
+            #expect(bundle.servers.contains(where: { $0.name == "search" && $0.url == "https://example.com/mcp" && $0.type == "http" }))
             #expect(bundle.servers.contains(where: { $0.name == "playwright" && $0.command == "npx" }))
         default:
             Issue.record("Expected bundle payload")
@@ -121,6 +122,29 @@ struct MCPDeepLinkTests {
         let finalNames = summary.addedServers.map { $0.finalName }
         #expect(finalNames.contains("search"))
         #expect(finalNames.contains("search-2"))
+    }
+
+    @Test func importerPreservesRemoteType() async throws {
+        let project = RemoteProject(name: "Type", serverId: UUID())
+        let mockService = MockMCPService(existing: [])
+        let importer = MCPDeepLinkImporter(service: mockService)
+
+        let payload = DeepLinkServerPayload(
+            name: "realtime",
+            type: "sse",
+            command: nil,
+            args: nil,
+            env: nil,
+            url: "https://example.com/mcp",
+            headers: nil,
+            scope: .project
+        )
+
+        let summary = try await importer.importServer(payload, into: project)
+
+        #expect(summary.addedServers.count == 1)
+        #expect(mockService.addedServers.first?.server.type == "sse")
+        #expect(mockService.addedServers.first?.server.generateAddJsonCommand()?.contains("\"type\":\"sse\"") == true)
     }
 }
 

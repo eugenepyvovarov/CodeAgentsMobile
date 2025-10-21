@@ -12,7 +12,11 @@ import Foundation
 struct MCPServer: Identifiable, Equatable {
     let id = UUID()
     let name: String
-    
+
+    /// Underlying transport type for the server (e.g. stdio, http, sse).
+    /// When nil we infer the type based on the available configuration.
+    var type: String?
+
     // Local server properties
     var command: String?
     var args: [String]?
@@ -21,9 +25,27 @@ struct MCPServer: Identifiable, Equatable {
     // Remote server properties
     var url: String?
     var headers: [String: String]?
-    
+
     // Runtime status (not persisted in .mcp.json)
     var status: MCPStatus = .unknown
+
+    init(
+        name: String,
+        command: String?,
+        args: [String]?,
+        env: [String: String]?,
+        url: String?,
+        headers: [String: String]?,
+        type: String? = nil
+    ) {
+        self.name = name
+        self.command = command
+        self.args = args
+        self.env = env
+        self.url = url
+        self.headers = headers
+        self.type = type
+    }
     
     /// Server connection status
     enum MCPStatus: Equatable {
@@ -111,22 +133,25 @@ struct MCPServer: Identifiable, Equatable {
         if url != nil {
             return true
         }
+        if let type = type?.lowercased(), type == "http" || type == "sse" {
+            return true
+        }
         // Also check if command is "http" or "sse" which indicates remote server from claude mcp list
         if let command = command {
             return command.lowercased() == "http" || command.lowercased() == "sse"
         }
         return false
     }
-    
+
     /// Generate the claude mcp add-json command for this server
     func generateAddJsonCommand(scope: MCPScope = .project) -> String? {
         // Create JSON configuration
         var jsonConfig: [String: Any] = [:]
-        
+
         if let url = url {
             // Remote server - determine type based on URL
             // If URL contains "sse" (case-insensitive), use "sse", otherwise use "http"
-            let serverType = url.lowercased().contains("sse") ? "sse" : "http"
+            let serverType = normalizedRemoteType() ?? (url.lowercased().contains("sse") ? "sse" : "http")
             jsonConfig["type"] = serverType
             jsonConfig["url"] = url
             if let headers = headers {
@@ -134,7 +159,7 @@ struct MCPServer: Identifiable, Equatable {
             }
         } else if let command = command {
             // Local server
-            jsonConfig["type"] = "stdio"
+            jsonConfig["type"] = normalizedLocalType()
             jsonConfig["command"] = command
             if let args = args {
                 jsonConfig["args"] = args
@@ -164,8 +189,22 @@ struct MCPServer: Identifiable, Equatable {
         // Add name and JSON
         cmdParts.append("\"\(name)\"")
         cmdParts.append("'\(jsonString)'")
-        
+
         return cmdParts.joined(separator: " ")
+    }
+
+    private func normalizedRemoteType() -> String? {
+        guard let type else { return nil }
+        let trimmed = type.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.lowercased()
+    }
+
+    private func normalizedLocalType() -> String {
+        guard let type = type?.trimmingCharacters(in: .whitespacesAndNewlines), !type.isEmpty else {
+            return "stdio"
+        }
+        return type.lowercased()
     }
 }
 
@@ -173,11 +212,12 @@ struct MCPServer: Identifiable, Equatable {
 extension MCPServer {
     /// Configuration structure matching .mcp.json format
     struct Configuration: Codable {
+        var type: String?
         // Local server properties
         var command: String?
         var args: [String]?
         var env: [String: String]?
-        
+
         // Remote server properties
         var url: String?
         var headers: [String: String]?
@@ -186,6 +226,7 @@ extension MCPServer {
     /// Create server from configuration
     init(name: String, configuration: Configuration) {
         self.name = name
+        self.type = configuration.type
         self.command = configuration.command
         self.args = configuration.args
         self.env = configuration.env
@@ -196,6 +237,7 @@ extension MCPServer {
     /// Convert to configuration for saving
     var configuration: Configuration {
         Configuration(
+            type: type,
             command: command,
             args: args,
             env: env,

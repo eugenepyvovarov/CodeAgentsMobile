@@ -142,13 +142,23 @@ struct DeepLinkServerPayload: Codable, Equatable {
                 throw DeepLinkImportError.invalidServer("Remote MCP server \(name) is missing a URL")
             }
 
+            let resolvedType: String
+            if let providedType = type?.trimmingCharacters(in: .whitespacesAndNewlines), !providedType.isEmpty {
+                resolvedType = providedType.lowercased()
+            } else if url.lowercased().contains("sse") {
+                resolvedType = "sse"
+            } else {
+                resolvedType = "http"
+            }
+
             return MCPServer(
                 name: trimmedName,
                 command: nil,
                 args: nil,
                 env: nil,
                 url: url,
-                headers: headers
+                headers: headers,
+                type: resolvedType
             )
         }
 
@@ -156,13 +166,16 @@ struct DeepLinkServerPayload: Codable, Equatable {
             throw DeepLinkImportError.invalidServer("Local MCP server \(name) is missing a command")
         }
 
+        let resolvedType = type?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
         return MCPServer(
             name: trimmedName,
             command: command,
             args: args,
             env: env,
             url: nil,
-            headers: nil
+            headers: nil,
+            type: (resolvedType?.isEmpty == false ? resolvedType : "stdio")
         )
     }
 }

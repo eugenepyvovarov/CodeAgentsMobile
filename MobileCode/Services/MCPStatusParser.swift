@@ -254,7 +254,8 @@ struct MCPStatusParser {
                 args: args.isEmpty ? nil : args,
                 env: env.isEmpty ? nil : env,
                 url: nil,
-                headers: nil
+                headers: nil,
+                type: type
             )
         } else {
             // Remote server (sse or http)
@@ -264,7 +265,8 @@ struct MCPStatusParser {
                 args: nil,
                 env: nil,
                 url: url,
-                headers: headers.isEmpty ? nil : headers
+                headers: headers.isEmpty ? nil : headers,
+                type: type
             )
         }
         
