@@ -56,6 +56,19 @@ enum ClaudeAuthStatus {
     case notChecked
 }
 
+/// Available Claude Code model configuration option
+struct ClaudeModelOption: Identifiable, Equatable {
+    /// Alias used by the Claude CLI (e.g., "sonnet")
+    let alias: String
+    /// Short description of the model behavior
+    let description: String
+    
+    var id: String { alias }
+    
+    /// Value passed to the CLI when this option is selected
+    var cliValue: String { alias }
+}
+
 
 /// Message chunk for streaming responses
 struct MessageChunk {
@@ -316,6 +329,40 @@ class ClaudeCodeService: ObservableObject {
     /// UserDefaults key for auth method preference
     private let claudeAuthMethodKey = "claudeAuthMethod"
     
+    /// UserDefaults key for Claude model preference
+    private let claudeModelPreferenceKey = "claudeModelPreference"
+    
+    /// Default alias used when no preference is stored
+    private let defaultModelAlias = "default"
+    
+    /// Available Claude model options surfaced in settings
+    private let availableModelOptions: [ClaudeModelOption] = [
+        ClaudeModelOption(
+            alias: "default",
+            description: "Recommended model setting, depending on your account type."
+        ),
+        ClaudeModelOption(
+            alias: "sonnet",
+            description: "Uses the latest Sonnet model (currently Sonnet 4.5) for daily coding tasks."
+        ),
+        ClaudeModelOption(
+            alias: "opus",
+            description: "Uses Opus model (currently Opus 4.1) for specialized complex reasoning tasks."
+        ),
+        ClaudeModelOption(
+            alias: "haiku",
+            description: "Uses the fast and efficient Haiku model for simple tasks."
+        ),
+        ClaudeModelOption(
+            alias: "sonnet[1m]",
+            description: "Uses Sonnet with a 1 million token context window for long sessions."
+        ),
+        ClaudeModelOption(
+            alias: "opusplan",
+            description: "Special mode that uses opus during plan mode, then switches to sonnet for execution."
+        )
+    ]
+    
     /// Track last read positions for output files
     private var lastReadPositions: [UUID: Int] = [:]
     
@@ -424,6 +471,50 @@ class ClaudeCodeService: ObservableObject {
     func getCurrentAuthMethod() -> ClaudeAuthMethod {
         let rawValue = UserDefaults.standard.string(forKey: claudeAuthMethodKey) ?? ClaudeAuthMethod.apiKey.rawValue
         return ClaudeAuthMethod(rawValue: rawValue) ?? .apiKey
+    }
+    
+    // MARK: - Model Preference Management
+    
+    /// Return all available Claude model options
+    func getAvailableModelOptions() -> [ClaudeModelOption] {
+        availableModelOptions
+    }
+    
+    /// Return the persisted model alias or the default when unset/invalid
+    func getCurrentModelAlias() -> String {
+        let saved = UserDefaults.standard.string(forKey: claudeModelPreferenceKey)
+        if let saved,
+           availableModelOptions.contains(where: { $0.alias == saved }) {
+            return saved
+        }
+        return defaultModelAlias
+    }
+    
+    /// Return the model option associated with the stored preference
+    func getCurrentModelOption() -> ClaudeModelOption {
+        if let option = availableModelOptions.first(where: { $0.alias == getCurrentModelAlias() }) {
+            return option
+        }
+        // Fallback to the default option
+        return availableModelOptions.first(where: { $0.alias == defaultModelAlias }) ?? availableModelOptions[0]
+    }
+    
+    /// Resolve a model option for a specific alias
+    func getModelOption(for alias: String) -> ClaudeModelOption? {
+        availableModelOptions.first(where: { $0.alias == alias })
+    }
+    
+    /// Persist the preferred Claude model
+    func setCurrentModel(alias: String) {
+        let resolvedAlias = availableModelOptions.contains(where: { $0.alias == alias }) ? alias : defaultModelAlias
+        UserDefaults.standard.set(resolvedAlias, forKey: claudeModelPreferenceKey)
+    }
+    
+    /// Compute the CLI argument for the active model selection
+    func currentModelCliArgument() -> String? {
+        let option = getCurrentModelOption()
+        guard option.alias != defaultModelAlias else { return nil }
+        return option.cliValue
     }
     
     /// Check if Claude is installed on the given server
@@ -556,6 +647,13 @@ class ClaudeCodeService: ObservableObject {
                     claudeCommand += try buildAuthExportCommand()
                     claudeCommand += "claude --print \"\(escapedMessage)\" "
                     claudeCommand += "--output-format stream-json --verbose "
+                    
+                    if let modelArgument = currentModelCliArgument() {
+                        let escapedModel = modelArgument
+                            .replacingOccurrences(of: "\\", with: "\\\\")
+                            .replacingOccurrences(of: "\"", with: "\\\"")
+                        claudeCommand += "--model \"\(escapedModel)\" "
+                    }
                     
                     // Build allowed tools list including MCP servers
                     var allowedTools = ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "LS", "Grep", "Glob", "WebFetch"]

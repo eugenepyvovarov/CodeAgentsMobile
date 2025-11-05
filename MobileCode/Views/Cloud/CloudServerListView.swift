@@ -236,7 +236,7 @@ struct AttachServerSheet: View {
     
     @Query private var sshKeys: [SSHKey]
     
-    @State private var selectedKey: SSHKey?
+    @State private var selectedKeyID: UUID?
     @State private var serverName: String = ""
     @State private var username: String = "root"
     @State private var isTestingConnection = false
@@ -244,6 +244,11 @@ struct AttachServerSheet: View {
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var showCreateKey = false
+    
+    private var selectedSSHKey: SSHKey? {
+        guard let id = selectedKeyID else { return nil }
+        return sshKeys.first(where: { $0.id == id })
+    }
     
     var body: some View {
         NavigationStack {
@@ -279,16 +284,17 @@ struct AttachServerSheet: View {
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
                     
-                    Picker("SSH Key", selection: $selectedKey) {
-                        Text("Select Key").tag(nil as SSHKey?)
-                        ForEach(sshKeys) { key in
-                            Text(key.name).tag(key as SSHKey?)
-                        }
-                    }
-                    
-                    if sshKeys.isEmpty {
-                        Button(action: { showCreateKey = true }) {
-                            Label("Create SSH Key", systemImage: "key")
+                    NavigationLink {
+                        SSHKeySelectionView(
+                            selectedKeyID: $selectedKeyID,
+                            onAddKey: { showCreateKey = true }
+                        )
+                    } label: {
+                        HStack {
+                            Text("SSH Key")
+                            Spacer()
+                            Text(selectedSSHKey?.name ?? "Select")
+                                .foregroundColor(selectedSSHKey == nil ? .secondary : .primary)
                         }
                     }
                 }
@@ -316,7 +322,7 @@ struct AttachServerSheet: View {
                             Text("Test Connection")
                         }
                     }
-                    .disabled(selectedKey == nil || cloudServer.publicIP == nil || isTestingConnection)
+                    .disabled(selectedSSHKey == nil || cloudServer.publicIP == nil || isTestingConnection)
                     
                     Button(action: attachServer) {
                         Text("Attach Server")
@@ -349,7 +355,7 @@ struct AttachServerSheet: View {
     
     private func testConnection() {
         guard let ip = cloudServer.publicIP,
-              let sshKey = selectedKey else { return }
+              let sshKey = selectedSSHKey else { return }
         
         isTestingConnection = true
         connectionTestResult = nil
@@ -397,7 +403,7 @@ struct AttachServerSheet: View {
     
     private func attachServer() {
         guard let ip = cloudServer.publicIP,
-              let sshKey = selectedKey else { return }
+              let sshKey = selectedSSHKey else { return }
         
         let server = Server(
             name: serverName.isEmpty ? cloudServer.name : serverName,
