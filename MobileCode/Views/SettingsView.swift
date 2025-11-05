@@ -27,6 +27,11 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var authToken = ""
     @State private var selectedAuthMethod = ClaudeCodeService.shared.getCurrentAuthMethod()
+    @State private var selectedModelAlias = ClaudeCodeService.shared.getCurrentModelAlias()
+    
+    private var selectedModelOption: ClaudeModelOption {
+        ClaudeCodeService.shared.getModelOption(for: selectedModelAlias) ?? ClaudeCodeService.shared.getCurrentModelOption()
+    }
     
     var body: some View {
         NavigationStack {
@@ -75,6 +80,19 @@ struct SettingsView: View {
                         .contentShape(Rectangle())
                         .onTapGesture {
                             showingTokenEntry = true
+                        }
+                    }
+                    
+                    NavigationLink {
+                        ClaudeModelSelectionView(selectedModelAlias: $selectedModelAlias)
+                    } label: {
+                        HStack(alignment: .top) {
+                            Label("Claude Model", systemImage: "cpu")
+                            Spacer()
+                            Text(selectedModelOption.alias)
+                                .font(.subheadline)
+                                .fontDesign(.monospaced)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
@@ -173,6 +191,9 @@ struct SettingsView: View {
                     }
                 }
             })
+            .onChange(of: selectedModelAlias) { newValue in
+                ClaudeCodeService.shared.setCurrentModel(alias: newValue)
+            }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingAddServer) {
@@ -237,6 +258,9 @@ struct SettingsView: View {
         } catch {
             authToken = ""
         }
+        
+        // Load model preference
+        selectedModelAlias = ClaudeCodeService.shared.getCurrentModelAlias()
         
         // Update auth status
         ClaudeCodeService.shared.authStatus = ClaudeCodeService.shared.hasCredentials() ? .authenticated : .missingCredentials
@@ -946,6 +970,50 @@ struct AuthTokenEntrySheet: View {
         } catch {
             // Failed to save auth token
         }
+    }
+}
+
+struct ClaudeModelSelectionView: View {
+    @Binding var selectedModelAlias: String
+    @Environment(\.dismiss) private var dismiss
+    
+    private let modelOptions = ClaudeCodeService.shared.getAvailableModelOptions()
+    
+    var body: some View {
+        List {
+            Section {
+                ForEach(modelOptions) { option in
+                    Button {
+                        selectedModelAlias = option.alias
+                        dismiss()
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(option.alias)
+                                    .font(.headline)
+                                    .fontDesign(.monospaced)
+                                Text(option.description)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            if option.alias == selectedModelAlias {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.accentColor)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } footer: {
+                Text("Applies to all Claude Code sessions started from this device.")
+                    .font(.caption)
+            }
+        }
+        .navigationTitle("Claude Model")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

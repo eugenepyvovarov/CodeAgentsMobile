@@ -79,13 +79,19 @@ struct ManualServerForm: View {
     @State private var username = ""
     @State private var authMethodType = "password"
     @State private var password = ""
-    @State private var selectedSSHKey: SSHKey?
+    @State private var selectedSSHKeyID: UUID?
     @State private var isTesting = false
     @State private var testResult: String?
     @State private var showTestResult = false
     @State private var isSaving = false
     @State private var alertMessage = ""
     @State private var showAlert = false
+    @State private var showAddSSHKeySheet = false
+    
+    private var selectedSSHKey: SSHKey? {
+        guard let id = selectedSSHKeyID else { return nil }
+        return sshKeys.first(where: { $0.id == id })
+    }
     
     var body: some View {
         Form {
@@ -116,10 +122,17 @@ struct ManualServerForm: View {
                     SecureField("Password", text: $password)
                         .autocapitalization(.none)
                 } else {
-                    Picker("SSH Key", selection: $selectedSSHKey) {
-                        Text("Select Key").tag(nil as SSHKey?)
-                        ForEach(sshKeys) { key in
-                            Text(key.name).tag(key as SSHKey?)
+                    NavigationLink {
+                        SSHKeySelectionView(
+                            selectedKeyID: $selectedSSHKeyID,
+                            onAddKey: { showAddSSHKeySheet = true }
+                        )
+                    } label: {
+                        HStack {
+                            Text("SSH Key")
+                            Spacer()
+                            Text(selectedSSHKey?.name ?? "Select")
+                                .foregroundColor(selectedSSHKey == nil ? .secondary : .primary)
                         }
                     }
                 }
@@ -157,6 +170,9 @@ struct ManualServerForm: View {
         } message: {
             Text(alertMessage)
         }
+        .sheet(isPresented: $showAddSSHKeySheet) {
+            AddSSHKeySheet()
+        }
         .onAppear {
             updateCanSave()
             onSave(saveServer)
@@ -164,7 +180,7 @@ struct ManualServerForm: View {
         .onChange(of: host) { _, _ in updateCanSave() }
         .onChange(of: username) { _, _ in updateCanSave() }
         .onChange(of: password) { _, _ in updateCanSave() }
-        .onChange(of: selectedSSHKey) { _, _ in updateCanSave() }
+        .onChange(of: selectedSSHKeyID) { _, _ in updateCanSave() }
         .onChange(of: authMethodType) { _, _ in updateCanSave() }
     }
     
