@@ -213,6 +213,7 @@
 				877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
 				87AD5E842E1D349A0035A296 /* XCRemoteSwiftPackageReference "OpenSSL-Package" */,
 				87AD5F8A2E1D69DF0035A296 /* XCRemoteSwiftPackageReference "swift-asn1" */,
+				87BE57602EB3F9210099D409 /* XCRemoteSwiftPackageReference "swift-eventsource" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 877CE6672DF8632600B93778 /* Products */;
@@ -632,6 +633,14 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 1.4.0;
+			};
+		};
+		87BE57602EB3F9210099D409 /* XCRemoteSwiftPackageReference "swift-eventsource" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/launchdarkly/swift-eventsource";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.3.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
