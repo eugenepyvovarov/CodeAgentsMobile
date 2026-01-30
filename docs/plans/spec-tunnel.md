@@ -120,138 +120,63 @@ from fastapi.responses import StreamingResponse, PlainTextResponse
 from claude_agent_sdk import query, ClaudeAgentOptions
 
 app = FastAPI()
-STORE = Path("sessions"); STORE.mkdir(exist_ok=True)
+SESS_DIR = Path("sessions")
+SESS_DIR.mkdir(parents=True, exist_ok=True)
 
-def write_event(session_id: str, event_id: int, payload: dict):
-    line = json.dumps(payload, separators=(",", ":"))
-    (STORE / f"{session_id}.ndjson").open("a").write(line + "\n")
-
-async def sse_iter(session_id: str, options: ClaudeAgentOptions):
-    eid = 0
-    yield ": ping\n\n"  # optional heartbeat
-    async for msg in query(prompt=options.prompt, options=options):
-        eid += 1
-        payload = msg.to_dict() if hasattr(msg, "to_dict") else json.loads(json.dumps(msg, default=str))
-        payload.setdefault("session_id", session_id)
-        write_event(session_id, eid, payload)
-        data = json.dumps(payload, separators=(",", ":"))
-        yield f"id: {eid}\n" + f"data: {data}\n\n"
-    # final result marker if SDK doesn’t emit one
-    eid += 1
-    result = {"type": "result", "session_id": session_id}
-    write_event(session_id, eid, result)
-    yield f"id: {eid}\n" + f"data: {json.dumps(result)}\n\n"
+def sse_event(event_id: int, data: dict) -> str:
+    return f"id: {event_id}\\n" + "data: " + json.dumps(data, ensure_ascii=False) + "\\n\\n"
 
 @app.get("/healthz")
-def healthz():
+async def healthz():
     return PlainTextResponse("ok")
 
 @app.post("/v1/agent/stream")
 async def agent_stream(req: Request):
-    body = await req.json()
-    text = body.get("text")
-    if not text:
-        raise HTTPException(400, "text required")
-    session_id = body.get("session_id") or uuid.uuid4().hex
-    options = ClaudeAgentOptions(
-        cwd=body.get("cwd"),
-        allowed_tools=body.get("allowed_tools"),
-        system_prompt=body.get("system_prompt"),
-        max_turns=body.get("max_turns"),
-    )
-    options.prompt = text  # convenience; or pass separately to query
-    return StreamingResponse(sse_iter(session_id, options), media_type="text/event-stream")
+    payload = await req.json()
+    session_id = payload.get("session_id") or str(uuid.uuid4())
+    path = SESS_DIR / f"{session_id}.ndjson"
+    event_id = 0
+
+    async def gen():
+        nonlocal event_id
+        # example init event
+        event_id += 1
+        init = {"type": "system", "subtype": "init", "session_id": session_id}
+        path.write_text(json.dumps(init) + "\\n")
+        yield sse_event(event_id, init)
+
+        async for event in query(
+            payload.get("text", ""),
+            options=ClaudeAgentOptions(
+                allowed_tools=payload.get("allowed_tools", []),
+                cwd=payload.get("cwd"),
+            ),
+        ):
+            event_id += 1
+            data = event.model_dump()
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(data, ensure_ascii=False) + "\\n")
+            yield sse_event(event_id, data)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 @app.get("/v1/sessions/{session_id}/events")
-def replay(session_id: str, since: int = 0):
-    p = STORE / f"{session_id}.ndjson"
-    if not p.exists():
-        raise HTTPException(404, "unknown session")
-    return PlainTextResponse(p.read_text())  # simple; client filters by lastEventId
+async def replay(session_id: str, since: int = 0):
+    path = SESS_DIR / f"{session_id}.ndjson"
+    if not path.exists():
+        raise HTTPException(404, "session not found")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    # since is last seen id; server assigns monotonically, so replay everything after it
+    # NOTE: this example assumes 1:1 mapping between line index and event id.
+    start = max(0, since)
+    body = "\\n".join(lines[start:]) + ("\\n" if lines[start:] else "")
+    return PlainTextResponse(body, media_type="application/x-ndjson")
 ```
 
-Notes:
-- The above is a minimal scaffold. In production, stream replay selectively (`since`), and keep an in-memory ring buffer for fast resumptions.
-- Make sure the JSON structure matches what the app’s `StreamingJSONParser` expects.
+## Security Considerations
 
-## Deployment
+- The proxy binds to `127.0.0.1` only; only reachable via SSH tunnel.
+- Do not expose proxy port publicly.
+- Protect `sessions/` (contains transcript data).
+- Prefer server-side auth and minimal logging in production.
 
-### Ubuntu/Debian (systemd)
-
-1. Create user and folder:
-   - `sudo adduser --system --group claudeproxy`
-   - `sudo mkdir -p /opt/claude-proxy && sudo chown -R claudeproxy: /opt/claude-proxy`
-2. Install deps:
-   - `sudo apt-get update`
-   - `sudo apt-get install -y python3.11 python3.11-venv nodejs` (or Nodesource for newer Node)
-   - `python3.11 -m venv /opt/claude-proxy/venv`
-   - `/opt/claude-proxy/venv/bin/pip install claude-agent-sdk fastapi uvicorn[standard]`
-   - `npm install -g @anthropic-ai/claude-code`
-3. Env file `/etc/claude-proxy.env` (chmod 600):
-   - `ANTHROPIC_API_KEY=...`
-4. Systemd unit `/etc/systemd/system/claude-agent-proxy.service`:
-   - `[Unit] Description=Claude Agent SSE Proxy After=network.target`
-   - `[Service] User=claudeproxy WorkingDirectory=/opt/claude-proxy`
-   - `EnvironmentFile=/etc/claude-proxy.env`
-   - `ExecStart=/opt/claude-proxy/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8787`
-   - `Restart=always RestartSec=5`
-   - `[Install] WantedBy=multi-user.target`
-5. Start: `sudo systemctl daemon-reload && sudo systemctl enable --now claude-agent-proxy`
-6. Logs: `journalctl -u claude-agent-proxy -f`
-
-### RHEL/CentOS/Rocky (systemd)
-
-- `sudo dnf install -y python3.11 python3.11-devel nodejs`
-- Same venv, npm global install, env file, and systemd unit as Ubuntu.
-- If SELinux prevents binds, since binding to `127.0.0.1` only, defaults usually suffice.
-
-### macOS (launchd)
-
-1. Install deps with Homebrew: `brew install python@3.11 node`
-2. App folder: e.g., `~/claude-proxy`; create venv and install dependencies.
-3. `~/Library/LaunchAgents/com.company.claude-proxy.plist`:
-   - ProgramArguments: `["/usr/local/bin/uvicorn","app:app","--host","127.0.0.1","--port","8787"]`
-   - WorkingDirectory: `~/claude-proxy`
-   - EnvironmentVariables: include `ANTHROPIC_API_KEY`
-   - KeepAlive: true, RunAtLoad: true
-   - StandardOutPath/StandardErrorPath: log files
-4. `launchctl load ~/Library/LaunchAgents/com.company.claude-proxy.plist`
-
-### Ports and Exposure
-
-- Tunnel path (recommended):
-  - Only SSH (22) must be open inbound. Proxy binds to loopback and is unreachable externally.
-- HTTPS (optional):
-  - Terminate TLS via nginx/caddy on 443; disable proxy buffering for SSE.
-  - Require short-lived JWT tokens; pin TLS in app.
-
-## Security
-
-- Authentication handling:
-  - Today, the app supports local API key/token storage in iOS Keychain for the CLI path.
-  - The proxy path should prefer server‑side environment keys when available.
-  - Longer‑term, migrate secrets to server‑managed storage; keep the app path for backward compatibility during rollout.
-- Bind proxy to `127.0.0.1` when using tunnels; no external exposure.
-- Restrict file permissions on env files (`chmod 600`).
-- Optionally set SSH server `ClientAliveInterval 30` and `ClientAliveCountMax 2` to drop dead sessions.
-
-## Testing Plan
-
-- Server: `curl -N http://127.0.0.1:8787/healthz` and a manual stream request.
-- iOS: establish SSH, open tunnel, request `/healthz` via `http://127.0.0.1:<localPort>/healthz`.
-- Kill proxy process; verify app recreates tunnel and replays via `events?since=`.
-
-## Migration Phases
-
-1. Stand up proxy and feature flag in app (CLI vs Proxy).
-2. Implement `SSHTunnelManager` and `ClaudeAgentProxyService`; keep UI and parser unchanged.
-3. Swap `ClaudeCodeService.sendMessage(...)` to call proxy behind flag.
-4. Replace `MCPService` SSH calls with proxy endpoints later.
-5. Remove CLI/SSH tailing path once stable.
-
-## Open Items
-
-- Implement SSH `direct-tcpip` bridge with SwiftNIO handlers.
-- Define exact JSON to match `StreamingJSONParser` and extend if needed.
-- Add replay filtering by `since` on server for large sessions.
-- Optional: comment heartbeats `: ping` every 15–30s from server.
