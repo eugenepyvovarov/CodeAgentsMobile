@@ -28,6 +28,7 @@ struct ChatDetailView: View {
     @State private var showAttachmentError = false
     @State private var attachmentErrorMessage = ""
     @State private var isBottomMessageVisible = false
+    @State private var shouldAutoScrollToUnreadBottom = false
 
     var body: some View {
         let _ = viewModel.messagesRevision
@@ -40,7 +41,7 @@ struct ChatDetailView: View {
         )
         let lastRenderedMessageId = adapter.exyteMessages.last?.id
 
-        ExyteChat.ChatView<AnyView, ExyteChatInputComposer, DefaultMessageMenuAction>(
+        let baseChat = ExyteChat.ChatView<AnyView, ExyteChatInputComposer, DefaultMessageMenuAction>(
             messages: adapter.exyteMessages,
             chatType: .conversation,
             replyMode: .quote,
@@ -168,137 +169,161 @@ struct ChatDetailView: View {
                 }
             }
         )
-        .setAvailableInputs([.text])
-        .showDateHeaders(false)
-        .showMessageTimeView(false)
-        .showMessageMenuOnLongPress(false)
-        .chatTheme(chatTheme)
-        .onAppear {
-            isVisible = true
-            attemptMarkAsRead()
-        }
-        .onDisappear {
-            isVisible = false
-            scrollToBottomWorkItem?.cancel()
-            scrollToBottomWorkItem = nil
-            followUpScrollWorkItem?.cancel()
-            followUpScrollWorkItem = nil
-            isBottomMessageVisible = false
-        }
-        .onChange(of: viewModel.isProcessing) { _, isProcessing in
-            if !isProcessing {
-                requestScrollToBottom(force: true)
-            }
-            attemptMarkAsRead()
-        }
-        .onChange(of: viewModel.isLoadingPreviousSession) { _, _ in
-            attemptMarkAsRead()
-        }
-        .onChange(of: viewModel.showActiveSessionIndicator) { _, _ in
-            attemptMarkAsRead()
-        }
-        .onChange(of: projectContext.activeProject?.lastKnownUnreadCursor ?? 0) { _, _ in
-            attemptMarkAsRead()
-        }
-        .onChange(of: isInputFocused) { _, focused in
-            if focused {
-                requestScrollToBottom(force: true, followUpDelay: 0.3)
-            }
-        }
-        .modifier(ChatStatusPillModifier(lines: statusPillLines, isVisible: shouldShowStatusPill))
-        .onChange(of: projectContext.activeProject?.id) { _, _ in
-            selectedSkill = nil
-            attachments = []
-            isBottomMessageVisible = false
-            attemptMarkAsRead()
-        }
-        .alert(
-            "Tool Permission",
-            isPresented: Binding(
-                get: { viewModel.activeToolApproval != nil },
-                set: { _ in }
-            ),
-            presenting: viewModel.activeToolApproval,
-            actions: { request in
-                Button("Allow") {
-                    viewModel.respondToToolApproval(request, decision: .allow, scope: .agent)
-                }
-                Button("Deny", role: .destructive) {
-                    viewModel.respondToToolApproval(request, decision: .deny, scope: .agent)
-                }
-            },
-            message: { request in
-                let displayName = ToolPermissionInfo.displayName(for: request.toolName)
-                let summary = ToolPermissionInfo.summary(for: request.toolName)
-
-                var parts: [String] = []
-                parts.append("\(assistantLabel) wants to use “\(displayName)”")
-                if displayName != request.toolName {
-                    parts.append("Tool: \(request.toolName)")
-                }
-                parts.append(summary)
-                if let blockedPath = request.blockedPath, !blockedPath.isEmpty {
-                    parts.append("Requested path: \(blockedPath)")
-                }
-                parts.append("This decision is saved for \(assistantLabel) and can be changed in Permissions.")
-
-                return Text(parts.joined(separator: "\n\n"))
-            }
+        let chat = AnyView(
+            baseChat
+                .setAvailableInputs([.text])
+                .showDateHeaders(false)
+                .showMessageTimeView(false)
+                .showMessageMenuOnLongPress(false)
+                .chatTheme(chatTheme)
         )
-        .alert("Attachment Error", isPresented: $showAttachmentError) {
-            Button("OK") { }
-        } message: {
-            Text(attachmentErrorMessage)
-        }
-        .sheet(isPresented: $showingSkillPicker) {
-            if let projectId = projectContext.activeProject?.id {
-                ChatSkillPickerSheet(
-                    projectId: projectId,
-                    selectedSkillSlug: selectedSkill?.slug,
-                    onSelect: { skill in
-                        selectedSkill = skill
+
+        let chatLifecycle = AnyView(
+            chat
+                .onAppear {
+                    isVisible = true
+                    shouldAutoScrollToUnreadBottom = (projectContext.activeProject?.unreadCount ?? 0) > 0
+                    maybeAutoScrollToBottomForUnread()
+                    attemptMarkAsRead()
+                }
+                .onDisappear {
+                    isVisible = false
+                    scrollToBottomWorkItem?.cancel()
+                    scrollToBottomWorkItem = nil
+                    followUpScrollWorkItem?.cancel()
+                    followUpScrollWorkItem = nil
+                    isBottomMessageVisible = false
+                    shouldAutoScrollToUnreadBottom = false
+                }
+        )
+
+        let chatSyncing = AnyView(
+            chatLifecycle
+                .onChange(of: viewModel.messages.count) { _, _ in
+                    maybeAutoScrollToBottomForUnread()
+                    attemptMarkAsRead()
+                }
+                .onChange(of: viewModel.isProcessing) { _, isProcessing in
+                    if !isProcessing {
+                        requestScrollToBottom(force: true)
+                    }
+                    attemptMarkAsRead()
+                }
+                .onChange(of: viewModel.isLoadingPreviousSession) { _, _ in
+                    attemptMarkAsRead()
+                }
+                .onChange(of: viewModel.showActiveSessionIndicator) { _, _ in
+                    attemptMarkAsRead()
+                }
+                .onChange(of: projectContext.activeProject?.lastKnownUnreadCursor ?? 0) { _, _ in
+                    attemptMarkAsRead()
+                }
+                .onChange(of: isInputFocused) { _, focused in
+                    if focused {
+                        requestScrollToBottom(force: true, followUpDelay: 0.3)
+                    }
+                }
+                .modifier(ChatStatusPillModifier(lines: statusPillLines, isVisible: shouldShowStatusPill))
+                .onChange(of: projectContext.activeProject?.id) { _, _ in
+                    selectedSkill = nil
+                    attachments = []
+                    isBottomMessageVisible = false
+                    attemptMarkAsRead()
+                }
+        )
+
+        let chatAlerts = AnyView(
+            chatSyncing
+                .alert(
+                    "Tool Permission",
+                    isPresented: Binding(
+                        get: { viewModel.activeToolApproval != nil },
+                        set: { _ in }
+                    ),
+                    presenting: viewModel.activeToolApproval,
+                    actions: { request in
+                        Button("Allow") {
+                            viewModel.respondToToolApproval(request, decision: .allow, scope: .agent)
+                        }
+                        Button("Deny", role: .destructive) {
+                            viewModel.respondToToolApproval(request, decision: .deny, scope: .agent)
+                        }
+                    },
+                    message: { request in
+                        let displayName = ToolPermissionInfo.displayName(for: request.toolName)
+                        let summary = ToolPermissionInfo.summary(for: request.toolName)
+
+                        var parts: [String] = []
+                        parts.append("\(assistantLabel) wants to use “\(displayName)”")
+                        if displayName != request.toolName {
+                            parts.append("Tool: \(request.toolName)")
+                        }
+                        parts.append(summary)
+                        if let blockedPath = request.blockedPath, !blockedPath.isEmpty {
+                            parts.append("Requested path: \(blockedPath)")
+                        }
+                        parts.append("This decision is saved for \(assistantLabel) and can be changed in Permissions.")
+
+                        return Text(parts.joined(separator: "\n\n"))
                     }
                 )
-            } else {
-                NavigationStack {
-                    ContentUnavailableView {
-                        Label("No Active Agent", systemImage: "person.crop.circle.badge.xmark")
-                    } description: {
-                        Text("Select an agent before choosing skills.")
-                    }
-                    .navigationTitle("Select Skill")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showingSkillPicker = false }
+                .alert("Attachment Error", isPresented: $showAttachmentError) {
+                    Button("OK") { }
+                } message: {
+                    Text(attachmentErrorMessage)
+                }
+        )
+
+        return chatAlerts
+            .sheet(isPresented: $showingSkillPicker) {
+                if let projectId = projectContext.activeProject?.id {
+                    ChatSkillPickerSheet(
+                        projectId: projectId,
+                        selectedSkillSlug: selectedSkill?.slug,
+                        onSelect: { skill in
+                            selectedSkill = skill
+                        }
+                    )
+                } else {
+                    NavigationStack {
+                        ContentUnavailableView {
+                            Label("No Active Agent", systemImage: "person.crop.circle.badge.xmark")
+                        } description: {
+                            Text("Select an agent before choosing skills.")
+                        }
+                        .navigationTitle("Select Skill")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") { showingSkillPicker = false }
+                            }
                         }
                     }
                 }
             }
-        }
-        .sheet(isPresented: $showingProjectFilePicker) {
-            ChatProjectFilePickerSheet(onSelect: { attachment in
-                addAttachment(attachment)
-            })
-        }
-        .fileImporter(
-            isPresented: $showingLocalFileImporter,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                importLocalFiles(urls)
-            case .failure(let error):
-                attachmentErrorMessage = error.localizedDescription
-                showAttachmentError = true
+            .sheet(isPresented: $showingProjectFilePicker) {
+                ChatProjectFilePickerSheet(onSelect: { attachment in
+                    addAttachment(attachment)
+                })
             }
-        }
+            .fileImporter(
+                isPresented: $showingLocalFileImporter,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    importLocalFiles(urls)
+                case .failure(let error):
+                    attachmentErrorMessage = error.localizedDescription
+                    showAttachmentError = true
+                }
+            }
     }
 
     private var canMarkAsRead: Bool {
         isVisible &&
-            isBottomMessageVisible &&
+            !viewModel.messages.isEmpty &&
             !viewModel.isProcessing &&
             !viewModel.isLoadingPreviousSession &&
             !viewModel.showActiveSessionIndicator &&
@@ -309,6 +334,15 @@ struct ChatDetailView: View {
         guard canMarkAsRead else { return }
         guard let project = projectContext.activeProject else { return }
         viewModel.markUnreadAsRead(for: project)
+    }
+
+    private func maybeAutoScrollToBottomForUnread() {
+        guard shouldAutoScrollToUnreadBottom else { return }
+        guard isVisible else { return }
+        guard !viewModel.messages.isEmpty else { return }
+
+        requestScrollToBottom(force: true, followUpDelay: 0.35)
+        shouldAutoScrollToUnreadBottom = false
     }
 
     private var shouldShowThinkingIndicator: Bool {
