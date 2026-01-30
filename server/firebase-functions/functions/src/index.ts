@@ -79,6 +79,24 @@ function normalizePreview(value: unknown, maxLength = 240): string | null {
   return condensed.slice(0, sliceLength).trimEnd() + "…";
 }
 
+function normalizeInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
 function respondError(res: any, error: unknown): void {
   const statusCode = typeof (error as any)?.statusCode === "number" ? (error as any).statusCode : 500;
   const message = typeof (error as any)?.message === "string" ? (error as any).message : "internal_error";
@@ -175,6 +193,7 @@ export const triggerReplyFinished = onRequest({ region: "us-central1", invoker: 
     const cwd = normalizeString(body["cwd"]);
     const conversationId = normalizeString(body["conversation_id"]);
     const messagePreview = normalizePreview(body["message_preview"]);
+    const renderableAssistantCount = normalizeInt(body["renderable_assistant_count"]);
 
     if (!cwd) {
       res.status(400).json({ error: "bad_request" });
@@ -223,6 +242,9 @@ export const triggerReplyFinished = onRequest({ region: "us-central1", invoker: 
     };
     if (conversationId) {
       dataPayload["conversation_id"] = conversationId;
+    }
+    if (renderableAssistantCount !== null) {
+      dataPayload["renderable_assistant_count"] = String(renderableAssistantCount);
     }
 
     const messaging = getMessaging();

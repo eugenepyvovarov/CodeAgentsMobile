@@ -83,6 +83,7 @@ enum ProxyStreamError: LocalizedError {
 struct ProxyResponseInfo {
     let version: String?
     let startedAt: String?
+    let renderableAssistantCount: Int?
 }
 
 final class ProxyStreamClient {
@@ -124,7 +125,7 @@ final class ProxyStreamClient {
                     var statusCode: Int? = nil
                     var errorBody = ""
                     var isChunked = false
-                    var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil)
+                    var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil, renderableAssistantCount: nil)
                     var rawHeaderBuffer = ""
 
                     func headerValue(from line: String) -> String? {
@@ -160,13 +161,24 @@ final class ProxyStreamClient {
                             if lowercased.hasPrefix("x-proxy-version:") {
                                 responseInfo = ProxyResponseInfo(
                                     version: headerValue(from: line),
-                                    startedAt: responseInfo.startedAt
+                                    startedAt: responseInfo.startedAt,
+                                    renderableAssistantCount: responseInfo.renderableAssistantCount
                                 )
                             }
                             if lowercased.hasPrefix("x-proxy-started-at:") {
                                 responseInfo = ProxyResponseInfo(
                                     version: responseInfo.version,
-                                    startedAt: headerValue(from: line)
+                                    startedAt: headerValue(from: line),
+                                    renderableAssistantCount: responseInfo.renderableAssistantCount
+                                )
+                            }
+                            if lowercased.hasPrefix("x-proxy-renderable-assistant-count:"),
+                               let value = headerValue(from: line),
+                               let parsed = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                responseInfo = ProxyResponseInfo(
+                                    version: responseInfo.version,
+                                    startedAt: responseInfo.startedAt,
+                                    renderableAssistantCount: parsed
                                 )
                             }
                             if lowercased.hasPrefix("transfer-encoding:") && lowercased.contains("chunked") {
@@ -258,9 +270,9 @@ final class ProxyStreamClient {
                         continuation.yield(event)
                     }
 
-                    if responseInfo.version != nil || responseInfo.startedAt != nil {
+                    if responseInfo.version != nil || responseInfo.startedAt != nil || responseInfo.renderableAssistantCount != nil {
                         ProxyStreamDiagnostics.log(
-                            "stream proxy version=\(responseInfo.version ?? "nil") startedAt=\(responseInfo.startedAt ?? "nil")"
+                            "stream proxy version=\(responseInfo.version ?? "nil") startedAt=\(responseInfo.startedAt ?? "nil") renderable=\(responseInfo.renderableAssistantCount?.description ?? "nil")"
                         )
                     }
 
@@ -305,7 +317,7 @@ final class ProxyStreamClient {
         var contentLength: Int? = nil
         var bodyBytes = 0
         var shouldStop = false
-        var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil)
+        var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil, renderableAssistantCount: nil)
         var rawHeaderBuffer = ""
         func headerValue(from line: String) -> String? {
             guard let separator = line.firstIndex(of: ":") else { return nil }
@@ -340,13 +352,24 @@ final class ProxyStreamClient {
                 if lowercased.hasPrefix("x-proxy-version:") {
                     responseInfo = ProxyResponseInfo(
                         version: headerValue(from: line),
-                        startedAt: responseInfo.startedAt
+                        startedAt: responseInfo.startedAt,
+                        renderableAssistantCount: responseInfo.renderableAssistantCount
                     )
                 }
                 if lowercased.hasPrefix("x-proxy-started-at:") {
                     responseInfo = ProxyResponseInfo(
                         version: responseInfo.version,
-                        startedAt: headerValue(from: line)
+                        startedAt: headerValue(from: line),
+                        renderableAssistantCount: responseInfo.renderableAssistantCount
+                    )
+                }
+                if lowercased.hasPrefix("x-proxy-renderable-assistant-count:"),
+                   let value = headerValue(from: line),
+                   let parsed = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    responseInfo = ProxyResponseInfo(
+                        version: responseInfo.version,
+                        startedAt: responseInfo.startedAt,
+                        renderableAssistantCount: parsed
                     )
                 }
                 if lowercased.hasPrefix("content-length:") {
@@ -643,7 +666,7 @@ final class ProxyStreamClient {
         var contentLength: Int? = nil
         var bodyBytes = 0
         var shouldStop = false
-        var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil)
+        var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil, renderableAssistantCount: nil)
         var rawHeaderBuffer = ""
 
         func headerValue(from line: String) -> String? {
@@ -679,13 +702,15 @@ final class ProxyStreamClient {
                 if lowercased.hasPrefix("x-proxy-version:") {
                     responseInfo = ProxyResponseInfo(
                         version: headerValue(from: line),
-                        startedAt: responseInfo.startedAt
+                        startedAt: responseInfo.startedAt,
+                        renderableAssistantCount: responseInfo.renderableAssistantCount
                     )
                 }
                 if lowercased.hasPrefix("x-proxy-started-at:") {
                     responseInfo = ProxyResponseInfo(
                         version: responseInfo.version,
-                        startedAt: headerValue(from: line)
+                        startedAt: headerValue(from: line),
+                        renderableAssistantCount: responseInfo.renderableAssistantCount
                     )
                 }
                 if lowercased.hasPrefix("content-length:") {
@@ -809,7 +834,7 @@ final class ProxyStreamClient {
         var contentLength: Int? = nil
         var bodyBytes = 0
         var shouldStop = false
-        var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil)
+        var responseInfo = ProxyResponseInfo(version: nil, startedAt: nil, renderableAssistantCount: nil)
         var rawHeaderBuffer = ""
 
         func headerValue(from line: String) -> String? {
@@ -845,13 +870,15 @@ final class ProxyStreamClient {
                 if lowercased.hasPrefix("x-proxy-version:") {
                     responseInfo = ProxyResponseInfo(
                         version: headerValue(from: line),
-                        startedAt: responseInfo.startedAt
+                        startedAt: responseInfo.startedAt,
+                        renderableAssistantCount: responseInfo.renderableAssistantCount
                     )
                 }
                 if lowercased.hasPrefix("x-proxy-started-at:") {
                     responseInfo = ProxyResponseInfo(
                         version: responseInfo.version,
-                        startedAt: headerValue(from: line)
+                        startedAt: headerValue(from: line),
+                        renderableAssistantCount: responseInfo.renderableAssistantCount
                     )
                 }
                 if lowercased.hasPrefix("content-length:") {

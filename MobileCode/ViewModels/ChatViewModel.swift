@@ -582,6 +582,19 @@ class ChatViewModel {
 
         saveChanges()
     }
+
+    func markUnreadAsRead(for project: RemoteProject) {
+        if project.unreadConversationId == nil,
+           let conversationId = project.proxyConversationId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !conversationId.isEmpty {
+            project.unreadConversationId = conversationId
+        }
+
+        let target = project.lastKnownUnreadCursor
+        guard target > project.lastReadUnreadCursor else { return }
+        project.lastReadUnreadCursor = target
+        saveChanges()
+    }
     
     /// Clear all loading states - useful when view disappears
     func clearLoadingStates() {
@@ -1794,6 +1807,11 @@ class ChatViewModel {
             proxySyncNextAttemptAt = .distantPast
             showSyncRetryIndicator = false
 
+            if applyUnreadCursorUpdate(from: info, project: project) {
+                project.updateLastModified()
+                saveChanges()
+            }
+
             let initialBind = previousConversationId == nil && derivedLastEventId != nil
             let conversationChanged = previousConversationId != project.proxyConversationId && !initialBind
             if events.contains(where: { proxySessionPayload(from: $0.jsonLine) != nil }) {
@@ -1874,6 +1892,121 @@ class ChatViewModel {
                 showSyncRetryIndicator = true
             }
             print("📝 Proxy history sync failed (attempt \(proxySyncRetryCount)): \(error)")
+        }
+    }
+
+    private func applyUnreadCursorUpdate(from info: ProxyResponseInfo, project: RemoteProject) -> Bool {
+        guard let incomingCount = info.renderableAssistantCount, incomingCount >= 0 else { return false }
+
+        let conversationId: String? = {
+            guard let id = project.proxyConversationId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !id.isEmpty else {
+                return nil
+            }
+            return id
+        }()
+
+        let isUnreadStateUninitialized =
+            project.unreadConversationId == nil && project.lastKnownUnreadCursor == 0 && project.lastReadUnreadCursor == 0
+        if isUnreadStateUninitialized {
+            let baseline = min(estimateRenderableBubbleCountForUnreadBaseline(), incomingCount)
+            project.lastKnownUnreadCursor = baseline
+            project.lastReadUnreadCursor = baseline
+        }
+
+        let beforeConversation = project.unreadConversationId
+        let beforeKnown = project.lastKnownUnreadCursor
+        let beforeRead = project.lastReadUnreadCursor
+
+        if let conversationId {
+            if project.unreadConversationId != conversationId {
+                let shouldResetReadCursor = project.unreadConversationId != nil && !isUnreadStateUninitialized
+                project.unreadConversationId = conversationId
+                if shouldResetReadCursor {
+                    project.lastReadUnreadCursor = 0
+                }
+                project.lastKnownUnreadCursor = incomingCount
+            } else if incomingCount > project.lastKnownUnreadCursor {
+                project.lastKnownUnreadCursor = incomingCount
+            }
+        } else if incomingCount > project.lastKnownUnreadCursor {
+            project.lastKnownUnreadCursor = incomingCount
+        }
+
+        return beforeConversation != project.unreadConversationId ||
+            beforeKnown != project.lastKnownUnreadCursor ||
+            beforeRead != project.lastReadUnreadCursor
+    }
+
+    private func estimateRenderableBubbleCountForUnreadBaseline() -> Int {
+        var total = 0
+        for message in messages {
+            guard message.role == .assistant else { continue }
+
+            if let structuredMessages = message.structuredMessages, !structuredMessages.isEmpty {
+                for structured in structuredMessages {
+                    switch structured.type {
+                    case "assistant":
+                        total += countRenderableBlocks(in: structured, includeText: true)
+                    case "user":
+                        total += countRenderableBlocks(in: structured, includeText: false)
+                    default:
+                        continue
+                    }
+                }
+                continue
+            }
+
+            if let structured = message.structuredContent {
+                switch structured.type {
+                case "assistant":
+                    total += countRenderableBlocks(in: structured, includeText: true)
+                case "user":
+                    total += countRenderableBlocks(in: structured, includeText: false)
+                default:
+                    break
+                }
+                continue
+            }
+
+            let fallbackBlocks = message.fallbackContentBlocks()
+            if !fallbackBlocks.isEmpty {
+                total += fallbackBlocks.reduce(0) { partial, block in
+                    partial + renderableBlockIncrement(block, includeText: true)
+                }
+                continue
+            }
+
+            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                total += 1
+            }
+        }
+
+        return total
+    }
+
+    private func countRenderableBlocks(in structured: StructuredMessageContent, includeText: Bool) -> Int {
+        guard let content = structured.message else { return 0 }
+        switch content.content {
+        case .blocks(let blocks):
+            return blocks.reduce(0) { partial, block in
+                partial + renderableBlockIncrement(block, includeText: includeText)
+            }
+        case .text(let text):
+            guard includeText else { return 0 }
+            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        }
+    }
+
+    private func renderableBlockIncrement(_ block: ContentBlock, includeText: Bool) -> Int {
+        switch block {
+        case .text(let textBlock):
+            guard includeText else { return 0 }
+            return textBlock.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        case .toolUse, .toolResult:
+            return 1
+        case .unknown:
+            return 0
         }
     }
 

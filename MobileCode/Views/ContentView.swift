@@ -55,6 +55,7 @@ struct ContentView: View {
             case .active:
                 // App became active - start monitoring
                 startCloudInitMonitoring()
+                Task { await PushNotificationsManager.shared.syncDeliveredReplyFinishedNotifications() }
             case .inactive, .background:
                 // App went to background - stop monitoring to save resources
                 cloudInitMonitor.stopAllMonitoring()
