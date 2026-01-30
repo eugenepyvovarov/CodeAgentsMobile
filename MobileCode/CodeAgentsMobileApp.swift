@@ -7,16 +7,24 @@
 
 import SwiftUI
 import SwiftData
+import FirebaseCore
 
 @main
 struct CodeAgentsMobileApp: App {
-    var sharedModelContainer: ModelContainer = {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    let sharedModelContainer: ModelContainer = {
         let schema = Schema([
             RemoteProject.self,
             Server.self,
             Message.self,
             SSHKey.self,
-            ServerProvider.self
+            ServerProvider.self,
+            AgentSkill.self,
+            AgentSkillAssignment.self,
+            SkillMarketplaceSource.self,
+            AgentScheduledTask.self,
+            AgentEnvironmentVariable.self
         ])
         SwiftDataStoreMigrator.migrateIfNeeded(schema: schema, destinationURL: AppGroup.storeURL)
         let configuration = ModelConfiguration(schema: schema, url: AppGroup.storeURL)
@@ -27,6 +35,17 @@ struct CodeAgentsMobileApp: App {
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
+
+    init() {
+        if FirebaseApp.app() == nil {
+            if let options = FirebaseOptions.defaultOptions() {
+                FirebaseApp.configure(options: options)
+            } else {
+                NSLog("Firebase not configured: missing GoogleService-Info.plist")
+            }
+        }
+        PushNotificationsManager.shared.configure(modelContainer: sharedModelContainer)
+    }
 
     var body: some Scene {
         WindowGroup {
