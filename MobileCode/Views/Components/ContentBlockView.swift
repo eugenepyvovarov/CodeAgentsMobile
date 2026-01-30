@@ -32,12 +32,9 @@ struct ContentBlockView: View {
                 toolResultBlock: toolResultBlock,
                 isExpanded: $isExpanded
             )
-            .onAppear {
-                // Auto-expand errors
-                if toolResultBlock.isError {
-                    isExpanded = true
-                }
-            }
+            
+        case .unknown:
+            EmptyView()
         }
     }
 }

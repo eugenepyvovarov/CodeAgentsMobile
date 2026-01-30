@@ -25,7 +25,7 @@ struct ConnectionStatusView: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 12, weight: .semibold))
                     
-                    Text(project.name)
+                    Text(project.displayTitle)
                         .font(.system(size: 14, weight: .medium))
                         .lineLimit(1)
                 }
