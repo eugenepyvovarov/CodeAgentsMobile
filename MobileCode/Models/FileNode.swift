@@ -18,6 +18,19 @@ struct FileNode: Identifiable {
     let fileSize: Int64?
     let modificationDate: Date?
     var isExpanded: Bool = false
+
+    private static let textFileExtensions: Set<String> = [
+        "swift", "m", "mm",
+        "c", "h", "hpp", "cpp",
+        "js", "jsx", "ts", "tsx",
+        "json",
+        "md", "mdx", "txt", "rtf",
+        "yaml", "yml", "toml",
+        "xml", "html", "css", "scss",
+        "py", "rb", "go", "rs", "kt", "kts", "java",
+        "sql", "sh", "bash", "zsh",
+        "ini", "cfg", "conf", "log", "csv"
+    ]
     
     var icon: String {
         if isDirectory {
@@ -33,6 +46,16 @@ struct FileNode: Identifiable {
             default: return "doc"
             }
         }
+    }
+
+    var fileExtension: String? {
+        let ext = (name as NSString).pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ext.isEmpty ? nil : ext.lowercased()
+    }
+
+    var isTextFile: Bool {
+        guard !isDirectory, let ext = fileExtension else { return false }
+        return FileNode.textFileExtensions.contains(ext)
     }
     
     var formattedSize: String? {

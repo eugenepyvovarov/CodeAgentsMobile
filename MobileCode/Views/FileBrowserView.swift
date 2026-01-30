@@ -6,24 +6,63 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FileBrowserView: View {
     @State private var viewModel = FileBrowserViewModel()
     @State private var showingNewFolderDialog = false
+    @State private var showingNewFileDialog = false
     @State private var newItemName = ""
     @State private var selectedNodeForAction: FileNode?
     @State private var showingRenameDialog = false
     @State private var showingDeleteConfirmation = false
+    @State private var isPreparingShare = false
+    @State private var shareCandidate: FileNode?
+    @State private var showLargeFileShareWarning = false
+    @State private var shareErrorMessage: String?
+    @State private var showShareError = false
+    @State private var showingUploadFileImporter = false
+    @State private var isUploadingFiles = false
+    @State private var fileActionErrorMessage: String?
+    @State private var showFileActionError = false
     @StateObject private var projectContext = ProjectContext.shared
+
+    private let largeFileThreshold: Int64 = 250 * 1024 * 1024
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                breadcrumbView
+            ZStack {
+                VStack(spacing: 0) {
+                    breadcrumbView
+                    
+                    Divider()
+                    
+                    fileListView
+                }
                 
-                Divider()
-                
-                fileListView
+                if isPreparingShare {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Preparing share...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(20)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(radius: 10)
+                } else if isUploadingFiles {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Uploading files...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(20)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(radius: 10)
+                }
             }
             .navigationTitle("Files")
             .navigationBarTitleDisplayMode(.inline)
@@ -42,7 +81,7 @@ struct FileBrowserView: View {
         }
         .sheet(item: $viewModel.selectedFile) { file in
             if !file.isDirectory {
-                CodeViewerSheet(file: file, viewModel: viewModel)
+                FilePreviewSheet(file: file, viewModel: viewModel)
             }
         }
         .alert("New Folder", isPresented: $showingNewFolderDialog) {
@@ -54,6 +93,23 @@ struct FileBrowserView: View {
                 Task {
                     await viewModel.createFolder(name: newItemName)
                     newItemName = ""
+                }
+            }
+        }
+        .alert("New File", isPresented: $showingNewFileDialog) {
+            TextField("File name", text: $newItemName)
+            Button("Cancel", role: .cancel) {
+                newItemName = ""
+            }
+            Button("Create") {
+                Task {
+                    do {
+                        try await viewModel.createFile(name: newItemName)
+                        newItemName = ""
+                    } catch {
+                        fileActionErrorMessage = error.localizedDescription
+                        showFileActionError = true
+                    }
                 }
             }
         }
@@ -87,6 +143,41 @@ struct FileBrowserView: View {
             }
         } message: {
             Text("This action cannot be undone.")
+        }
+        .alert("Large File", isPresented: $showLargeFileShareWarning) {
+            Button("Cancel", role: .cancel) {
+                shareCandidate = nil
+            }
+            Button("Continue") {
+                if let candidate = shareCandidate {
+                    Task { await shareFile(candidate) }
+                }
+            }
+        } message: {
+            Text(largeFileWarningMessage)
+        }
+        .alert("Share Failed", isPresented: $showShareError) {
+            Button("OK") { }
+        } message: {
+            Text(shareErrorMessage ?? "Unable to share the file.")
+        }
+        .alert("Error", isPresented: $showFileActionError) {
+            Button("OK") { }
+        } message: {
+            Text(fileActionErrorMessage ?? "Something went wrong.")
+        }
+        .fileImporter(
+            isPresented: $showingUploadFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                uploadLocalFiles(urls)
+            case .failure(let error):
+                fileActionErrorMessage = error.localizedDescription
+                showFileActionError = true
+            }
         }
     }
     
@@ -139,6 +230,9 @@ struct FileBrowserView: View {
                         selectedNodeForAction = fileNode
                         showingDeleteConfirmation = true
                     },
+                    onShare: { fileNode in
+                        requestShare(fileNode)
+                    },
                     onNavigate: { path in
                         viewModel.navigateTo(path: path)
                     }
@@ -156,6 +250,18 @@ struct FileBrowserView: View {
             } label: {
                 Label("New Folder", systemImage: "folder.badge.plus")
             }
+
+            Button {
+                showingNewFileDialog = true
+            } label: {
+                Label("New File", systemImage: "doc.badge.plus")
+            }
+
+            Button {
+                showingUploadFileImporter = true
+            } label: {
+                Label("Upload File", systemImage: "arrow.up.doc")
+            }
             
             Divider()
             
@@ -169,11 +275,12 @@ struct FileBrowserView: View {
         } label: {
             Image(systemName: "plus")
         }
+        .disabled(projectContext.activeProject == nil || isUploadingFiles)
     }
     
     private var pathComponents: [(name: String, path: String)] {
         // Get project name from active project
-        let projectName = projectContext.activeProject?.name ?? "Project"
+        let projectName = projectContext.activeProject?.displayTitle ?? "Agent"
         
         // If we're at project root
         if viewModel.currentPath == viewModel.projectRootPath {
@@ -208,6 +315,143 @@ struct FileBrowserView: View {
     private func navigateToPath(_ path: String) {
         viewModel.navigateTo(path: path)
     }
+
+    private func requestShare(_ node: FileNode) {
+        guard !node.isDirectory else { return }
+        if shouldWarnForLargeFile(node) {
+            shareCandidate = node
+            showLargeFileShareWarning = true
+        } else {
+            Task { await shareFile(node) }
+        }
+    }
+
+    private func shouldWarnForLargeFile(_ node: FileNode) -> Bool {
+        guard let size = node.fileSize else { return false }
+        return size >= largeFileThreshold
+    }
+
+    private var largeFileWarningMessage: String {
+        guard let size = shareCandidate?.fileSize else {
+            return "This file is large. Downloading may take a while."
+        }
+
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let formattedSize = formatter.string(fromByteCount: size)
+        return "This file is \(formattedSize). Downloading may take a while."
+    }
+
+    private func shareFile(_ node: FileNode) async {
+        isPreparingShare = true
+        shareErrorMessage = nil
+
+        do {
+            let localURL = try await viewModel.downloadFile(node)
+            ShareSheetPresenter.present(urls: [localURL]) {
+                try? FileManager.default.removeItem(at: localURL)
+            }
+        } catch {
+            shareErrorMessage = error.localizedDescription
+            showShareError = true
+        }
+
+        isPreparingShare = false
+        shareCandidate = nil
+    }
+
+    private func uploadLocalFiles(_ urls: [URL]) {
+        guard let project = projectContext.activeProject else {
+            fileActionErrorMessage = FileBrowserError.noProject.localizedDescription
+            showFileActionError = true
+            return
+        }
+
+        let remoteDirectory = viewModel.currentPath
+        let existingNames = Set(viewModel.rootNodes.map(\.name))
+
+        Task {
+            await MainActor.run {
+                isUploadingFiles = true
+            }
+
+            var stagedURLs: [URL] = []
+            var usedNames = existingNames
+
+            do {
+                for url in urls {
+                    let stagedURL = try stageLocalFile(url)
+                    stagedURLs.append(stagedURL)
+
+                    let remoteName = uniqueFilename(originalName: url.lastPathComponent, taken: usedNames)
+                    usedNames.insert(remoteName)
+
+                    let remotePath = remoteDirectory.hasSuffix("/")
+                        ? "\(remoteDirectory)\(remoteName)"
+                        : "\(remoteDirectory)/\(remoteName)"
+
+                    try await RemoteFileUploadService.shared.uploadFile(
+                        localURL: stagedURL,
+                        remotePath: remotePath,
+                        in: project
+                    )
+                }
+
+                await viewModel.loadRemoteFiles()
+            } catch {
+                await MainActor.run {
+                    fileActionErrorMessage = error.localizedDescription
+                    showFileActionError = true
+                }
+            }
+
+            for staged in stagedURLs {
+                try? FileManager.default.removeItem(at: staged)
+            }
+
+            await MainActor.run {
+                isUploadingFiles = false
+            }
+        }
+    }
+
+    private func stageLocalFile(_ url: URL) throws -> URL {
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileManager = FileManager.default
+        let stagingDir = fileManager.temporaryDirectory.appendingPathComponent("file-browser-uploads", isDirectory: true)
+        try fileManager.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+
+        let destination = stagingDir.appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.copyItem(at: url, to: destination)
+        return destination
+    }
+
+    private func uniqueFilename(originalName: String, taken: Set<String>) -> String {
+        guard taken.contains(originalName) else { return originalName }
+
+        let nsName = originalName as NSString
+        let ext = nsName.pathExtension
+        let base = nsName.deletingPathExtension
+        let extSuffix = ext.isEmpty ? "" : ".\(ext)"
+
+        var suffix = 2
+        while true {
+            let candidate = "\(base)-\(suffix)\(extSuffix)"
+            if !taken.contains(candidate) {
+                return candidate
+            }
+            suffix += 1
+        }
+    }
 }
 
 struct FileRow: View {
@@ -215,6 +459,7 @@ struct FileRow: View {
     @Binding var selectedFile: FileNode?
     let onRename: (FileNode) -> Void
     let onDelete: (FileNode) -> Void
+    let onShare: (FileNode) -> Void
     let onNavigate: (String) -> Void
     @State private var isExpanded = false
     
@@ -258,6 +503,16 @@ struct FileRow: View {
             }
             .buttonStyle(.plain)
             .contextMenu {
+                if !node.isDirectory {
+                    Button {
+                        onShare(node)
+                    } label: {
+                        Label("Share...", systemImage: "square.and.arrow.up")
+                    }
+
+                    Divider()
+                }
+
                 Button {
                     onRename(node)
                 } label: {
@@ -272,82 +527,6 @@ struct FileRow: View {
                     Label("Delete", systemImage: "trash")
                 }
             }
-        }
-    }
-}
-
-struct CodeViewerSheet: View {
-    let file: FileNode
-    let viewModel: FileBrowserViewModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var isEditing = false
-    @State private var content = ""
-    @State private var isLoading = true
-    @State private var errorMessage: String?
-    
-    var body: some View {
-        NavigationStack {
-            Group {
-                if isLoading {
-                    ProgressView("Loading file...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let error = errorMessage {
-                    VStack(spacing: 16) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                            .foregroundColor(.orange)
-                        Text("Failed to load file")
-                            .font(.headline)
-                        Text(error)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding()
-                } else {
-                    ScrollView {
-                        Text(content)
-                            .font(.custom("SF Mono", size: 14))
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .background(Color(.systemGray6))
-                }
-            }
-            .navigationTitle(file.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") {
-                            dismiss()
-                        }
-                    }
-                    
-                    if !isLoading && errorMessage == nil {
-                        ToolbarItem(placement: .primaryAction) {
-                            Button {
-                                isEditing.toggle()
-                            } label: {
-                                Image(systemName: isEditing ? "checkmark" : "pencil")
-                            }
-                        }
-                    }
-                }
-        }
-        .task {
-            await loadFileContent()
-        }
-    }
-    
-    private func loadFileContent() async {
-        isLoading = true
-        errorMessage = nil
-        
-        do {
-            content = try await viewModel.loadFileContent(path: file.path)
-            isLoading = false
-        } catch {
-            errorMessage = error.localizedDescription
-            isLoading = false
         }
     }
 }
