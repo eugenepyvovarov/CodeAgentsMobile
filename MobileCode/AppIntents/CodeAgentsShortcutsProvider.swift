@@ -33,10 +33,10 @@ struct CodeAgentsShortcutsProvider: AppShortcutsProvider {
         AppShortcut(
             intent: ListCodeAgentsProjectsIntent(),
             phrases: [
-                "List CodeAgents projects in \(.applicationName)",
-                "Show CodeAgents projects in \(.applicationName)"
+                "List CodeAgents agents in \(.applicationName)",
+                "Show CodeAgents agents in \(.applicationName)"
             ],
-            shortTitle: "List Projects",
+            shortTitle: "List Agents",
             systemImageName: "list.bullet.rectangle"
         )
     }

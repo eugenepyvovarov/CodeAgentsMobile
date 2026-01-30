@@ -9,9 +9,9 @@ import AppIntents
 import SwiftData
 
 struct ListCodeAgentsProjectsIntent: AppIntent {
-    static var title: LocalizedStringResource = "List CodeAgents Projects"
+    static var title: LocalizedStringResource = "List CodeAgents Agents"
     static var description = IntentDescription(
-        "Return all projects that are available in CodeAgents along with their server information."
+        "Return all agents that are available in CodeAgents along with their server information."
     )
     
     func perform() async throws -> some IntentResult & ReturnsValue<[String]> {
@@ -26,9 +26,9 @@ struct ListCodeAgentsProjectsIntent: AppIntent {
         
         let summaries = projects.map { project -> String in
             if let server = serverMap[project.serverId] {
-                return "\(project.name) — \(server.username)@\(server.host)"
+                return "\(project.displayTitle) — \(server.username)@\(server.host)"
             } else {
-                return "\(project.name) — server unavailable"
+                return "\(project.displayTitle) — server unavailable"
             }
         }.sorted()
         

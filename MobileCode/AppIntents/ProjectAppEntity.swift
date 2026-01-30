@@ -7,10 +7,10 @@
 
 import AppIntents
 
-/// App Intents representation of a shareable CodeAgents project.
+/// App Intents representation of a shareable CodeAgents agent.
 struct ProjectAppEntity: AppEntity, Identifiable, Hashable {
     static var typeDisplayRepresentation: TypeDisplayRepresentation = TypeDisplayRepresentation(
-        name: "CodeAgents Project"
+        name: "CodeAgents Agent"
     )
     
     static var defaultQuery = ProjectQuery()
@@ -31,7 +31,7 @@ struct ProjectAppEntity: AppEntity, Identifiable, Hashable {
     }
 }
 
-/// Provides project entities to the Shortcuts picker.
+/// Provides agent entities to the Shortcuts picker.
 struct ProjectQuery: EntityQuery {
     func entities(for identifiers: [ProjectAppEntity.ID]) async throws -> [ProjectAppEntity] {
         let store = ShortcutProjectStore()
@@ -62,7 +62,7 @@ extension ProjectAppEntity {
 extension ShortcutProjectMetadata {
     static let placeholder = ShortcutProjectMetadata(
         id: UUID(),
-        projectName: "Sample Project",
+        projectName: "Sample Agent",
         projectPath: "/root/projects/sample-project",
         serverId: UUID(),
         serverName: "Demo Server",

@@ -11,10 +11,10 @@ import SwiftData
 struct RunCodeAgentsTaskIntent: AppIntent {
     static var title: LocalizedStringResource = "Run CodeAgents Task"
     static var description = IntentDescription(
-        "Run a CodeAgents project remotely and return Claude's final response."
+        "Run a CodeAgents agent remotely and return Claude's final response."
     )
     
-    @Parameter(title: "Project", requestValueDialog: IntentDialog("Which project should CodeAgents run?"))
+    @Parameter(title: "Agent", requestValueDialog: IntentDialog("Which agent should CodeAgents run?"))
     var project: ProjectAppEntity
     
     @Parameter(title: "Prompt", default: "", inputOptions: .init(multiline: true))
@@ -29,7 +29,7 @@ struct RunCodeAgentsTaskIntent: AppIntent {
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let store = ShortcutProjectStore()
         guard let metadata = store.project(withId: project.id) else {
-            return .result(value: "ERROR: Project not found.")
+            return .result(value: "ERROR: Agent not found.")
         }
         let modelContext = await ShortcutPersistenceController.shared.makeContext()
         

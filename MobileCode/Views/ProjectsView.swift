@@ -4,7 +4,7 @@
 //
 //  Created by Claude on 2025-06-10.
 //
-//  Purpose: Display and manage remote projects
+//  Purpose: Display and manage remote agents
 //
 
 import SwiftUI
@@ -15,7 +15,9 @@ struct ProjectsView: View {
     @State private var showingSettings = false
     @State private var showingAddProject = false
     @State private var projectToDelete: RemoteProject?
+    @State private var projectToEdit: RemoteProject?
     @State private var deleteFromServer = false
+    @State private var editMode: EditMode = .inactive
     @StateObject private var serverManager = ServerManager.shared
     @StateObject private var projectContext = ProjectContext.shared
     @Environment(\.modelContext) private var modelContext
@@ -23,21 +25,41 @@ struct ProjectsView: View {
     @Query(sort: \RemoteProject.lastModified, order: .reverse) 
     private var projects: [RemoteProject]
     
+    private var isEditing: Bool {
+        editMode.isEditing
+    }
+    
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 List {
                     if !projects.isEmpty {
                         ForEach(projects) { project in
-                            ProjectRow(project: project)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button {
-                                        projectToDelete = project
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
+                            if isEditing {
+                                ProjectRow(
+                                    project: project,
+                                    isEditing: true,
+                                    onEdit: { projectToEdit = project },
+                                    onDelete: { projectToDelete = project }
+                                )
+                            } else {
+                                ProjectRow(project: project)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button {
+                                            projectToEdit = project
+                                        } label: {
+                                            Label("Rename", systemImage: "pencil")
+                                        }
+                                        .tint(.blue)
+
+                                        Button {
+                                            projectToDelete = project
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                        .tint(.red)
                                     }
-                                    .tint(.red)
-                                }
+                            }
                         }
                     } else {
                     // Empty state
@@ -46,14 +68,14 @@ struct ProjectsView: View {
                             .font(.system(size: 50))
                             .foregroundColor(.secondary)
                         
-                        Text("No Projects Yet")
+                        Text("No Agents Yet")
                             .font(.title2)
                             .fontWeight(.semibold)
                         
                         Button {
                             showingAddProject = true
                         } label: {
-                            Text("Create Project")
+                            Text("Create Agent")
                                 .font(.footnote)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 8)
@@ -68,14 +90,14 @@ struct ProjectsView: View {
                 }
                 .listStyle(.insetGrouped)
                 
-                // Add new project button at the bottom (only when projects exist)
+                // Add new agent button at the bottom (only when projects exist)
                 if !projects.isEmpty {
                     Button {
                         showingAddProject = true
                     } label: {
                         HStack {
                             Image(systemName: "plus.circle.fill")
-                            Text("Create Project")
+                            Text("Create Agent")
                         }
                         .font(.body)
                         .padding()
@@ -87,8 +109,13 @@ struct ProjectsView: View {
                     .padding()
                 }
             }
-            .navigationTitle("Projects")
+            .navigationTitle("Agents")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if !projects.isEmpty {
+                        EditButton()
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showingSettings = true
@@ -97,6 +124,7 @@ struct ProjectsView: View {
                     }
                 }
             }
+            .environment(\.editMode, $editMode)
             .sheet(isPresented: $showingSettings) {
                 NavigationStack {
                     SettingsView()
@@ -104,6 +132,9 @@ struct ProjectsView: View {
             }
             .sheet(isPresented: $showingAddProject) {
                 AddProjectSheet()
+            }
+            .sheet(item: $projectToEdit) { project in
+                EditProjectSheet(project: project)
             }
             .sheet(item: $projectToDelete) { project in
                 DeleteProjectConfirmationSheet(
@@ -150,6 +181,9 @@ struct ProjectsView: View {
 
 struct ProjectRow: View {
     let project: RemoteProject
+    var isEditing: Bool = false
+    var onEdit: (() -> Void)?
+    var onDelete: (() -> Void)?
     @StateObject private var projectContext = ProjectContext.shared
     @State private var isActivating = false
     
@@ -160,40 +194,78 @@ struct ProjectRow: View {
     }
     
     var body: some View {
-        Button {
-            Task {
-                await activateProject()
-            }
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(project.name)
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    if let server = server {
-                        Text("\(server.username)@\(server.host)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .fontDesign(.monospaced)
+        Group {
+            if isEditing {
+                HStack {
+                    leftColumn
+                    Spacer()
+                    activationIndicator
+                    actionButtons
+                }
+                .padding(.vertical, 4)
+            } else {
+                Button {
+                    Task {
+                        await activateProject()
                     }
-                    
-                    Text("Modified \(project.lastModified, style: .relative) ago")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                } label: {
+                    HStack {
+                        leftColumn
+                        Spacer()
+                        activationIndicator
+                    }
+                    .padding(.vertical, 4)
                 }
-                
-                Spacer()
-                
-                if isActivating {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                }
+                .disabled(isActivating)
+                .opacity(isActivating ? 0.6 : 1.0)
             }
-            .padding(.vertical, 4)
         }
-        .disabled(isActivating)
-        .opacity(isActivating ? 0.6 : 1.0)
+    }
+    
+    private var leftColumn: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(project.displayTitle)
+                .font(.headline)
+                .foregroundColor(.primary)
+            
+            if let server = server {
+                Text("\(server.username)@\(server.host)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fontDesign(.monospaced)
+            }
+            
+            Text("Modified \(project.lastModified, style: .relative) ago")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+    }
+    
+    @ViewBuilder
+    private var activationIndicator: some View {
+        if isActivating {
+            ProgressView()
+                .scaleEffect(0.8)
+        }
+    }
+    
+    private var actionButtons: some View {
+        HStack(spacing: 12) {
+            if let onEdit {
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
+                }
+                .accessibilityLabel("Edit Agent")
+            }
+            
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .accessibilityLabel("Delete Agent")
+            }
+        }
+        .buttonStyle(.borderless)
     }
     
     private func activateProject() async {
@@ -217,6 +289,7 @@ struct AddProjectSheet: View {
     let onSkip: (() -> Void)?
     
     @State private var projectName = ""
+    @State private var projectDisplayName = ""
     @State private var selectedServer: Server?
     @State private var isCreating = false
     @State private var errorMessage: String?
@@ -236,10 +309,13 @@ struct AddProjectSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Project Details") {
-                    TextField("Project Name", text: $projectName)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                Section("Agent Details") {
+                    TextField("Agent Name", text: $projectDisplayName)
+                        .textInputAutocapitalization(.words)
+
+                    Text("Shown in the app. Leave blank to use the folder name.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     
                     Menu {
                         ForEach(servers) { server in
@@ -298,7 +374,7 @@ struct AddProjectSheet: View {
                                         .font(.headline)
                                         .foregroundColor(.primary)
                                     
-                                    Text("This server is still installing Claude Code. Creating a project now may fail.")
+                                    Text("This server is still installing Claude Code. Creating an agent now may fail.")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -317,7 +393,11 @@ struct AddProjectSheet: View {
                         }
                     }
                     
-                    Section("Project Location") {
+                    Section("Agent Folder") {
+                        TextField("Folder Name", text: $projectName)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Path:")
@@ -328,7 +408,7 @@ struct AddProjectSheet: View {
                                         .scaleEffect(0.7)
                                 } else {
                                     let effectivePath = customPath ?? server.lastUsedProjectPath ?? detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
-                                    Text("\(effectivePath)/\(projectName.isEmpty ? "[name]" : projectName)")
+                                    Text("\(effectivePath)/\(folderNamePreview)")
                                         .fontDesign(.monospaced)
                                         .font(.caption)
                                         .lineLimit(1)
@@ -354,7 +434,7 @@ struct AddProjectSheet: View {
                     }
                 }
             }
-            .navigationTitle("New Project")
+            .navigationTitle("New Agent")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -375,7 +455,7 @@ struct AddProjectSheet: View {
                             await createProject()
                         }
                     }
-                    .disabled(projectName.isEmpty || selectedServer == nil || isCreating)
+                    .disabled(!canCreate)
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -419,6 +499,26 @@ struct AddProjectSheet: View {
         }
     }
     
+    private var trimmedFolderName: String {
+        projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedDisplayName: String {
+        projectDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var resolvedFolderName: String {
+        trimmedFolderName.isEmpty ? trimmedDisplayName : trimmedFolderName
+    }
+
+    private var folderNamePreview: String {
+        resolvedFolderName.isEmpty ? "[name]" : resolvedFolderName
+    }
+
+    private var canCreate: Bool {
+        selectedServer != nil && !isCreating && !resolvedFolderName.isEmpty
+    }
+
     private func createProject() async {
         guard let server = selectedServer else { return }
         
@@ -426,12 +526,26 @@ struct AddProjectSheet: View {
         defer { isCreating = false }
         
         do {
+            let folderName = resolvedFolderName
+            if folderName.isEmpty {
+                errorMessage = "Enter an agent name or folder name."
+                showError = true
+                return
+            }
+
+            let resolvedDisplayName: String? = {
+                if trimmedDisplayName.isEmpty || trimmedDisplayName == folderName {
+                    return nil
+                }
+                return trimmedDisplayName
+            }()
+
             // Determine the effective path
             let effectivePath = customPath ?? server.lastUsedProjectPath ?? detectedPath ?? server.defaultProjectsPath ?? "/root/projects"
             
             // First, create the project folder on the server
             let projectService = ServiceManager.shared.projectService
-            try await projectService.createProject(name: projectName, on: server, customPath: effectivePath)
+            try await projectService.createProject(name: folderName, on: server, customPath: effectivePath)
             
             // If a custom path was used, save it to the server
             if let customPath = customPath {
@@ -439,7 +553,10 @@ struct AddProjectSheet: View {
             }
             
             // Create and save the project locally
-            let project = RemoteProject(name: projectName, serverId: server.id, basePath: effectivePath)
+            let project = RemoteProject(name: folderName,
+                                        displayName: resolvedDisplayName,
+                                        serverId: server.id,
+                                        basePath: effectivePath)
             modelContext.insert(project)
             
             try modelContext.save()
@@ -484,8 +601,100 @@ struct AddProjectSheet: View {
             }
         } catch {
             // If detection fails, we'll just use the default
-            SSHLogger.log("Failed to detect project path: \(error)", level: .warning)
+            SSHLogger.log("Failed to detect agent path: \(error)", level: .warning)
             detectedPath = "/root/projects" // Explicitly set the fallback
+        }
+    }
+}
+
+struct EditProjectSheet: View {
+    let project: RemoteProject
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    @State private var displayName: String
+    @State private var errorMessage: String?
+    @State private var showError = false
+
+    init(project: RemoteProject) {
+        self.project = project
+        _displayName = State(initialValue: project.displayTitle)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Agent Name") {
+                    TextField("Agent Name", text: $displayName)
+                        .textInputAutocapitalization(.words)
+
+                    Text("Leave blank to use the folder name.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("Agent Folder") {
+                    HStack {
+                        Text("Folder Name")
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(project.name)
+                            .fontDesign(.monospaced)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    HStack {
+                        Text("Path")
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(project.path)
+                            .fontDesign(.monospaced)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+            .navigationTitle("Edit Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveChanges()
+                    }
+                }
+            }
+            .alert("Error", isPresented: $showError) {
+                Button("OK") { }
+            } message: {
+                Text(errorMessage ?? "An error occurred")
+            }
+        }
+    }
+
+    private func saveChanges() {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == project.name {
+            project.displayName = nil
+        } else {
+            project.displayName = trimmed
+        }
+
+        do {
+            try modelContext.save()
+            ShortcutSyncService.shared.sync(using: modelContext)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
         }
     }
 }
@@ -502,7 +711,7 @@ struct DeleteProjectConfirmationSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("Are you sure you want to delete '\(project.name)'?")
+                    Text("Are you sure you want to delete '\(project.displayTitle)'?")
                         .font(.body)
                     
                     Toggle("Also delete from server", isOn: $deleteFromServer)
@@ -510,7 +719,7 @@ struct DeleteProjectConfirmationSheet: View {
                     
                     if deleteFromServer {
                         Label {
-                            Text("The project folder and all its contents will be permanently deleted from the server.")
+                            Text("The agent folder and all its contents will be permanently deleted from the server.")
                         } icon: {
                             Image(systemName: "server.rack")
                                 .foregroundColor(.red)
@@ -528,7 +737,7 @@ struct DeleteProjectConfirmationSheet: View {
                         .foregroundColor(.secondary)
                     } else {
                         Label {
-                            Text("The project will only be removed from this app. Files on the server will remain intact.")
+                            Text("The agent will only be removed from this app. Files on the server will remain intact.")
                         } icon: {
                             Image(systemName: "iphone")
                                 .foregroundColor(.blue)
@@ -538,7 +747,7 @@ struct DeleteProjectConfirmationSheet: View {
                     }
                 }
             }
-            .navigationTitle("Delete Project")
+            .navigationTitle("Delete Agent")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

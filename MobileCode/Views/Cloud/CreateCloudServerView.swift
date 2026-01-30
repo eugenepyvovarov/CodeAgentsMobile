@@ -52,6 +52,9 @@ struct CreateCloudServerView: View {
     @State private var showGenerateKey = false
     @State private var showSizeSelector = false
     @State private var serverCreationTask: Task<Void, Never>?
+    @State private var proxyInstallLogs: [String] = []
+    @State private var proxyInstallError: String?
+    @State private var proxyInstallTask: Task<Void, Never>?
     
     // Server provisioning status tracking
     @State private var provisioningStatus = ServerProvisioningStatus()
@@ -62,6 +65,7 @@ struct CreateCloudServerView: View {
         var lastChecked: Date = Date()
         var sshAccessible: Bool = false
         var cloudInitCheckAttempts: Int = 0
+        var proxyInstallStatus: String = "waiting" // "waiting", "running", "done", "error", "skipped"
     }
     
     enum CreationStatus: Equatable {
@@ -69,6 +73,7 @@ struct CreateCloudServerView: View {
         case creating
         case polling(serverId: String)
         case checkingCloudInit(serverId: String)
+        case installingProxy(serverId: String)
         case success
         case failed(error: String)
     }
@@ -79,7 +84,7 @@ struct CreateCloudServerView: View {
                 if isLoadingOptions {
                     ProgressView("Loading options...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if creationStatus == .creating || creationStatus.isPolling || creationStatus.isCheckingCloudInit || creationStatus == .success {
+                } else if creationStatus == .creating || creationStatus.isPolling || creationStatus.isCheckingCloudInit || creationStatus.isInstallingProxy || creationStatus == .success {
                     creationProgressView
                 } else {
                     createServerForm
@@ -118,6 +123,11 @@ struct CreateCloudServerView: View {
                     serverCreationTask?.cancel()
                     serverCreationTask = nil
                     print("⚠️ Cancelled inline monitoring task on view disappear")
+                }
+                if proxyInstallTask != nil {
+                    proxyInstallTask?.cancel()
+                    proxyInstallTask = nil
+                    print("Cancelled proxy install task on view disappear")
                 }
             }
             .sheet(isPresented: $showGenerateKey) {
@@ -233,10 +243,10 @@ struct CreateCloudServerView: View {
                 
                 // DigitalOcean projects
                 if provider.providerType == "digitalocean" && !availableProjects.isEmpty {
-                    Picker("Project", selection: $selectedProject) {
-                        Text("Default Project").tag("")
+                    Picker("Agent", selection: $selectedProject) {
+                        Text("Default Agent").tag("")
                         ForEach(availableProjects, id: \.id) { project in
-                            Text(project.name).tag(project.id)
+                            Text(project.name.isEmpty ? project.id : project.name).tag(project.id)
                         }
                     }
                 }
@@ -320,7 +330,7 @@ struct CreateCloudServerView: View {
             .animation(.easeInOut(duration: 0.3), value: creationStatus)
             
             VStack(spacing: 8) {
-                Text(creationStatus == .success ? "Server ready!" : "Creating your server")
+                Text(creationStatus == .success ? "Server ready!" : creationStatus.isInstallingProxy ? "Installing Claude Proxy..." : "Creating your server")
                     .font(.title2)
                     .fontWeight(.semibold)
                     .animation(.easeInOut(duration: 0.3), value: creationStatus)
@@ -331,6 +341,14 @@ struct CreateCloudServerView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .transition(.opacity)
+                } else if creationStatus.isInstallingProxy {
+                    Text("Setting up the Claude proxy daemon on your server")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    Text("This typically takes 1-2 minutes")
+                        .font(.caption)
+                        .foregroundColor(.secondary.opacity(0.7))
                 } else if case .checkingCloudInit = creationStatus {
                     Text("Installing packages and configuring Claude Code...")
                         .font(.subheadline)
@@ -459,6 +477,44 @@ struct CreateCloudServerView: View {
                             }
                             .padding(.leading, 28)
                         }
+
+                        Divider()
+
+                        // Claude Proxy Install
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "bolt.circle")
+                                    .foregroundColor(.blue)
+                                Text("Claude Proxy Install")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                Spacer()
+                                if provisioningStatus.proxyInstallStatus == "done" {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                } else if provisioningStatus.proxyInstallStatus == "error" {
+                                    Image(systemName: "exclamationmark.circle.fill")
+                                        .foregroundColor(.red)
+                                } else if provisioningStatus.proxyInstallStatus == "skipped" {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundColor(.orange)
+                                } else if provisioningStatus.proxyInstallStatus != "waiting" {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                }
+                            }
+                            
+                            HStack(spacing: 8) {
+                                ProgressStep(
+                                    title: provisioningStatus.proxyInstallStatus == "waiting" ? "Waiting" :
+                                           provisioningStatus.proxyInstallStatus == "running" ? "Installing" :
+                                           provisioningStatus.proxyInstallStatus == "done" ? "Complete" :
+                                           provisioningStatus.proxyInstallStatus == "skipped" ? "Skipped" : "Error",
+                                    isComplete: provisioningStatus.proxyInstallStatus == "done"
+                                )
+                            }
+                            .padding(.leading, 28)
+                        }
                     }
                     .padding()
                     .background(Color(UIColor.tertiarySystemBackground))
@@ -467,17 +523,58 @@ struct CreateCloudServerView: View {
                 .transition(.opacity.combined(with: .scale))
                 .animation(.easeInOut, value: createdServer)
             }
+
+            if !proxyInstallLogs.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Installer Output")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    
+                    ScrollView {
+                        Text(proxyInstallLogs.joined(separator: "\n"))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 160)
+                    .padding(8)
+                    .background(Color(UIColor.secondarySystemBackground))
+                    .cornerRadius(8)
+                }
+            }
+
+            if let proxyInstallError = proxyInstallError {
+                Text(proxyInstallError)
+                    .font(.footnote)
+                    .foregroundColor(.red)
+                    .multilineTextAlignment(.center)
+            }
             
             Spacer()
             
             // Action buttons based on status
-            if creationStatus == .success {
-                // Server is fully ready - show Add Project button
+            if provisioningStatus.proxyInstallStatus == "error" {
+                VStack(spacing: 12) {
+                    Button("Retry Install") {
+                        retryProxyInstall()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    
+                    Button("Skip for Now") {
+                        skipProxyInstall()
+                    }
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                }
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.3), value: provisioningStatus.proxyInstallStatus)
+            } else if creationStatus == .success {
+                // Server is fully ready - show Add Agent button
                 VStack(spacing: 12) {
                     Button(action: addProject) {
                         HStack {
                             Image(systemName: "plus.circle.fill")
-                            Text("Add Project")
+                            Text("Add Agent")
                         }
                         .font(.headline)
                         .foregroundColor(.white)
@@ -505,41 +602,6 @@ struct CreateCloudServerView: View {
                     .foregroundColor(.secondary)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-                .animation(.easeInOut(duration: 0.3), value: creationStatus)
-            } else if creationStatus.isCheckingCloudInit && savedServer != nil {
-                // Cloud-init is running - show Continue in background button
-                VStack(spacing: 8) {
-                    Text("Claude Code is being installed...")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
-                    Button("Continue in background") {
-                        // Cancel the inline monitoring task
-                        serverCreationTask?.cancel()
-                        serverCreationTask = nil
-                        
-                        // Save the server to database now
-                        if let server = savedServer {
-                            modelContext.insert(server)
-                            do {
-                                try modelContext.save()
-                                print("💾 Server saved to database on 'Continue in background'")
-                                // Start background monitoring for this server
-                                CloudInitMonitor.shared.startMonitoring(server: server)
-                            } catch {
-                                print("Failed to save server: \(error)")
-                            }
-                        }
-                        // Cloud-init will continue in the background
-                        isProvisioning = false  // Allow dismissal
-                        onComplete()
-                        dismiss()
-                    }
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                }
-                .padding(.bottom, 20)
-                .transition(.opacity)
                 .animation(.easeInOut(duration: 0.3), value: creationStatus)
             }
         }
@@ -620,7 +682,7 @@ struct CreateCloudServerView: View {
                 Button(action: addProject) {
                     HStack {
                         Image(systemName: "plus.circle.fill")
-                        Text("Add Project")
+                        Text("Add Agent")
                     }
                     .font(.headline)
                     .foregroundColor(.white)
@@ -686,7 +748,7 @@ struct CreateCloudServerView: View {
             modelContext.insert(server)
             do {
                 try modelContext.save()
-                print("💾 Server saved to database on 'Add Project'")
+                print("💾 Server saved to database on 'Add Agent'")
             } catch {
                 print("Failed to save server: \(error)")
             }
@@ -810,6 +872,11 @@ struct CreateCloudServerView: View {
         creationStatus = .creating
         isProvisioning = true  // Start provisioning
         print("🚀 Starting server provisioning - isProvisioning set to true")
+        provisioningStatus = ServerProvisioningStatus()
+        proxyInstallLogs = []
+        proxyInstallError = nil
+        proxyInstallTask?.cancel()
+        proxyInstallTask = nil
         
         // Cancel any existing task
         serverCreationTask?.cancel()
@@ -920,7 +987,7 @@ struct CreateCloudServerView: View {
         }
         
         // DON'T save to database yet - just prepare the server object
-        // We'll save it only when the user takes an action (Continue in background, Add Project, or Skip)
+        // We'll save it only when the user takes an action (Continue in background, Add Agent, or Skip)
         print("📦 Server object created but NOT saved to database yet")
         
         return server
@@ -1105,22 +1172,19 @@ struct CreateCloudServerView: View {
                 }
                 
                 if status == "done" {
-                    // Cloud-init is complete, server is ready
-                    await MainActor.run {
-                        creationStatus = .success
-                        isProvisioning = false  // End provisioning on success
-                        print("✅ Provisioning complete - isProvisioning set to false")
-                    }
-                    
-                    // Update the saved server record if it exists
+                    // Cloud-init is complete, start proxy installation
                     if let savedServer = savedServer {
                         await MainActor.run {
                             savedServer.cloudInitComplete = true
                             savedServer.cloudInitStatus = "done"
                             savedServer.cloudInitLastChecked = Date()
-                            // Don't save to database here - only update the in-memory object
-                            // The server will be saved when user takes an action
                             print("✅ Updated in-memory server cloud-init status to done (not saved to DB yet)")
+                        }
+                        await startProxyInstall(for: savedServer)
+                    } else {
+                        await MainActor.run {
+                            creationStatus = .failed(error: "Missing server record for proxy install")
+                            isProvisioning = false
                         }
                     }
                     return
@@ -1146,6 +1210,7 @@ struct CreateCloudServerView: View {
         // Timeout - but server is still usable, just might not have Claude Code
         await MainActor.run {
             provisioningStatus.cloudInitStatus = "timeout"
+            provisioningStatus.proxyInstallStatus = "skipped"
             creationStatus = .success // Allow proceeding anyway
             isProvisioning = false  // End provisioning on timeout
         }
@@ -1199,6 +1264,59 @@ struct CreateCloudServerView: View {
             return nil
         }
     }
+
+    @MainActor
+    private func startProxyInstall(for server: Server) async {
+        proxyInstallTask?.cancel()
+        proxyInstallLogs = []
+        proxyInstallError = nil
+        provisioningStatus.proxyInstallStatus = "running"
+        creationStatus = .installingProxy(serverId: server.providerServerId ?? server.id.uuidString)
+
+        proxyInstallTask = Task {
+            do {
+                try await ProxyInstallerService.shared.installProxy(on: server) { line in
+                    Task { @MainActor in
+                        appendProxyInstallLog(line)
+                    }
+                }
+                await MainActor.run {
+                    provisioningStatus.proxyInstallStatus = "done"
+                    creationStatus = .success
+                    isProvisioning = false
+                    print("Proxy install complete - isProvisioning set to false")
+                }
+            } catch {
+                await MainActor.run {
+                    provisioningStatus.proxyInstallStatus = "error"
+                    proxyInstallError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func retryProxyInstall() {
+        guard let server = savedServer else { return }
+        Task { @MainActor in
+            await startProxyInstall(for: server)
+        }
+    }
+
+    private func skipProxyInstall() {
+        provisioningStatus.proxyInstallStatus = "skipped"
+        proxyInstallError = nil
+        creationStatus = .success
+        isProvisioning = false
+    }
+
+    @MainActor
+    private func appendProxyInstallLog(_ line: String) {
+        proxyInstallLogs.append(line)
+        let maxLines = 200
+        if proxyInstallLogs.count > maxLines {
+            proxyInstallLogs.removeFirst(proxyInstallLogs.count - maxLines)
+        }
+    }
 }
 
 private extension CreateCloudServerView.CreationStatus {
@@ -1211,6 +1329,13 @@ private extension CreateCloudServerView.CreationStatus {
     
     var isCheckingCloudInit: Bool {
         if case .checkingCloudInit = self {
+            return true
+        }
+        return false
+    }
+
+    var isInstallingProxy: Bool {
+        if case .installingProxy = self {
             return true
         }
         return false

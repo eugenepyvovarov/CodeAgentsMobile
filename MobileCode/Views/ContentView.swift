@@ -9,18 +9,12 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @State private var selectedTab = Tab.chat
+    @StateObject private var navigationState = AppNavigationState.shared
     @StateObject private var projectContext = ProjectContext.shared
     @StateObject private var serverManager = ServerManager.shared
     @StateObject private var cloudInitMonitor = CloudInitMonitor.shared
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
-    
-    enum Tab {
-        case chat
-        case files
-        case terminal
-    }
     
     var body: some View {
         Group {
@@ -32,24 +26,24 @@ struct ContentView: View {
                     }
             } else {
                 // Show tabs when a project is active
-                TabView(selection: $selectedTab) {
+                TabView(selection: $navigationState.selectedTab) {
                     ChatView()
                         .tabItem {
                             Label("Chat", systemImage: "message")
                         }
-                        .tag(Tab.chat)
+                        .tag(AppTab.chat)
                     
                     FileBrowserView()
                         .tabItem {
                             Label("Files", systemImage: "doc.text")
                         }
-                        .tag(Tab.files)
+                        .tag(AppTab.files)
                     
-                    TerminalView()
+                    RegularTasksView()
                         .tabItem {
-                            Label("Terminal", systemImage: "terminal")
+                            Label("Regular Tasks", systemImage: "clock.badge.checkmark")
                         }
-                        .tag(Tab.terminal)
+                        .tag(AppTab.tasks)
                 }
                 .onAppear {
                     configureManagers()

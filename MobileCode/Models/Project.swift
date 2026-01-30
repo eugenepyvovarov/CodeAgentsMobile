@@ -14,6 +14,7 @@ import SwiftData
 final class RemoteProject {
     var id = UUID()
     var name: String
+    var displayName: String?
     var path: String
     var lastModified: Date
     var createdAt: Date
@@ -37,10 +38,32 @@ final class RemoteProject {
     
     // Active streaming message tracking
     var activeStreamingMessageId: UUID?
+
+    // Proxy SSE event tracking
+    var proxyLastEventId: Int?
+
+    // Proxy conversation identifier
+    var proxyConversationId: String?
+
+    // Proxy conversation group identifier
+    var proxyConversationGroupId: String?
+
+    // Proxy agent identifier (stable across app reinstalls, stored in <agent>/.claude/codeagents.json)
+    var proxyAgentId: String?
+
+    // Agent env vars sync status (proxy-only)
+    var envVarsPendingSync: Bool = false
+    var envVarsLastSyncedAt: Date?
+    var envVarsLastSyncError: String?
+
+    // Proxy version tracking for sync decisions
+    var proxyVersion: String?
+    var proxyStartedAt: String?
     
-    init(name: String, serverId: UUID, basePath: String = "/root/projects") {
+    init(name: String, displayName: String? = nil, serverId: UUID, basePath: String = "/root/projects") {
         self.id = UUID()
         self.name = name
+        self.displayName = displayName
         self.path = "\(basePath)/\(name)"
         self.serverId = serverId
         self.lastModified = Date()
@@ -49,5 +72,13 @@ final class RemoteProject {
     
     func updateLastModified() {
         lastModified = Date()
+    }
+
+    var displayTitle: String {
+        let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, !trimmed.isEmpty {
+            return trimmed
+        }
+        return name
     }
 }

@@ -52,7 +52,7 @@ final class AcceptAllHostKeysDelegate: NIOSSHClientServerAuthenticationDelegate 
 // MARK: - Channel Handlers
 
 /// SSH channel data handler - accumulates output data
-final class SSHChannelDataHandler: ChannelInboundHandler {
+final class SSHChannelDataHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = SSHChannelData
     
     private var stdoutBuffer = ByteBuffer()
@@ -98,8 +98,41 @@ final class SSHChannelDataHandler: ChannelInboundHandler {
     }
 }
 
+struct SSHCommandResultEvaluator {
+    static func combinedOutput(stdout: String, stderr: String) -> String {
+        if stdout.isEmpty {
+            return stderr
+        }
+        if stderr.isEmpty {
+            return stdout
+        }
+        return "\(stdout)\n\(stderr)"
+    }
+
+    static func evaluate(exitStatus: Int32?, stdout: String, stderr: String) -> Result<String, SSHError> {
+        let output = combinedOutput(stdout: stdout, stderr: stderr)
+
+        if let exitStatus = exitStatus {
+            if exitStatus == 0 {
+                return .success(output)
+            }
+            let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detail.isEmpty {
+                return .failure(.commandFailed("Command exited with status \(exitStatus)"))
+            }
+            return .failure(.commandFailed("Command exited with status \(exitStatus): \(detail)"))
+        }
+
+        if output.isEmpty {
+            return .failure(.commandFailed("Channel closed without output"))
+        }
+
+        return .success(output)
+    }
+}
+
 /// Error handler
-final class ErrorHandler: ChannelInboundHandler {
+final class ErrorHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = Any
     
     func errorCaught(context: ChannelHandlerContext, error: Error) {
@@ -109,7 +142,7 @@ final class ErrorHandler: ChannelInboundHandler {
 }
 
 /// Command execution handler - manages the complete lifecycle of command execution
-final class CommandExecutionHandler: ChannelInboundHandler {
+final class CommandExecutionHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = Any
     
     private let command: String
@@ -191,17 +224,15 @@ final class CommandExecutionHandler: ChannelInboundHandler {
         if !hasCompleted {
             hasCompleted = true
             let (stdout, stderr) = dataHandler.getAccumulatedOutput()
-            let output = !stderr.isEmpty ? stdout + "\n" + stderr : stdout
+            let output = SSHCommandResultEvaluator.combinedOutput(stdout: stdout, stderr: stderr)
             
             SSHLogger.log("Channel closed, returning output (\(output.count) bytes)", level: .debug)
             
-            // If we have an exit status of 0 or we have output, consider it successful
-            if exitStatus == 0 || !output.isEmpty {
-                promise.succeed(output)
-            } else if let exitStatus = exitStatus {
-                promise.fail(SSHError.commandFailed("Command exited with status \(exitStatus)"))
-            } else {
-                promise.fail(SSHError.commandFailed("Channel closed without output"))
+            switch SSHCommandResultEvaluator.evaluate(exitStatus: exitStatus, stdout: stdout, stderr: stderr) {
+            case .success(let result):
+                promise.succeed(result)
+            case .failure(let error):
+                promise.fail(error)
             }
         }
     }
@@ -462,16 +493,13 @@ final class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle, @uncheck
     
     private func startContinuousReading(context: ChannelHandlerContext) {
         // Schedule repeated reads to ensure we get all data
-        let readTask = context.eventLoop.scheduleRepeatedTask(initialDelay: .milliseconds(10), delay: .milliseconds(100)) { task in
+        let _ = context.eventLoop.scheduleRepeatedTask(initialDelay: .milliseconds(10), delay: .milliseconds(100)) { task in
             guard self.isRunning else {
                 task.cancel()
                 return
             }
             context.channel.read()
         }
-        
-        // Store the task handle (you might want to add a property for this)
-        // For now, it will be cancelled when the channel becomes inactive
     }
     
     func errorCaught(context: ChannelHandlerContext, error: Error) {
@@ -482,5 +510,163 @@ final class SwiftSHProcessHandle: ChannelInboundHandler, ProcessHandle, @uncheck
         }
         continuations.removeAll()
         terminate()
+    }
+}
+
+// MARK: - Direct TCP/IP Stream Handle
+
+/// Raw stream handle for direct TCP/IP SSH channels
+final class SwiftSHRawStreamHandle: ChannelInboundHandler, ProcessHandle, @unchecked Sendable {
+    typealias InboundIn = Any
+
+    private var childChannel: Channel?
+    private var isTerminated = false
+
+    // Continuations for the output stream
+    private var continuations: [AsyncThrowingStream<String, Error>.Continuation] = []
+
+    // Buffer for output that arrives before continuations are ready
+    private var earlyOutputBuffer: [String] = []
+
+    var isRunning: Bool {
+        !isTerminated && (childChannel?.isActive ?? false)
+    }
+
+    init(channel: Channel) {
+        _ = channel
+        SSHLogger.log("Started direct TCP/IP stream handle", level: .info)
+    }
+
+    func setChildChannel(_ channel: Channel) {
+        self.childChannel = channel
+    }
+
+    // MARK: - ProcessHandle Conformance
+
+    func sendInput(_ text: String) async throws {
+        guard !isTerminated else {
+            throw SSHError.commandFailed("Stream terminated")
+        }
+
+        guard let channel = childChannel else {
+            throw SSHError.commandFailed("No active child channel")
+        }
+
+        var buffer = channel.allocator.buffer(capacity: text.utf8.count)
+        buffer.writeString(text)
+
+        let data = SSHChannelData(type: .channel, data: .byteBuffer(buffer))
+        try await channel.writeAndFlush(data).get()
+    }
+
+    func readOutput() async throws -> String {
+        var output = ""
+        for try await chunk in outputStream() {
+            output += chunk
+        }
+        return output
+    }
+
+    func outputStream() -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            self.continuations.append(continuation)
+
+            if !earlyOutputBuffer.isEmpty {
+                for bufferedOutput in earlyOutputBuffer {
+                    continuation.yield(bufferedOutput)
+                }
+                earlyOutputBuffer.removeAll()
+            }
+        }
+    }
+
+    func terminate() {
+        guard !isTerminated else { return }
+        isTerminated = true
+
+        childChannel?.close(promise: nil)
+
+        for continuation in continuations {
+            continuation.finish()
+        }
+        continuations.removeAll()
+    }
+
+    // MARK: - ChannelInboundHandler Conformance
+
+    func channelActive(context: ChannelHandlerContext) {
+        self.childChannel = context.channel
+        context.channel.read()
+        startContinuousReading(context: context)
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let unwrappedData = unwrapInboundIn(data)
+
+        var outputText: String? = nil
+
+        if let ioData = unwrappedData as? IOData {
+            switch ioData {
+            case .byteBuffer(let buffer):
+                outputText = String(buffer: buffer)
+            case .fileRegion:
+                return
+            }
+        } else if let buffer = unwrappedData as? ByteBuffer {
+            outputText = String(buffer: buffer)
+        } else if let channelData = unwrappedData as? SSHChannelData {
+            switch channelData.data {
+            case .byteBuffer(let bytes):
+                outputText = String(buffer: bytes)
+            case .fileRegion:
+                return
+            }
+        }
+
+        if let output = outputText, !output.isEmpty {
+            if continuations.isEmpty {
+                earlyOutputBuffer.append(output)
+            } else {
+                for continuation in continuations {
+                    continuation.yield(output)
+                }
+            }
+        }
+
+        context.channel.read()
+    }
+
+    func channelReadComplete(context: ChannelHandlerContext) {
+        context.channel.read()
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if let channelEvent = event as? ChannelEvent, channelEvent == .inputClosed {
+            terminate()
+            return
+        }
+        context.fireUserInboundEventTriggered(event)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        terminate()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        for continuation in continuations {
+            continuation.finish(throwing: error)
+        }
+        continuations.removeAll()
+        terminate()
+    }
+
+    private func startContinuousReading(context: ChannelHandlerContext) {
+        let _ = context.eventLoop.scheduleRepeatedTask(initialDelay: .milliseconds(10), delay: .milliseconds(100)) { task in
+            guard self.isRunning else {
+                task.cancel()
+                return
+            }
+            context.channel.read()
+        }
     }
 }

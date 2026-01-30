@@ -15,7 +15,7 @@ import NIO
 @preconcurrency import NIOSSH
 
 /// Real SSH session implementation using SwiftNIO SSH
-class SwiftSHSession: SSHSession {
+class SwiftSHSession: SSHSession, @unchecked Sendable {
     // MARK: - Properties
     
     private let server: Server
@@ -130,6 +130,14 @@ class SwiftSHSession: SSHSession {
         
         return try await createDirectProcess(command: shellWrapper)
     }
+
+    func openDirectTCPIP(targetHost: String, targetPort: Int) async throws -> ProcessHandle {
+        guard isConnected else {
+            throw SSHError.connectionFailed("Not connected")
+        }
+
+        return try await createDirectTCPIPStream(targetHost: targetHost, targetPort: targetPort)
+    }
     
     func uploadFile(localPath: URL, remotePath: String) async throws {
         guard isConnected else {
@@ -151,11 +159,14 @@ class SwiftSHSession: SSHSession {
         }
         
         // Use base64 encoding to transfer file
-        let command = "base64 '\(remotePath)'"
-        let base64Output = try await execute(command)
-        
+        let command = "base64 -w 0 '\(remotePath)' 2>/dev/null || base64 '\(remotePath)'"
+        let base64Output = try await executeRaw(command)
+
         // Decode and save
-        guard let data = Data(base64Encoded: base64Output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        let cleanedBase64 = base64Output
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+        guard let data = Data(base64Encoded: cleanedBase64) else {
             throw SSHError.fileTransferFailed("Failed to decode file content")
         }
         
@@ -250,7 +261,7 @@ class SwiftSHSession: SSHSession {
             authDelegate = PrivateKeyAuthenticationDelegate(
                 username: server.username,
                 keyId: sshKeyId
-            ) { [weak self] in
+            ) {
                 // In the future, this could prompt the user for passphrase
                 // For now, return nil to use stored passphrase only
                 return nil
@@ -272,17 +283,22 @@ class SwiftSHSession: SSHSession {
             .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
             .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
             .channelInitializer { channel in
-                channel.pipeline.addHandlers([
-                    NIOSSHHandler(
-                        role: .client(.init(
-                            userAuthDelegate: authDelegate,
-                            serverAuthDelegate: AcceptAllHostKeysDelegate()
-                        )),
-                        allocator: channel.allocator,
-                        inboundChildChannelInitializer: nil
-                    ),
-                    self
-                ])
+                do {
+                    try channel.pipeline.syncOperations.addHandlers(
+                        NIOSSHHandler(
+                            role: .client(.init(
+                                userAuthDelegate: authDelegate,
+                                serverAuthDelegate: AcceptAllHostKeysDelegate()
+                            )),
+                            allocator: channel.allocator,
+                            inboundChildChannelInitializer: nil
+                        ),
+                        self
+                    )
+                    return channel.eventLoop.makeSucceededFuture(())
+                } catch {
+                    return channel.eventLoop.makeFailedFuture(error)
+                }
             }
         
         do {
@@ -397,6 +413,59 @@ class SwiftSHSession: SSHSession {
         }.get()
         
         return processHandle
+    }
+
+    /// Create a direct TCP/IP stream over SSH
+    private func createDirectTCPIPStream(targetHost: String, targetPort: Int) async throws -> ProcessHandle {
+        guard let channel = channel else {
+            throw SSHError.connectionFailed("No active connection")
+        }
+
+        let streamHandle = SwiftSHRawStreamHandle(channel: channel)
+
+        let originatorAddress: SocketAddress
+        if let localAddress = channel.localAddress {
+            originatorAddress = localAddress
+        } else {
+            originatorAddress = try SocketAddress(ipAddress: "127.0.0.1", port: 0)
+        }
+
+        let directTCPIP = SSHChannelType.DirectTCPIP(
+            targetHost: targetHost,
+            targetPort: targetPort,
+            originatorAddress: originatorAddress
+        )
+
+        try await channel.eventLoop.flatSubmit {
+            let promise = channel.eventLoop.makePromise(of: Channel.self)
+
+            channel.pipeline.handler(type: NIOSSHHandler.self).whenSuccess { sshHandler in
+                sshHandler.createChannel(promise, channelType: .directTCPIP(directTCPIP)) { childChannel, channelType in
+                    guard case .directTCPIP = channelType else {
+                        return channel.eventLoop.makeFailedFuture(SSHError.commandFailed("Invalid channel type"))
+                    }
+
+                    _ = childChannel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+                    _ = childChannel.setOption(ChannelOptions.autoRead, value: true)
+
+                    let dataHandler = SSHChannelDataHandler()
+
+                    return childChannel.pipeline.addHandlers([
+                        dataHandler,
+                        streamHandle,
+                        ErrorHandler()
+                    ])
+                }
+            }
+
+            return promise.futureResult.flatMap { childChannel in
+                self.childChannel = childChannel
+                streamHandle.setChildChannel(childChannel)
+                return channel.eventLoop.makeSucceededFuture(())
+            }
+        }.get()
+
+        return streamHandle
     }
     
     /// Create an interactive SSH session

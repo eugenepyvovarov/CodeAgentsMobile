@@ -51,7 +51,7 @@ final class ShortcutClaudeRunner {
         }
         
         let project = try loadProject(from: metadata, modelContext: modelContext)
-        let server = ensureServer(metadata: metadata, modelContext: modelContext)
+        _ = ensureServer(metadata: metadata, modelContext: modelContext)
         let previousProject = projectContext.activeProject
         projectContext.setActiveProject(project)
         
@@ -72,7 +72,7 @@ final class ShortcutClaudeRunner {
         
         do {
             try await runWithTimeout(seconds: timeout) {
-                try await chatViewModel.sendMessage(finalPrompt)
+                await chatViewModel.sendMessage(finalPrompt)
             }
         } catch let error as ShortcutExecutionError {
             if case .timeout = error,
@@ -129,8 +129,8 @@ final class ShortcutClaudeRunner {
             return existing
         }
         
-        // If project is missing from persistent store, surface an explicit error
-        throw ShortcutExecutionError.claudeFailure("Project metadata is unavailable. Open the app to refresh shortcuts.")
+        // If agent is missing from persistent store, surface an explicit error
+        throw ShortcutExecutionError.claudeFailure("Agent metadata is unavailable. Open the app to refresh shortcuts.")
     }
     
     private func fetchProject(id: UUID, modelContext: ModelContext) throws -> RemoteProject? {

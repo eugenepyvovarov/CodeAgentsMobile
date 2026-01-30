@@ -80,32 +80,52 @@ class KeychainManager {
     /// Store API key (for Claude)
     /// - Parameter apiKey: The API key to store
     func storeAPIKey(_ apiKey: String) throws {
+        try storeAPIKey(apiKey, provider: .anthropic)
+    }
+
+    /// Store API key for a Claude provider.
+    func storeAPIKey(_ apiKey: String, provider: ClaudeModelProvider) throws {
         let data = apiKey.data(using: .utf8)!
-        try store(data: data, for: "anthropic_api_key")
+        try store(data: data, for: providerAPIKeyKey(for: provider))
     }
     
     /// Retrieve API key
     /// - Returns: The stored API key
     func retrieveAPIKey() throws -> String {
-        let data = try retrieve(for: "anthropic_api_key")
-        
+        try retrieveAPIKey(provider: .anthropic)
+    }
+
+    /// Retrieve API key for a Claude provider.
+    func retrieveAPIKey(provider: ClaudeModelProvider) throws -> String {
+        let data = try retrieve(for: providerAPIKeyKey(for: provider))
+
         guard let apiKey = String(data: data, encoding: .utf8) else {
             throw KeychainError.invalidData
         }
-        
+
         return apiKey
     }
     
     /// Delete API key
     func deleteAPIKey() throws {
-        try delete(for: "anthropic_api_key")
+        try deleteAPIKey(provider: .anthropic)
+    }
+
+    /// Delete API key for a Claude provider.
+    func deleteAPIKey(provider: ClaudeModelProvider) throws {
+        try delete(for: providerAPIKeyKey(for: provider))
     }
     
     /// Check if API key exists
     /// - Returns: True if API key is stored
     func hasAPIKey() -> Bool {
+        hasAPIKey(provider: .anthropic)
+    }
+
+    /// Check if API key exists for a Claude provider.
+    func hasAPIKey(provider: ClaudeModelProvider) -> Bool {
         do {
-            _ = try retrieveAPIKey()
+            _ = try retrieveAPIKey(provider: provider)
             return true
         } catch {
             return false
@@ -145,6 +165,49 @@ class KeychainManager {
         } catch {
             return false
         }
+    }
+
+    // MARK: - Push Notifications
+
+    /// Store the per-server push secret (CODEAGENTS_PUSH_SECRET)
+    func storePushSecret(_ secret: String, for serverId: UUID) throws {
+        let data = secret.data(using: .utf8)!
+        try store(data: data, for: pushSecretKey(for: serverId))
+    }
+
+    /// Retrieve the per-server push secret (CODEAGENTS_PUSH_SECRET)
+    func retrievePushSecret(for serverId: UUID) throws -> String {
+        let data = try retrieve(for: pushSecretKey(for: serverId))
+        guard let secret = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        return secret
+    }
+
+    /// Delete the per-server push secret for this device
+    func deletePushSecret(for serverId: UUID) throws {
+        try delete(for: pushSecretKey(for: serverId))
+    }
+
+    /// Check if a push secret exists for a server
+    func hasPushSecret(for serverId: UUID) -> Bool {
+        do {
+            _ = try retrievePushSecret(for: serverId)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Stable identifier for this app install, used for device registration docs in Firestore.
+    func getOrCreatePushInstallationId() throws -> String {
+        if let existing = try? retrievePushInstallationId() {
+            return existing
+        }
+
+        let fresh = UUID().uuidString.lowercased()
+        try storePushInstallationId(fresh)
+        return fresh
     }
     
     // MARK: - SSH Key Methods
@@ -236,13 +299,39 @@ class KeychainManager {
     private func passwordKey(for serverId: UUID) -> String {
         return "password_\(serverId.uuidString)"
     }
-    
+
+    private func providerAPIKeyKey(for provider: ClaudeModelProvider) -> String {
+        switch provider {
+        case .anthropic:
+            return "anthropic_api_key"
+        default:
+            return "claude_provider_api_key_\(provider.rawValue)"
+        }
+    }
+
     private func sshKeyKey(for keyId: UUID) -> String {
         return "sshkey_\(keyId.uuidString)"
     }
-    
+
     private func sshKeyPassphraseKey(for keyId: UUID) -> String {
         return "sshkey_passphrase_\(keyId.uuidString)"
+    }
+
+    private func pushSecretKey(for serverId: UUID) -> String {
+        "push_secret_\(serverId.uuidString)"
+    }
+
+    private func storePushInstallationId(_ value: String) throws {
+        let data = value.data(using: .utf8)!
+        try store(data: data, for: "push_installation_id")
+    }
+
+    private func retrievePushInstallationId() throws -> String {
+        let data = try retrieve(for: "push_installation_id")
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        return value
     }
     
     

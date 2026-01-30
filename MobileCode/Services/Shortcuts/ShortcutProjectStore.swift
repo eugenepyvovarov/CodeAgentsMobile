@@ -8,7 +8,7 @@
 import Foundation
 import SwiftData
 
-/// Metadata describing a project that Shortcuts can run.
+/// Metadata describing an agent that Shortcuts can run.
 struct ShortcutProjectMetadata: Codable, Hashable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id
@@ -65,7 +65,7 @@ struct ShortcutProjectMetadata: Codable, Hashable, Identifiable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        self.projectName = try container.decodeIfPresent(String.self, forKey: .projectName) ?? "Unknown Project"
+        self.projectName = try container.decodeIfPresent(String.self, forKey: .projectName) ?? "Unknown Agent"
         self.projectPath = try container.decodeIfPresent(String.self, forKey: .projectPath) ?? "/"
         self.serverId = try container.decodeIfPresent(UUID.self, forKey: .serverId) ?? UUID()
         self.serverName = try container.decodeIfPresent(String.self, forKey: .serverName) ?? "Server"
@@ -123,7 +123,7 @@ final class ShortcutProjectStore {
         do {
             return try decoder.decode([ShortcutProjectMetadata].self, from: data)
         } catch {
-            print("⚠️ Failed to decode shortcut project metadata: \(error). Clearing stale cache.")
+            print("⚠️ Failed to decode shortcut agent metadata: \(error). Clearing stale cache.")
             AppGroup.sharedDefaults.removeObject(forKey: storageKey)
             return []
         }
@@ -134,7 +134,7 @@ final class ShortcutProjectStore {
             let data = try encoder.encode(projects)
             AppGroup.sharedDefaults.set(data, forKey: storageKey)
         } catch {
-            print("⚠️ Failed to encode shortcut project metadata: \(error)")
+            print("⚠️ Failed to encode shortcut agent metadata: \(error)")
         }
     }
     
@@ -173,7 +173,7 @@ final class ShortcutSyncService {
                 guard let server = serverLookup[project.serverId] else { return nil }
                 return ShortcutProjectMetadata(
                     id: project.id,
-                    projectName: project.name,
+                    projectName: project.displayTitle,
                     projectPath: project.path,
                     serverId: server.id,
                     serverName: server.name,
