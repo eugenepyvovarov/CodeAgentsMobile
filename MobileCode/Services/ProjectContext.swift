@@ -48,7 +48,7 @@ class ProjectContext: ObservableObject {
         // Set the new active project
         activeProject = project
         
-        print("✅ Activated project: \(project.name)")
+        print("✅ Activated agent: \(project.displayTitle)")
     }
     
     /// Clear the active project

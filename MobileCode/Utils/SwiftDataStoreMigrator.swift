@@ -24,9 +24,7 @@ enum SwiftDataStoreMigrator {
 
         // Resolve the legacy location by constructing a configuration without an explicit URL.
         let legacyConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-        guard let legacyURL = legacyConfiguration.url else {
-            return
-        }
+        let legacyURL = legacyConfiguration.url
 
         // If both URLs resolve to the same path, there is nothing to migrate.
         if legacyURL == destinationURL {

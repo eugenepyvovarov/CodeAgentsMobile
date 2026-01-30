@@ -67,6 +67,9 @@ protocol SSHSession {
     
     /// Start a long-running process without shell (raw execution)
     func startProcessRaw(_ command: String) async throws -> ProcessHandle
+
+    /// Open a direct TCP/IP stream over SSH
+    func openDirectTCPIP(targetHost: String, targetPort: Int) async throws -> ProcessHandle
     
     /// Upload a file to the server
     func uploadFile(localPath: URL, remotePath: String) async throws

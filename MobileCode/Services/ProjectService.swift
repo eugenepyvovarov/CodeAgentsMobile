@@ -4,16 +4,16 @@
 //
 //  Created by Claude on 2025-07-05.
 //
-//  Purpose: Handles project-related operations
-//  - Create/delete projects on remote servers
-//  - Discover projects (if needed in future)
-//  - Single responsibility: project file operations
+//  Purpose: Handles agent-related operations
+//  - Create/delete agents on remote servers
+//  - Discover agents (if needed in future)
+//  - Single responsibility: agent file operations
 //
 
 import Foundation
 import SwiftUI
 
-/// Service for project-related operations on remote servers
+/// Service for agent-related operations on remote servers
 @MainActor
 class ProjectService {
     // MARK: - Properties
@@ -28,13 +28,13 @@ class ProjectService {
     
     // MARK: - Methods
     
-    /// Create a new project directory on the server
+    /// Create a new agent directory on the server
     /// - Parameters:
-    ///   - name: Name of the project
-    ///   - server: Server to create the project on
-    ///   - customPath: Optional custom path for the project (if nil, uses server default)
+    ///   - name: Name of the agent
+    ///   - server: Server to create the agent on
+    ///   - customPath: Optional custom path for the agent (if nil, uses server default)
     func createProject(name: String, on server: Server, customPath: String? = nil) async throws {
-        SSHLogger.log("Creating project '\(name)' on server \(server.name)", level: .info)
+        SSHLogger.log("Creating agent '\(name)' on server \(server.name)", level: .info)
         
         // Get a direct connection to the server
         let session = try await sshService.connect(to: server)
@@ -52,7 +52,7 @@ class ProjectService {
         
         let projectPath = "\(basePath)/\(name)"
         
-        SSHLogger.log("Creating project at path: \(projectPath)", level: .info)
+        SSHLogger.log("Creating agent at path: \(projectPath)", level: .info)
         
         // First, ensure the base projects directory exists and check permissions
         _ = try await session.execute("mkdir -p '\(basePath)'")
@@ -77,7 +77,7 @@ class ProjectService {
                         throw ProjectServiceError.failedToCreateDirectory
                     }
                     
-                    SSHLogger.log("Successfully created project at fallback: \(fallbackPath)", level: .info)
+                    SSHLogger.log("Successfully created agent at fallback: \(fallbackPath)", level: .info)
                     return
                 }
             }
@@ -93,17 +93,17 @@ class ProjectService {
             throw ProjectServiceError.failedToCreateDirectory
         }
         
-        SSHLogger.log("Successfully created project at \(projectPath)", level: .info)
+        SSHLogger.log("Successfully created agent at \(projectPath)", level: .info)
     }
     
-    /// Delete a project directory from the server
-    /// - Parameter project: Project to delete
+    /// Delete an agent directory from the server
+    /// - Parameter project: Agent to delete
     func deleteProject(_ project: RemoteProject) async throws {
         guard let server = ServerManager.shared.server(withId: project.serverId) else {
             throw ProjectServiceError.serverNotFound
         }
         
-        SSHLogger.log("Deleting project '\(project.name)' from server \(server.name)", level: .info)
+        SSHLogger.log("Deleting agent '\(project.name)' from server \(server.name)", level: .info)
         
         // Get a connection for this project
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
@@ -120,7 +120,7 @@ class ProjectService {
         // Close all connections for this project
         sshService.closeConnections(projectId: project.id)
         
-        SSHLogger.log("Successfully deleted project at \(project.path)", level: .info)
+        SSHLogger.log("Successfully deleted agent at \(project.path)", level: .info)
     }
     
     // MARK: - Private Methods
@@ -149,9 +149,9 @@ enum ProjectServiceError: LocalizedError {
         case .serverNotFound:
             return "Server not found"
         case .projectNotFound:
-            return "Project directory not found on server"
+            return "Agent directory not found on server"
         case .failedToCreateDirectory:
-            return "Failed to create project directory"
+            return "Failed to create agent directory"
         case .noWritePermission:
             return "No write permission in the selected directory"
         }

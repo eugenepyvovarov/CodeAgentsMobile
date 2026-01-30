@@ -68,11 +68,11 @@ struct MCPServer: Identifiable, Equatable {
         var displayName: String {
             switch self {
             case .project:
-                return "Project (Shared)"
+                return "Agent (Shared)"
             case .local:
                 return "Local (Private)"
             case .global:
-                return "Global (All Projects)"
+                return "Global (All Agents)"
             }
         }
         
@@ -83,7 +83,7 @@ struct MCPServer: Identifiable, Equatable {
             case .local:
                 return "Only on this device"
             case .global:
-                return "Available in all your projects"
+                return "Available in all your agents"
             }
         }
     }
