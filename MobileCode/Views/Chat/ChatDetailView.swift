@@ -322,12 +322,7 @@ struct ChatDetailView: View {
     }
 
     private var canMarkAsRead: Bool {
-        isVisible &&
-            !viewModel.messages.isEmpty &&
-            !viewModel.isProcessing &&
-            !viewModel.isLoadingPreviousSession &&
-            !viewModel.showActiveSessionIndicator &&
-            viewModel.streamingMessage == nil
+        isVisible
     }
 
     private func attemptMarkAsRead() {
