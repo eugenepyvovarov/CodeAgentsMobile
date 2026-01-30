@@ -71,11 +71,30 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             pendingPayload = payload
             return
         }
-        Task { await routeToChat(payload: payload) }
+        Task {
+            await applyUnreadUpdateIfPossible(payload: payload)
+            await routeToChat(payload: payload)
+        }
     }
 
     func refreshSubscriptions() async {
         await reregisterAllStoredSubscriptionsIfPossible()
+    }
+
+    func syncDeliveredReplyFinishedNotifications() async {
+        guard modelContainer != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        let notifications: [UNNotification] = await withCheckedContinuation { continuation in
+            center.getDeliveredNotifications { notifications in
+                continuation.resume(returning: notifications)
+            }
+        }
+
+        for notification in notifications {
+            let userInfo = notification.request.content.userInfo
+            guard let payload = PushPayload(userInfo: userInfo) else { continue }
+            await applyUnreadUpdateIfPossible(payload: payload)
+        }
     }
 
     // MARK: - Private
@@ -190,6 +209,157 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         AppNavigationState.shared.selectedTab = .chat
     }
 
+    private func applyUnreadUpdateIfPossible(payload: PushPayload) async {
+        guard payload.type == "reply_finished" else { return }
+        guard let incomingCount = payload.renderableAssistantCount, incomingCount >= 0 else { return }
+        guard let modelContainer else { return }
+        let context = ModelContext(modelContainer)
+
+        let servers: [Server]
+        do {
+            servers = try context.fetch(FetchDescriptor<Server>())
+        } catch {
+            return
+        }
+
+        guard let matchedServer = servers.first(where: { server in
+            guard let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id) else { return false }
+            return secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
+        }) else {
+            return
+        }
+
+        let serverId = matchedServer.id
+        let cwd = payload.cwd
+        let descriptor = FetchDescriptor<RemoteProject>(
+            predicate: #Predicate { project in
+                project.serverId == serverId && project.path == cwd
+            }
+        )
+
+        guard let project = (try? context.fetch(descriptor))?.first else {
+            return
+        }
+
+        let isUnreadStateUninitialized =
+            project.unreadConversationId == nil && project.lastKnownUnreadCursor == 0 && project.lastReadUnreadCursor == 0
+        if isUnreadStateUninitialized {
+            let baseline = min(estimateRenderableBubbleCount(for: project, in: context), incomingCount)
+            project.lastKnownUnreadCursor = baseline
+            project.lastReadUnreadCursor = baseline
+        }
+
+        if let conversationId = payload.conversationId, !conversationId.isEmpty {
+            if project.unreadConversationId != conversationId {
+                let shouldResetReadCursor = project.unreadConversationId != nil && !isUnreadStateUninitialized
+                project.unreadConversationId = conversationId
+                if shouldResetReadCursor {
+                    project.lastReadUnreadCursor = 0
+                }
+                project.lastKnownUnreadCursor = incomingCount
+            } else if incomingCount > project.lastKnownUnreadCursor {
+                project.lastKnownUnreadCursor = incomingCount
+            }
+        } else if incomingCount > project.lastKnownUnreadCursor {
+            project.lastKnownUnreadCursor = incomingCount
+        }
+
+        project.updateLastModified()
+
+        do {
+            try context.save()
+        } catch {
+            #if DEBUG
+            SSHLogger.log("Failed to save unread update: \(error)", level: .warning)
+            #endif
+        }
+    }
+
+    private func estimateRenderableBubbleCount(for project: RemoteProject, in context: ModelContext) -> Int {
+        let projectId = project.id
+        let descriptor = FetchDescriptor<Message>(
+            predicate: #Predicate { message in
+                message.projectId == projectId
+            }
+        )
+        let messages: [Message]
+        do {
+            messages = try context.fetch(descriptor)
+        } catch {
+            return 0
+        }
+
+        var total = 0
+        for message in messages {
+            guard message.role == .assistant else { continue }
+
+            if let structuredMessages = message.structuredMessages, !structuredMessages.isEmpty {
+                for structured in structuredMessages {
+                    switch structured.type {
+                    case "assistant":
+                        total += countRenderableBlocks(in: structured, includeText: true)
+                    case "user":
+                        total += countRenderableBlocks(in: structured, includeText: false)
+                    default:
+                        continue
+                    }
+                }
+                continue
+            }
+
+            if let structured = message.structuredContent {
+                switch structured.type {
+                case "assistant":
+                    total += countRenderableBlocks(in: structured, includeText: true)
+                case "user":
+                    total += countRenderableBlocks(in: structured, includeText: false)
+                default:
+                    break
+                }
+                continue
+            }
+
+            let fallbackBlocks = message.fallbackContentBlocks()
+            if !fallbackBlocks.isEmpty {
+                total += fallbackBlocks.reduce(0) { partial, block in
+                    partial + renderableBlockIncrement(block, includeText: true)
+                }
+                continue
+            }
+
+            if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                total += 1
+            }
+        }
+
+        return total
+    }
+
+    private func countRenderableBlocks(in structured: StructuredMessageContent, includeText: Bool) -> Int {
+        guard let content = structured.message else { return 0 }
+        switch content.content {
+        case .blocks(let blocks):
+            return blocks.reduce(0) { partial, block in
+                partial + renderableBlockIncrement(block, includeText: includeText)
+            }
+        case .text(let text):
+            guard includeText else { return 0 }
+            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        }
+    }
+
+    private func renderableBlockIncrement(_ block: ContentBlock, includeText: Bool) -> Int {
+        switch block {
+        case .text(let textBlock):
+            guard includeText else { return 0 }
+            return textBlock.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        case .toolUse, .toolResult:
+            return 1
+        case .unknown:
+            return 0
+        }
+    }
+
     private func storedSubscriptions() -> [StoredSubscription] {
         guard let data = UserDefaults.standard.data(forKey: subscriptionsStorageKey) else {
             return []
@@ -234,6 +404,8 @@ private struct PushPayload: Hashable {
     let type: String
     let serverKey: String
     let cwd: String
+    let conversationId: String?
+    let renderableAssistantCount: Int?
 
     init?(userInfo: [AnyHashable: Any]) {
         guard let type = userInfo["type"] as? String,
@@ -244,6 +416,22 @@ private struct PushPayload: Hashable {
         self.type = type
         self.serverKey = serverKey
         self.cwd = cwd
+
+        if let conversationId = userInfo["conversation_id"] as? String {
+            let trimmed = conversationId.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.conversationId = trimmed.isEmpty ? nil : trimmed
+        } else {
+            self.conversationId = nil
+        }
+
+        let countValue = userInfo["renderable_assistant_count"]
+        if let count = countValue as? Int {
+            self.renderableAssistantCount = count
+        } else if let countString = countValue as? String, let count = Int(countString.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            self.renderableAssistantCount = count
+        } else {
+            self.renderableAssistantCount = nil
+        }
     }
 }
 
@@ -278,6 +466,8 @@ extension PushNotificationsManager: @preconcurrency UNUserNotificationCenterDele
             completionHandler([.banner, .list, .sound, .badge])
             return
         }
+
+        Task { await applyUnreadUpdateIfPossible(payload: payload) }
 
         if shouldSuppressForegroundNotification(payload: payload) {
             completionHandler([])

@@ -27,6 +27,7 @@ struct ChatDetailView: View {
     @State private var isUploadingAttachments = false
     @State private var showAttachmentError = false
     @State private var attachmentErrorMessage = ""
+    @State private var isBottomMessageVisible = false
 
     var body: some View {
         let _ = viewModel.messagesRevision
@@ -37,6 +38,7 @@ struct ChatDetailView: View {
             currentUserName: userLabel,
             assistantName: assistantLabel
         )
+        let lastRenderedMessageId = adapter.exyteMessages.last?.id
 
         ExyteChat.ChatView<AnyView, ExyteChatInputComposer, DefaultMessageMenuAction>(
             messages: adapter.exyteMessages,
@@ -57,13 +59,27 @@ struct ChatDetailView: View {
                     }
                     return existing
                 }()
-                return AnyView(MessageBubble(
+                let bubble = MessageBubble(
                     message: sourceMessage,
                     assistantLabel: assistantLabel,
                     userLabel: userLabel,
                     isStreaming: viewModel.streamingMessage?.id == sourceMessage.id,
                     streamingBlocks: viewModel.streamingMessage?.id == sourceMessage.id ? viewModel.streamingBlocks : []
-                ))
+                )
+
+                if message.id == lastRenderedMessageId {
+                    return AnyView(bubble
+                        .onAppear {
+                            isBottomMessageVisible = true
+                            attemptMarkAsRead()
+                        }
+                        .onDisappear {
+                            isBottomMessageVisible = false
+                        }
+                    )
+                }
+
+                return AnyView(bubble)
             },
             inputViewBuilder: { (text: Binding<String>, _: InputViewAttachments, state: InputViewState, _: InputViewStyle, action: @escaping (InputViewAction) -> Void, _: () -> Void) in
                 ExyteChatInputComposer(
@@ -159,6 +175,7 @@ struct ChatDetailView: View {
         .chatTheme(chatTheme)
         .onAppear {
             isVisible = true
+            attemptMarkAsRead()
         }
         .onDisappear {
             isVisible = false
@@ -166,11 +183,22 @@ struct ChatDetailView: View {
             scrollToBottomWorkItem = nil
             followUpScrollWorkItem?.cancel()
             followUpScrollWorkItem = nil
+            isBottomMessageVisible = false
         }
         .onChange(of: viewModel.isProcessing) { _, isProcessing in
             if !isProcessing {
                 requestScrollToBottom(force: true)
             }
+            attemptMarkAsRead()
+        }
+        .onChange(of: viewModel.isLoadingPreviousSession) { _, _ in
+            attemptMarkAsRead()
+        }
+        .onChange(of: viewModel.showActiveSessionIndicator) { _, _ in
+            attemptMarkAsRead()
+        }
+        .onChange(of: projectContext.activeProject?.lastKnownUnreadCursor ?? 0) { _, _ in
+            attemptMarkAsRead()
         }
         .onChange(of: isInputFocused) { _, focused in
             if focused {
@@ -181,6 +209,8 @@ struct ChatDetailView: View {
         .onChange(of: projectContext.activeProject?.id) { _, _ in
             selectedSkill = nil
             attachments = []
+            isBottomMessageVisible = false
+            attemptMarkAsRead()
         }
         .alert(
             "Tool Permission",
@@ -264,6 +294,21 @@ struct ChatDetailView: View {
                 showAttachmentError = true
             }
         }
+    }
+
+    private var canMarkAsRead: Bool {
+        isVisible &&
+            isBottomMessageVisible &&
+            !viewModel.isProcessing &&
+            !viewModel.isLoadingPreviousSession &&
+            !viewModel.showActiveSessionIndicator &&
+            viewModel.streamingMessage == nil
+    }
+
+    private func attemptMarkAsRead() {
+        guard canMarkAsRead else { return }
+        guard let project = projectContext.activeProject else { return }
+        viewModel.markUnreadAsRead(for: project)
     }
 
     private var shouldShowThinkingIndicator: Bool {

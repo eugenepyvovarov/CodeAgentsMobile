@@ -199,6 +199,7 @@ struct ProjectRow: View {
                 HStack {
                     leftColumn
                     Spacer()
+                    unreadBadge
                     activationIndicator
                     actionButtons
                 }
@@ -212,6 +213,7 @@ struct ProjectRow: View {
                     HStack {
                         leftColumn
                         Spacer()
+                        unreadBadge
                         activationIndicator
                     }
                     .padding(.vertical, 4)
@@ -246,6 +248,20 @@ struct ProjectRow: View {
         if isActivating {
             ProgressView()
                 .scaleEffect(0.8)
+        }
+    }
+
+    @ViewBuilder
+    private var unreadBadge: some View {
+        if let text = project.unreadBadgeText {
+            Text(text)
+                .font(.caption2.weight(.semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.red)
+                .clipShape(Capsule())
+                .accessibilityLabel("\(project.unreadCount) unread message\(project.unreadCount == 1 ? "" : "s")")
         }
     }
     
