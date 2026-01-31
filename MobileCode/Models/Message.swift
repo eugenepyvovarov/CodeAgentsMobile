@@ -18,6 +18,9 @@ final class Message {
     
     // Store original JSON response from Claude for future UI rendering
     var originalJSON: Data?
+
+    // Proxy event ID for ordering/deduping replayed events
+    var proxyEventId: Int?
     
     // Track if message streaming is complete
     var isComplete: Bool = true
@@ -116,6 +119,67 @@ final class Message {
         
         // Otherwise return the plain text content
         return content
+    }
+
+    func fallbackContentBlocks() -> [ContentBlock] {
+        guard let data = originalJSON,
+              let raw = String(data: data, encoding: .utf8) else {
+            return []
+        }
+
+        let lines = raw.split(separator: "\n").map(String.init)
+        var blocks: [ContentBlock] = []
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let lineData = trimmed.data(using: .utf8),
+                  let jsonObject = try? JSONSerialization.jsonObject(with: lineData, options: []) else {
+                continue
+            }
+
+            if let dict = jsonObject as? [String: Any] {
+                blocks.append(contentsOf: Message.extractBlocks(from: dict))
+            } else if let array = jsonObject as? [Any] {
+                blocks.append(contentsOf: Message.extractBlocks(fromContent: array))
+            }
+        }
+
+        return blocks.filter { block in
+            if case .unknown = block {
+                return false
+            }
+            return true
+        }
+    }
+
+    private static func extractBlocks(from json: [String: Any]) -> [ContentBlock] {
+        if let type = json["type"] as? String,
+           (type == "tool_use" || type == "tool_result"),
+           let block = ContentBlock.fromAny(json) {
+            return [block]
+        }
+        if let message = json["message"] as? [String: Any] {
+            return extractBlocks(fromContent: message["content"])
+        }
+        if let content = json["content"] {
+            return extractBlocks(fromContent: content)
+        }
+        return []
+    }
+
+    private static func extractBlocks(fromContent content: Any?) -> [ContentBlock] {
+        if let array = content as? [Any] {
+            return array.compactMap { ContentBlock.fromAny($0) }
+        }
+        if let dict = content as? [String: Any],
+           let block = ContentBlock.fromAny(dict) {
+            return [block]
+        }
+        if let text = content as? String {
+            return [.text(TextBlock(type: "text", text: text))]
+        }
+        return []
     }
 }
 

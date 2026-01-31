@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","cwd":"/tmp/demo","session_id":"sess-1","tools":["Bash"]}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Listing files..."}]}}
+{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la"}}
+{"type":"tool_result","tool_use_id":"toolu_1","content":"file1\nfile2","is_error":false}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}
+{"type":"result","subtype":"success","session_id":"sess-1","is_error":false}
+

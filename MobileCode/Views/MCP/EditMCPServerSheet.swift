@@ -14,6 +14,7 @@ struct EditMCPServerSheet: View {
     let project: RemoteProject
     let server: MCPServer
     let onEdit: () -> Void
+    let scopeHint: MCPServer.MCPScope?
     
     // Form fields
     @State private var serverName: String
@@ -71,9 +72,10 @@ struct EditMCPServerSheet: View {
         var value: String
     }
     
-    init(project: RemoteProject, server: MCPServer, onEdit: @escaping () -> Void) {
+    init(project: RemoteProject, server: MCPServer, scopeHint: MCPServer.MCPScope? = nil, onEdit: @escaping () -> Void) {
         self.project = project
         self.server = server
+        self.scopeHint = scopeHint
         self.onEdit = onEdit
         self.originalName = server.name
         
@@ -382,7 +384,7 @@ struct EditMCPServerSheet: View {
         isLoadingDetails = true
         
         do {
-            if let details = try await mcpService.getServerDetails(named: originalName, for: project) {
+            if let details = try await mcpService.getServerDetails(named: originalName, scope: scopeHint, for: project) {
                 let (detailedServer, serverScope) = details
                 
                 // Update all fields with the detailed information
@@ -500,7 +502,7 @@ struct EditMCPServerSheet: View {
 
 #Preview {
     EditMCPServerSheet(
-        project: RemoteProject(name: "Test Project", serverId: UUID()),
+        project: RemoteProject(name: "Test Agent", serverId: UUID()),
         server: MCPServer(
             name: "test-server",
             command: "npx",

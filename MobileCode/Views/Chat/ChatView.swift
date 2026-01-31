@@ -9,12 +9,14 @@ import SwiftUI
 
 struct ChatView: View {
     @State private var viewModel = ChatViewModel()
-    @State private var messageText = ""
-    @State private var hasInitiallyLoaded = false
     @StateObject private var projectContext = ProjectContext.shared
     @StateObject private var claudeService = ClaudeCodeService.shared
     @Environment(\.modelContext) private var modelContext
     @State private var showingMCPServers = false
+    @State private var showingAgentSkills = false
+    @State private var showingPermissions = false
+    @State private var showingRules = false
+    @State private var showingEnvironment = false
     
     var body: some View {
         NavigationStack {
@@ -27,190 +29,13 @@ struct ChatView: View {
                     ClaudeNotInstalledView(server: server)
                 } else {
                     // Normal chat UI
-                    ScrollViewReader { proxy in
-                        VStack(spacing: 0) {
-                            // Loading indicator for session recovery
-                            if viewModel.isLoadingPreviousSession {
-                                HStack {
-                                    ProgressView()
-                                        .progressViewStyle(CircularProgressViewStyle())
-                                    Text("Checking for previous session...")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding()
-                                .background(Color(.systemGray6))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .padding()
-                            }
-                            
-                            // Messages List
-                            ScrollView {
-                                VStack(spacing: 12) {  // Changed from LazyVStack to VStack for accurate height calculation
-                                    ForEach(viewModel.messages) { message in
-                                        MessageBubble(
-                                            message: message, 
-                                            isStreaming: viewModel.streamingMessage?.id == message.id,
-                                            streamingBlocks: viewModel.streamingMessage?.id == message.id ? viewModel.streamingBlocks : []
-                                        )
-                                        .id(message.id)
-                                    }
-                                    
-                                    // Show streaming indicator if processing and no completed session
-                                    if viewModel.isProcessing && viewModel.streamingMessage != nil {
-                                        // Double-check that the last message doesn't have a completed session
-                                        let lastMessage = viewModel.messages.last
-                                        let hasCompletedSession = lastMessage?.structuredMessages?.contains { $0.type == "result" } ?? false
-                                        
-                                        if !hasCompletedSession {
-                                            HStack {
-                                                ProgressView()
-                                                    .progressViewStyle(CircularProgressViewStyle())
-                                                    .scaleEffect(0.8)
-                                                Text(viewModel.showActiveSessionIndicator ? 
-                                                     "Claude is still processing..." : 
-                                                     "Claude is thinking...")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                            .padding(.vertical, 8)
-                                            .id("streaming-indicator")
-                                        }
-                                    }
-                                }
-                                .padding()
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                // Dismiss keyboard when tapping on the chat area
-                                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                            }
-                            .onChange(of: viewModel.messages.count) { oldValue, newValue in
-                                // Skip scrolling on initial load (when oldValue is 0 and we're loading existing messages)
-                                if oldValue == 0 && !hasInitiallyLoaded {
-                                    hasInitiallyLoaded = true
-                                    if newValue > 1 {
-                                        return
-                                    }
-                                }
-                                
-                                // Only scroll for new messages (single message additions)
-                                if newValue > oldValue {
-                                    // Add multiple attempts to ensure content is fully rendered
-                                    Task {
-                                        // First attempt - quick scroll for immediate feedback
-                                        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
-                                        await MainActor.run {
-                                            if let lastMessage = viewModel.messages.last {
-                                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                            }
-                                        }
-                                        
-                                        // Second attempt - after content should be rendered
-                                        try? await Task.sleep(nanoseconds: 400_000_000) // 0.4 seconds more
-                                        await MainActor.run {
-                                            if let lastMessage = viewModel.messages.last {
-                                                withAnimation(.easeInOut(duration: 0.2)) {
-                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Re-enable streaming content scroll triggers for Claude's responses
-                            .onChange(of: viewModel.streamingBlocks.count) { oldValue, newValue in
-                                if newValue > oldValue && viewModel.isProcessing {
-                                    Task {
-                                        try? await Task.sleep(nanoseconds: 50_000_000) // 0.05 seconds
-                                        await MainActor.run {
-                                            if let lastMessage = viewModel.messages.last {
-                                                withAnimation(.easeInOut(duration: 0.2)) {
-                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Scroll when streaming message gets final content
-                            .onChange(of: viewModel.streamingMessage?.structuredMessages?.count) { oldValue, newValue in
-                                if let newValue = newValue, let oldValue = oldValue, newValue > oldValue {
-                                    Task {
-                                        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
-                                        await MainActor.run {
-                                            if let lastMessage = viewModel.messages.last {
-                                                withAnimation(.easeInOut(duration: 0.2)) {
-                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Also scroll when processing state changes (Claude starts/stops responding)
-                            .onChange(of: viewModel.isProcessing) { oldValue, newValue in
-                                if newValue {
-                                    // Claude started responding, ensure we're scrolled to bottom
-                                    Task {
-                                        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
-                                        await MainActor.run {
-                                            if let lastMessage = viewModel.messages.last {
-                                                withAnimation(.easeInOut(duration: 0.2)) {
-                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
-                                if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
-                                    // Always scroll to bottom when keyboard appears to keep latest message visible
-                                    Task {
-                                        // Small delay to let keyboard animation start
-                                        try? await Task.sleep(nanoseconds: 50_000_000) // 0.05 seconds
-                                        await MainActor.run {
-                                            if let lastMessage = viewModel.messages.last {
-                                                withAnimation(.easeOut(duration: 0.25)) {
-                                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                                
-                        
-                        Divider()
-                        
-                        // Input Bar
-                        HStack(spacing: 12) {
-                            TextField("Ask Claude...", text: $messageText, axis: .vertical)
-                                .textFieldStyle(.roundedBorder)
-                                .lineLimit(1...5)
-                                .autocapitalization(.none)
-                                .autocorrectionDisabled(true)
-                                .onSubmit {
-                                    sendMessage(proxy: proxy)
-                                }
-                            
-                            Button {
-                                sendMessage(proxy: proxy)
-                            } label: {
-                                Image(systemName: "arrow.up.circle.fill")
-                                    .font(.title)
-                                    .foregroundColor(.blue)
-                            }
-                            .disabled(messageText.isEmpty)
+                    ChatDetailView(viewModel: viewModel, assistantLabel: assistantLabel)
+                        .refreshable {
+                            await viewModel.refreshProxyEvents()
                         }
-                        .padding()
-                        .background(Color(.systemBackground))
-                        }
-                    }
                 }
             }
-            .navigationTitle("Claude Chat")
+            .navigationTitle(chatTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -223,7 +48,31 @@ struct ChatView: View {
                         } label: {
                             Label("MCP Servers", systemImage: "server.rack")
                         }
-                        
+
+                        Button {
+                            showingAgentSkills = true
+                        } label: {
+                            Label("Agent Skills", systemImage: "sparkles")
+                        }
+
+                        Button {
+                            showingPermissions = true
+                        } label: {
+                            Label("Permissions", systemImage: "checkmark.shield")
+                        }
+
+                        Button {
+                            showingRules = true
+                        } label: {
+                            Label("Rules", systemImage: "doc.text")
+                        }
+
+                        Button {
+                            showingEnvironment = true
+                        } label: {
+                            Label("Environment Variables", systemImage: "terminal")
+                        }
+
                         Divider()
                         
                         Button {
@@ -235,28 +84,36 @@ struct ChatView: View {
                         Image(systemName: "ellipsis.circle")
                     }
                 }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") {
-                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-                }
             }
         }
-        .task {
-            // Configure viewModel with current project
-            if let project = projectContext.activeProject {
-                viewModel.configure(modelContext: modelContext, projectId: project.id)
+        .task(id: projectContext.activeProject?.id) {
+            guard let project = projectContext.activeProject else { return }
+            do {
+                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure proxy agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
             }
+            viewModel.configure(modelContext: modelContext, projectId: project.id)
         }
         .onAppear {
+            viewModel.startProxyPolling()
+            Task {
+                if let project = projectContext.activeProject,
+                   let server = projectContext.activeServer {
+                    await PushNotificationsManager.shared.recordChatOpened(
+                        project: project,
+                        server: server,
+                        agentDisplayName: assistantLabel
+                    )
+                }
+            }
             // Re-check Claude installation when view appears
             Task {
                 if let server = projectContext.activeServer {
                     // Only check if we don't have a cached status or if it was not installed
                     if claudeService.claudeInstallationStatus[server.id] == nil || 
                        claudeService.claudeInstallationStatus[server.id] == false {
-                        await claudeService.checkClaudeInstallation(for: server)
+                        _ = await claudeService.checkClaudeInstallation(for: server)
                     }
                 }
             }
@@ -268,11 +125,17 @@ struct ChatView: View {
             viewModel.cleanup()
         }
         .onChange(of: projectContext.activeProject) { oldValue, newValue in
-            // Reset initial load flag when switching projects
-            hasInitiallyLoaded = false
-            // Update viewModel when project changes
             if let project = newValue {
-                viewModel.configure(modelContext: modelContext, projectId: project.id)
+                if let server = projectContext.activeServer {
+                    Task {
+                        let agentDisplayName = "\(project.displayTitle)@\(server.name)"
+                        await PushNotificationsManager.shared.recordChatOpened(
+                            project: project,
+                            server: server,
+                            agentDisplayName: agentDisplayName
+                        )
+                    }
+                }
             }
         }
         .sheet(isPresented: $showingMCPServers) {
@@ -284,29 +147,41 @@ struct ChatView: View {
                     }
                 }
         }
-    }
-    
-    private func sendMessage(proxy: ScrollViewProxy) {
-        guard !messageText.isEmpty else { return }
-        
-        let text = messageText
-        messageText = ""
-        
-        // Don't dismiss keyboard - user might want to continue typing
-        
-        Task {
-            await viewModel.sendMessage(text)
-            // The onChange handler will handle scrolling automatically
+        .sheet(isPresented: $showingAgentSkills) {
+            AgentSkillsPickerView()
+        }
+        .sheet(isPresented: $showingPermissions) {
+            PermissionsListView()
+        }
+        .sheet(isPresented: $showingRules) {
+            AgentRulesView()
+        }
+        .sheet(isPresented: $showingEnvironment) {
+            AgentEnvironmentVariablesView()
         }
     }
     
     private func clearChat() {
         viewModel.clearChat()
     }
+
+    private var assistantLabel: String {
+        guard let project = projectContext.activeProject else { return "Claude" }
+        if let server = projectContext.activeServer {
+            return "\(project.displayTitle)@\(server.name)"
+        }
+        return project.displayTitle
+    }
+
+    private var chatTitle: String {
+        assistantLabel
+    }
 }
 
 struct MessageBubble: View {
     let message: Message
+    let assistantLabel: String
+    let userLabel: String
     let isStreaming: Bool
     let streamingBlocks: [ContentBlock]
     
@@ -317,9 +192,22 @@ struct MessageBubble: View {
         let hasVisibleContent = !message.content.isEmpty || 
                               hasStructuredContent || 
                               isStreaming
+        let isUser = message.role == MessageRole.user
+        let senderLabel = isUser ? userLabel : assistantLabel
         
         if hasVisibleContent {
             VStack(spacing: 4) {
+                HStack(spacing: 6) {
+                    if isUser {
+                        Spacer()
+                    }
+                    Text(senderLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.secondary)
+                    if !isUser {
+                        Spacer()
+                    }
+                }
                 // Message content
                 messageContent
                 
@@ -339,127 +227,359 @@ struct MessageBubble: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: message.role == MessageRole.user ? .trailing : .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 2)
         }
     }
     
     @ViewBuilder
     private var messageContent: some View {
-        // Check if this is the streaming message
+        let fallbackBlocks = message.fallbackContentBlocks()
         if isStreaming {
-            // First check if we have structured messages available
-            if let messages = message.structuredMessages, !messages.isEmpty {
-                // Use the same rendering as final messages
-                // Group messages by type
-                let assistantMessages = messages.filter { $0.type == "assistant" }
-                let systemMessages = messages.filter { $0.type == "system" }
-                let resultMessages = messages.filter { $0.type == "result" }
-                let userMessages = messages.filter { $0.type == "user" }
-                
+            if !streamingBlocks.isEmpty {
                 VStack(spacing: 8) {
-                    // Show system messages
-                    ForEach(Array(systemMessages.enumerated()), id: \.offset) { _, msg in
-                        SystemMessageView(message: msg)
+                    streamingBlocksView
+                }
+            } else {
+                StreamingPlaceholderBubble(isUser: message.role == MessageRole.user)
+            }
+        } else if let messages = message.structuredMessages, !messages.isEmpty {
+            structuredMessageStack(messages)
+        } else if let structured = message.structuredContent {
+            structuredMessageStack([structured])
+        } else if !fallbackBlocks.isEmpty {
+            structuredMessageStack([])
+        } else {
+            PlainMessageBubble(message: message)
+        }
+    }
+
+    @ViewBuilder
+    private var streamingBlocksView: some View {
+        VStack(spacing: 8) {
+            ForEach(0..<streamingBlocks.count, id: \.self) { index in
+                let block = streamingBlocks[index]
+                HStack {
+                    if message.role == MessageRole.user {
+                        Spacer()
                     }
                     
-                    // Show user or assistant messages (should be one type per Message object)
-                    if !assistantMessages.isEmpty {
-                        StructuredMessageBubble(message: message, structuredMessages: assistantMessages)
-                    } else if !userMessages.isEmpty {
-                        StructuredMessageBubble(message: message, structuredMessages: userMessages)
+                    switch block {
+                    case .text(let textBlock):
+                        TextBlockView(
+                            textBlock: textBlock,
+                            textColor: message.role == MessageRole.user ? .white : .primary,
+                            isStreaming: true
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(message.role == MessageRole.user ? Color.accentColor : Color(.systemGray5))
+                        .foregroundColor(message.role == MessageRole.user ? .white : .primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                        .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                        .transition(.opacity)
+                        .animation(.easeIn(duration: 0.2), value: streamingBlocks.count)
+                        
+                    case .toolUse(_), .toolResult(_):
+                        ContentBlockView(
+                            block: block,
+                            textColor: .primary,
+                            isStreaming: true
+                        )
+                        .frame(maxWidth: UIScreen.main.bounds.width * 0.9, alignment: .leading)
+                        .transition(.opacity)
+                        .animation(.easeIn(duration: 0.2), value: streamingBlocks.count)
+                    case .unknown:
+                        EmptyView()
                     }
                     
-                    // Show result messages
-                    ForEach(Array(resultMessages.enumerated()), id: \.offset) { _, msg in
-                        ResultMessageView(message: msg)
+                    if message.role == MessageRole.assistant && block.isTextBlock {
+                        Spacer()
                     }
                 }
-            } else if !streamingBlocks.isEmpty {
-                // Fallback to streaming blocks if no structured messages yet
-                VStack(spacing: 8) {
-                    ForEach(0..<streamingBlocks.count, id: \.self) { index in
-                        let block = streamingBlocks[index]
-                        HStack {
-                            if message.role == MessageRole.user {
-                                Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func structuredMessageStack(_ messages: [StructuredMessageContent]) -> some View {
+        let systemMessages = messages.filter { $0.type == "system" && !isSessionInfoSystemMessage($0) }
+        let contentMessages = messages.filter { shouldRenderContentMessage($0) }
+        let fallbackBlocks = message.fallbackContentBlocks()
+        
+        VStack(spacing: 8) {
+            ForEach(Array(systemMessages.enumerated()), id: \.offset) { _, msg in
+                SystemMessageView(message: msg)
+            }
+            
+            if !contentMessages.isEmpty || !fallbackBlocks.isEmpty {
+                StructuredMessageBubble(message: message, structuredMessages: contentMessages)
+            }
+        }
+    }
+
+    private func shouldRenderContentMessage(_ message: StructuredMessageContent) -> Bool {
+        switch message.type {
+        case "assistant":
+            return hasRenderableContent(message)
+        case "user":
+            return hasRenderableContent(message)
+        default:
+            return false
+        }
+    }
+
+    private func isSessionInfoSystemMessage(_ message: StructuredMessageContent) -> Bool {
+        guard message.type == "system" else { return false }
+        if let subtype = message.subtype?.lowercased(), subtype.contains("session") {
+            return true
+        }
+        if let data = message.data, !data.isEmpty {
+            return true
+        }
+        return true
+    }
+
+    private func hasRenderableContent(_ message: StructuredMessageContent) -> Bool {
+        guard let content = message.message else { return false }
+        switch content.content {
+        case .blocks(let blocks):
+            return blocks.contains { block in
+                switch block {
+                case .text, .toolUse, .toolResult:
+                    return true
+                case .unknown:
+                    return false
+                }
+            }
+        case .text(let text):
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private func containsToolResult(_ message: StructuredMessageContent) -> Bool {
+        guard let content = message.message else { return false }
+        switch content.content {
+        case .blocks(let blocks):
+            return blocks.contains { block in
+                if case .toolResult = block {
+                    return true
+                }
+                return false
+            }
+        case .text:
+            return false
+        }
+    }
+}
+
+struct PermissionsListView: View {
+    @StateObject private var projectContext = ProjectContext.shared
+    @State private var tools: [String] = []
+
+    @ObservedObject private var approvalStore = ToolApprovalStore.shared
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    GlassInfoCard(
+                        title: "Tool Permissions",
+                        subtitle: permissionsSubtitle,
+                        systemImage: "checkmark.shield"
+                    )
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                    .listRowBackground(Color.clear)
+                }
+
+                if tools.isEmpty {
+                    ContentUnavailableView(
+                        "No Tools Yet",
+                        systemImage: "checkmark.shield",
+                        description: Text("Tool approvals will appear after they are used or requested.")
+                    )
+                } else {
+                    ForEach(tools, id: \.self) { tool in
+                        ToolPermissionRow(
+                            toolName: tool,
+                            record: record(for: tool),
+                            onDecisionChange: { decision in
+                                updateDecision(for: tool, decision: decision)
                             }
-                            
-                            // Different styling for different block types
-                            switch block {
-                            case .text(let textBlock):
-                                // Text blocks get the traditional bubble styling
-                                TextBlockView(textBlock: textBlock, textColor: message.role == MessageRole.user ? .white : .primary, isStreaming: true)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 10)
-                                    .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
-                                    .foregroundColor(message.role == MessageRole.user ? .white : .primary)
-                                    .clipShape(RoundedRectangle(cornerRadius: 20))
-                                    .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
-                                    .transition(.opacity)
-                                    .animation(.easeIn(duration: 0.2), value: streamingBlocks.count)
-                                
-                            case .toolUse(_), .toolResult(_):
-                                // Tool use and results get their own special styling
-                                ContentBlockView(
-                                    block: block, 
-                                    textColor: .primary,
-                                    isStreaming: true
-                                )
-                                .frame(maxWidth: UIScreen.main.bounds.width * 0.9, alignment: .leading)
-                                .transition(.opacity)
-                                .animation(.easeIn(duration: 0.2), value: streamingBlocks.count)
+                        )
+                        // Full-swipe gestures conflict with the horizontal drag gesture on the switch.
+                        // Keep swipe-to-reset, but require an explicit tap.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button("Reset to Ask") {
+                                resetDecision(for: tool)
                             }
-                            
-                            if message.role == MessageRole.assistant && block.isTextBlock {
-                                Spacer()
-                            }
+                            .tint(.gray)
                         }
                     }
                 }
+
             }
-        } else {
-        // Check if we have structured messages array
-        if let messages = message.structuredMessages, !messages.isEmpty {
-            // Group messages by type
-            let assistantMessages = messages.filter { $0.type == "assistant" }
-            let systemMessages = messages.filter { $0.type == "system" }
-            let resultMessages = messages.filter { $0.type == "result" }
-            let userMessages = messages.filter { $0.type == "user" }
-            
-            VStack(spacing: 8) {
-                // Show system messages
-                ForEach(Array(systemMessages.enumerated()), id: \.offset) { _, msg in
-                    SystemMessageView(message: msg)
-                }
-                
-                // Show user or assistant messages (should be one type per Message object)
-                if !assistantMessages.isEmpty {
-                    StructuredMessageBubble(message: message, structuredMessages: assistantMessages)
-                } else if !userMessages.isEmpty {
-                    StructuredMessageBubble(message: message, structuredMessages: userMessages)
-                }
-                
-                // Show result messages
-                ForEach(Array(resultMessages.enumerated()), id: \.offset) { _, msg in
-                    ResultMessageView(message: msg)
-                }
-            }
-        } else if let structured = message.structuredContent {
-            // Legacy single message support
-            switch structured.type {
-            case "system":
-                SystemMessageView(message: structured)
-            case "result":
-                ResultMessageView(message: structured)
-            case "user", "assistant":
-                StructuredMessageBubble(message: message, structuredMessages: [structured])
-            default:
-                // Fallback to plain text
-                PlainMessageBubble(message: message)
-            }
-        } else {
-            // Fallback to plain text for messages without structured content
-            PlainMessageBubble(message: message)
+            .navigationTitle("Permissions")
+            .navigationBarTitleDisplayMode(.inline)
         }
+        .onAppear {
+            refreshTools()
+        }
+        .onChange(of: projectContext.activeProject?.id) { _, _ in
+            refreshTools()
+        }
+    }
+
+    private func refreshTools() {
+        guard let agentId = projectContext.activeProject?.id else {
+            tools = []
+            return
+        }
+        approvalStore.ensureDefaults(for: agentId)
+        tools = approvalStore.knownTools(for: agentId)
+    }
+
+    private func decision(for tool: String) -> ToolApprovalDecision? {
+        guard let agentId = projectContext.activeProject?.id else { return nil }
+        return approvalStore.decision(for: tool, agentId: agentId)?.decision
+    }
+
+    private func record(for tool: String) -> ToolApprovalRecord? {
+        guard let agentId = projectContext.activeProject?.id else { return nil }
+        return approvalStore.decision(for: tool, agentId: agentId)
+    }
+
+    private func updateDecision(for tool: String, decision: ToolApprovalDecision) {
+        guard let agentId = projectContext.activeProject?.id else { return }
+        approvalStore.setDecision(toolName: tool, decision: decision, agentId: agentId)
+        refreshTools()
+    }
+
+    private func resetDecision(for tool: String) {
+        guard let agentId = projectContext.activeProject?.id else { return }
+        approvalStore.resetDecision(toolName: tool, agentId: agentId)
+        refreshTools()
+    }
+
+    private var permissionsSubtitle: String {
+        if let agentLabel {
+            return "Saved per agent. Current: \(agentLabel). Toggle to allow/deny; swipe to reset to Ask."
+        }
+        return "Saved per agent. Toggle to allow/deny; swipe to reset to Ask."
+    }
+
+    private var agentLabel: String? {
+        guard let project = projectContext.activeProject else { return nil }
+        if let server = projectContext.activeServer {
+            return "\(project.displayTitle)@\(server.name)"
+        }
+        return project.displayTitle
+    }
+}
+
+private struct ToolPermissionRow: View {
+    let toolName: String
+    let record: ToolApprovalRecord?
+    let onDecisionChange: (ToolApprovalDecision) -> Void
+
+    var body: some View {
+        let displayName = ToolPermissionInfo.displayName(for: toolName)
+        let summary = ToolPermissionInfo.summary(for: toolName)
+
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displayName)
+                    .font(.body.weight(.semibold))
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(summary)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            PermissionToggle(
+                decision: record?.decision,
+                onDecisionChange: onDecisionChange
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var statusText: String {
+        switch record?.decision {
+        case .allow:
+            switch record?.scope {
+            case .global:
+                return "Allowed (global)"
+            case .agent:
+                return "Allowed (this agent)"
+            case .once:
+                return "Allowed"
+            case .none:
+                return "Allowed"
+            }
+        case .deny:
+            switch record?.scope {
+            case .global:
+                return "Denied (global)"
+            case .agent:
+                return "Denied (this agent)"
+            case .once:
+                return "Denied"
+            case .none:
+                return "Denied"
+            }
+        case .none:
+            return "Ask (prompt each time)"
+        }
+    }
+}
+
+private struct PermissionToggle: View {
+    let decision: ToolApprovalDecision?
+    let onDecisionChange: (ToolApprovalDecision) -> Void
+
+    var body: some View {
+        Toggle(
+            "",
+            isOn: Binding(
+                get: { decision == .allow },
+                set: { isOn in
+                    onDecisionChange(isOn ? .allow : .deny)
+                }
+            )
+        )
+        .labelsHidden()
+        .tint(.accentColor)
+    }
+}
+
+private struct StreamingPlaceholderBubble: View {
+    let isUser: Bool
+
+    var body: some View {
+        let bubbleBackground = isUser ? Color.accentColor : Color(.systemGray6)
+        let bubbleTextColor: Color = isUser ? .white : .secondary
+
+        HStack {
+            if isUser {
+                Spacer()
+            }
+
+            Text("...")
+                .font(.body.weight(.semibold))
+                .foregroundColor(bubbleTextColor)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(bubbleBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .frame(maxWidth: UIScreen.main.bounds.width * 0.5, alignment: isUser ? .trailing : .leading)
+
+            if !isUser {
+                Spacer()
+            }
         }
     }
 }
@@ -469,6 +589,11 @@ struct PlainMessageBubble: View {
     @State private var showActionButtons = false
     
     var body: some View {
+        let isUser = message.role == MessageRole.user
+        let bubbleBackground = isUser ? Color.accentColor : Color(.systemGray6)
+        let bubbleTextColor: Color = isUser ? .white : .primary
+        let bubbleBorderColor = Color(.systemGray4).opacity(0.6)
+
         ZStack {
             // Invisible background to catch taps outside
             if showActionButtons {
@@ -487,13 +612,18 @@ struct PlainMessageBubble: View {
                 }
                 
                 VStack(alignment: message.role == MessageRole.user ? .trailing : .leading, spacing: 8) {
-                    Text(message.content)
+                    FullMarkdownTextView(text: message.content, textColor: bubbleTextColor)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
-                        .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
-                        .foregroundColor(message.role == MessageRole.user ? .white : .primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                        .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                        .background(bubbleBackground)
+                        .foregroundColor(bubbleTextColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(isUser ? .clear : bubbleBorderColor, lineWidth: 0.5)
+                        )
+                        .shadow(color: isUser ? Color.accentColor.opacity(0.15) : Color.black.opacity(0.08), radius: 2, y: 1)
+                        .frame(maxWidth: UIScreen.main.bounds.width * 0.78, alignment: message.role == MessageRole.user ? .trailing : .leading)
                         .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showActionButtons.toggle()
@@ -569,6 +699,12 @@ struct StructuredMessageBubble: View {
     @State private var showActionButtons = false
     
     var body: some View {
+        let isUser = message.role == MessageRole.user
+        let bubbleBackground = isUser ? Color.accentColor : Color(.systemGray6)
+        let bubbleTextColor: Color = isUser ? .white : .primary
+        let bubbleBorderColor = Color(.systemGray4).opacity(0.6)
+        let fallbackBlocks = message.fallbackContentBlocks()
+
         ZStack {
             // Invisible background to catch taps outside
             if showActionButtons {
@@ -594,10 +730,19 @@ struct StructuredMessageBubble: View {
                     }
                     return nil
                 }.flatMap { $0 }
+
+                let visibleBlocks = allBlocks.filter { block in
+                    if case .unknown = block {
+                        return false
+                    }
+                    return true
+                }
+
+                let renderBlocks = visibleBlocks.isEmpty ? fallbackBlocks : visibleBlocks
                 
-                if !allBlocks.isEmpty {
+                if !renderBlocks.isEmpty {
                 // Display each block as a separate bubble
-                ForEach(Array(allBlocks.enumerated()), id: \.offset) { index, block in
+                ForEach(Array(renderBlocks.enumerated()), id: \.offset) { index, block in
                     HStack {
                         if message.role == MessageRole.user {
                             Spacer()
@@ -607,13 +752,18 @@ struct StructuredMessageBubble: View {
                         switch block {
                         case .text(let textBlock):
                             // Text blocks get the traditional bubble styling
-                            TextBlockView(textBlock: textBlock, textColor: message.role == MessageRole.user ? .white : .primary)
+                            TextBlockView(textBlock: textBlock, textColor: bubbleTextColor)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 10)
-                                .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
-                                .foregroundColor(message.role == MessageRole.user ? .white : .primary)
-                                .clipShape(RoundedRectangle(cornerRadius: 20))
-                                .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                                .background(bubbleBackground)
+                                .foregroundColor(bubbleTextColor)
+                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .stroke(isUser ? .clear : bubbleBorderColor, lineWidth: 0.5)
+                                )
+                                .shadow(color: isUser ? Color.accentColor.opacity(0.15) : Color.black.opacity(0.08), radius: 2, y: 1)
+                                .frame(maxWidth: UIScreen.main.bounds.width * 0.78, alignment: message.role == MessageRole.user ? .trailing : .leading)
                                 .onTapGesture {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         showActionButtons.toggle()
@@ -627,6 +777,8 @@ struct StructuredMessageBubble: View {
                                 textColor: .primary
                             )
                             .frame(maxWidth: UIScreen.main.bounds.width * 0.9, alignment: .leading)
+                        case .unknown:
+                            EmptyView()
                         }
                         
                         if message.role == MessageRole.assistant && block.isTextBlock {
@@ -645,7 +797,7 @@ struct StructuredMessageBubble: View {
                         HStack(spacing: 12) {
                             Button(action: {
                                 // Extract all text content for copying
-                                let textContent = allBlocks.compactMap { block -> String? in
+                                let textContent = renderBlocks.compactMap { block -> String? in
                                     switch block {
                                     case .text(let textBlock):
                                         return textBlock.text
@@ -679,7 +831,7 @@ struct StructuredMessageBubble: View {
                             
                             Button(action: {
                                 // Extract all text content for sharing
-                                let textContent = allBlocks.compactMap { block -> String? in
+                                let textContent = renderBlocks.compactMap { block -> String? in
                                     switch block {
                                     case .text(let textBlock):
                                         return textBlock.text
@@ -731,7 +883,7 @@ struct StructuredMessageBubble: View {
                         Text(message.content)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
-                            .background(message.role == MessageRole.user ? Color.blue : Color(.systemGray5))
+                            .background(message.role == MessageRole.user ? Color.accentColor : Color(.systemGray5))
                             .foregroundColor(message.role == MessageRole.user ? .white : .primary)
                             .clipShape(RoundedRectangle(cornerRadius: 20))
                             .frame(maxWidth: UIScreen.main.bounds.width * 0.8, alignment: message.role == MessageRole.user ? .trailing : .leading)
@@ -812,6 +964,8 @@ extension ContentBlock {
         switch self {
         case .text(_):
             return true
+        case .unknown:
+            return false
         default:
             return false
         }
