@@ -574,7 +574,11 @@ struct RegularTaskEditorView: View {
         syncReporter?.markSyncing()
 
         do {
-            try? await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            do {
+                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure proxy agent id for task save (projectId=\(project.id)): \(error)", level: .warning)
+            }
             let record = try await ProxyTaskService.shared.upsertTask(localTask, project: project)
             applySyncRecord(record, to: localTask)
             syncReporter?.markSuccess()

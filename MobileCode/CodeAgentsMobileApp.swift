@@ -14,18 +14,7 @@ struct CodeAgentsMobileApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     let sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            RemoteProject.self,
-            Server.self,
-            Message.self,
-            SSHKey.self,
-            ServerProvider.self,
-            AgentSkill.self,
-            AgentSkillAssignment.self,
-            SkillMarketplaceSource.self,
-            AgentScheduledTask.self,
-            AgentEnvironmentVariable.self
-        ])
+        let schema = CodeAgentsSwiftDataSchema.schema
         SwiftDataStoreMigrator.migrateIfNeeded(schema: schema, destinationURL: AppGroup.storeURL)
         let configuration = ModelConfiguration(schema: schema, url: AppGroup.storeURL)
 

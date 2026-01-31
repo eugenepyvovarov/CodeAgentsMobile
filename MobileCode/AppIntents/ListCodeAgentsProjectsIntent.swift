@@ -14,8 +14,9 @@ struct ListCodeAgentsProjectsIntent: AppIntent {
         "Return all agents that are available in CodeAgents along with their server information."
     )
     
+    @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<[String]> {
-        let context = await ShortcutPersistenceController.shared.makeContext()
+        let context = ShortcutPersistenceController.shared.makeContext()
         
         let projectDescriptor = FetchDescriptor<RemoteProject>()
         let serverDescriptor = FetchDescriptor<Server>()

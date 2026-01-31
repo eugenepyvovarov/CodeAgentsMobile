@@ -32,8 +32,14 @@ enum AppGroup {
             return containerURL.appendingPathComponent("CodeAgents.sqlite")
         } else {
             // Fallback to application documents directory if app group is misconfigured.
-            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            return documents.appendingPathComponent("CodeAgents.sqlite")
+            return fallbackDocumentsStoreURL
         }
+    }
+
+    /// Legacy store location used when App Groups are unavailable.
+    /// Note: Keeping this stable matters because switching App Group availability otherwise "loses" data.
+    static var fallbackDocumentsStoreURL: URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return documents.appendingPathComponent("CodeAgents.sqlite")
     }
 }

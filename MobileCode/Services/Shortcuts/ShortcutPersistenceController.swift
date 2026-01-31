@@ -15,13 +15,7 @@ final class ShortcutPersistenceController {
     let container: ModelContainer
     
     private init() {
-        let schema = Schema([
-            RemoteProject.self,
-            Server.self,
-            Message.self,
-            SSHKey.self,
-            ServerProvider.self
-        ])
+        let schema = CodeAgentsSwiftDataSchema.schema
         SwiftDataStoreMigrator.migrateIfNeeded(schema: schema, destinationURL: AppGroup.storeURL)
         let configuration = ModelConfiguration(schema: schema, url: AppGroup.storeURL)
 
