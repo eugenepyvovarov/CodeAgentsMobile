@@ -20,15 +20,15 @@ https://apps.apple.com/app/codeagents-mobile/id6748273716
 <img src="screenshots/screenshot_8.png" width="250" alt="Screenshot 8" />
 
 ## Features
-- **NEW** Provision servers with Digital Ocean / Hetzner 
-- **NEW** Auto install Claude Code for provisioned servers
-- **NEW** Auto create SSH keys
-- MCP servers support 
+- A rebuilt chat experience: faster, clearer messages, and a smoother overall feel
+- Background tasks: start longer actions and keep using the app while they run
+- Skills support: add, manage, and use skills to expand what your agent can do
+- Better file tools: browse, preview, create/edit, upload, and share files
+- Agent controls: rules, permissions, scheduled tasks, and custom environment variables
+- More provider choices: Anthropic, Z.ai, Minimax, or Moonshot
+- Provision servers with Digital Ocean / Hetzner (auto SSH key setup + Claude Code install)
+- MCP servers support
 - Connect to remote servers via SSH
-- Interact with Claude Code through a native iOS interface
-- Supports both API key and subscription-based authentication (OAuth tokens)
-- Browse files on remote servers
-- Real-time chat with Claude Code
 
 ## Requirements
 
