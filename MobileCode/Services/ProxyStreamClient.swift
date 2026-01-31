@@ -70,6 +70,36 @@ enum ProxyStreamError: LocalizedError {
     case invalidResponse(String)
     case httpError(status: Int, body: String)
 
+    var statusCode: Int? {
+        if case .httpError(let status, _) = self {
+            return status
+        }
+        return nil
+    }
+
+    var proxyErrorPayload: [String: Any]? {
+        guard case .httpError(_, let body) = self else { return nil }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+            return nil
+        }
+        return json
+    }
+
+    var proxyErrorCode: String? {
+        proxyErrorPayload?["error"] as? String
+    }
+
+    var proxyErrorMessage: String? {
+        proxyErrorPayload?["message"] as? String
+    }
+
+    var isPermissionNotFound: Bool {
+        statusCode == 404 && proxyErrorCode == "permission_not_found"
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidResponse(let message):

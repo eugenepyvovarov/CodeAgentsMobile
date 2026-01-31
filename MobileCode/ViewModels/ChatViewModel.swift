@@ -1144,7 +1144,21 @@ class ChatViewModel {
             )
         } catch {
             await MainActor.run {
-                addErrorMessage("Failed to send tool approval for \(request.toolName): \(error.localizedDescription)")
+                if let proxyError = error as? ProxyStreamError, proxyError.isPermissionNotFound {
+                    addErrorMessage(
+                        "Tool approval expired (permission no longer active on proxy). Please retry the request."
+                    )
+                    return
+                }
+
+                let errorDescription: String
+                if let proxyError = error as? ProxyStreamError {
+                    errorDescription = proxyError.proxyErrorMessage ?? proxyError.localizedDescription
+                } else {
+                    errorDescription = error.localizedDescription
+                }
+
+                addErrorMessage("Failed to send tool approval for \(request.toolName): \(errorDescription)")
                 enqueueToolApproval(request, announce: false, atFront: true)
             }
         }
