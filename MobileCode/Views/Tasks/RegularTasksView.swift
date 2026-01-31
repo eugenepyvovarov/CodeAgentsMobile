@@ -145,7 +145,11 @@ struct RegularTasksView: View {
         syncReporter.markSyncing()
 
         do {
-            try? await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            do {
+                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure proxy agent id for tasks refresh (projectId=\(project.id)): \(error)", level: .warning)
+            }
             let remoteTasks = try await ProxyTaskService.shared.fetchTasks(for: project)
             applyRemoteTasks(remoteTasks, project: project)
             syncReporter.markSuccess()
@@ -223,7 +227,11 @@ struct RegularTasksView: View {
         syncReporter.markSyncing()
 
         do {
-            try? await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            do {
+                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure proxy agent id for task sync (projectId=\(project.id)): \(error)", level: .warning)
+            }
             let record = try await ProxyTaskService.shared.upsertTask(task, project: project)
             applySyncRecord(record, to: task)
             syncReporter.markSuccess()

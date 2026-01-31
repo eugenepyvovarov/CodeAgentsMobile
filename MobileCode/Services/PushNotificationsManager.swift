@@ -31,7 +31,8 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         self.modelContainer = modelContainer
         if let payload = pendingPayload {
             pendingPayload = nil
-            Task {
+            Task { @MainActor in
+                await applyUnreadUpdateIfPossible(payload: payload)
                 await routeToChat(payload: payload)
             }
         }

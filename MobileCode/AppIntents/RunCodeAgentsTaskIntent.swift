@@ -26,12 +26,13 @@ struct RunCodeAgentsTaskIntent: AppIntent {
         }
     }
     
+    @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let store = ShortcutProjectStore()
         guard let metadata = store.project(withId: project.id) else {
             return .result(value: "ERROR: Agent not found.")
         }
-        let modelContext = await ShortcutPersistenceController.shared.makeContext()
+        let modelContext = ShortcutPersistenceController.shared.makeContext()
         
         do {
             let response = try await ShortcutClaudeRunner.shared.run(

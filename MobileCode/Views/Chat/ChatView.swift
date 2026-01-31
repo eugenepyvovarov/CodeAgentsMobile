@@ -88,7 +88,11 @@ struct ChatView: View {
         }
         .task(id: projectContext.activeProject?.id) {
             guard let project = projectContext.activeProject else { return }
-            try? await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            do {
+                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure proxy agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
+            }
             viewModel.configure(modelContext: modelContext, projectId: project.id)
         }
         .onAppear {
