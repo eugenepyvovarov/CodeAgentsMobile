@@ -4,6 +4,9 @@
 
 ## User settings
 xcuserdata/
+
+## Local build cache
+.xcodebuild-home/
 ## compatibility with Xcode 8 and earlier (ignoring not required starting Xcode 9)
 *.xcscmblueprint
 *.xccheckout
@@ -157,6 +160,7 @@ Temporary Items
 
 # Test coverage
 *.xcresult
+*.profraw
 coverage/
 
 # Project specific files to ignore
@@ -165,3 +169,30 @@ GEMINI.md
 specs/
 requirements/
 citadel/
+
+# Claude proxy (server) lives in its own repo
+server/claude-proxy/
+
+# Claude proxy (server)
+server/claude-proxy/.venv/
+server/claude-proxy/.pytest_cache/
+server/claude-proxy/.env.local
+server/claude-proxy/data/
+server/claude-proxy/sessions/
+server/claude-proxy/**/__pycache__/
+
+# Local skill data (generated)
+.skills-data/
+
+# Node.js
+node_modules/
+
+# Firebase Functions
+server/firebase-functions/.firebaserc
+server/firebase-functions/functions/lib/
+
+# Firebase iOS config (contains API_KEY)
+MobileCode/GoogleService-Info.plist
+
+# Local Xcode project backups
+*.pbxproj.backup

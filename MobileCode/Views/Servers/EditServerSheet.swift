@@ -31,6 +31,9 @@ struct EditServerSheet: View {
     @State private var errorMessage = ""
     @State private var showingImportKey = false
     @State private var hasPasswordChanged = false
+    @State private var isPushEnabled: Bool
+    @State private var isConfiguringPush = false
+    @State private var pushStatusMessage: String?
     
     enum AuthMethod: String, CaseIterable {
         case password = "Password"
@@ -45,6 +48,7 @@ struct EditServerSheet: View {
         self._username = State(initialValue: server.username)
         self._authMethod = State(initialValue: server.authMethodType == "key" ? .key : .password)
         self._selectedKeyId = State(initialValue: server.sshKeyId)
+        self._isPushEnabled = State(initialValue: KeychainManager.shared.hasPushSecret(for: server.id))
     }
     
     private var serverProvider: ServerProvider? {
@@ -171,6 +175,52 @@ struct EditServerSheet: View {
                         }
                     }
                 }
+
+                Section {
+                    HStack {
+                        Label("Status", systemImage: isPushEnabled ? "bell.fill" : "bell.slash")
+                        Spacer()
+                        Text(isPushEnabled ? "Enabled" : "Disabled")
+                            .foregroundColor(.secondary)
+                    }
+
+                    Button {
+                        Task {
+                            await configurePushNotifications()
+                        }
+                    } label: {
+                        HStack {
+                            if isConfiguringPush {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle())
+                                    .scaleEffect(0.8)
+                                Text("Configuring...")
+                            } else {
+                                Label("Enable Push Notifications", systemImage: "bell.badge")
+                            }
+                        }
+                    }
+                    .disabled(isPushEnabled || isConfiguringPush)
+
+                    if isPushEnabled {
+                        Button(role: .destructive) {
+                            disablePushNotifications()
+                        } label: {
+                            Label("Disable on This Device", systemImage: "bell.slash")
+                        }
+                    }
+
+                    if let pushStatusMessage {
+                        Text(pushStatusMessage)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } header: {
+                    Text("Push Notifications")
+                } footer: {
+                    Text("Enables push notifications for replies finished on this server’s proxy. You’ll be auto-subscribed when opening an agent chat.")
+                        .font(.caption)
+                }
                 
                 Section {
                     Button {
@@ -260,7 +310,7 @@ struct EditServerSheet: View {
                 let session = try await sshService.connect(to: testServer)
                 
                 // Try to execute a simple command to verify connection
-                let result = try await session.execute("echo 'Connection test successful'")
+                _ = try await session.execute("echo 'Connection test successful'")
                 
                 // If successful, disconnect and clean up
                 session.disconnect()
@@ -314,6 +364,55 @@ struct EditServerSheet: View {
             dismiss()
         } catch {
             errorMessage = "Failed to save changes: \(error.localizedDescription)"
+            showError = true
+        }
+    }
+
+    @MainActor
+    private func configurePushNotifications() async {
+        isConfiguringPush = true
+        pushStatusMessage = nil
+        defer { isConfiguringPush = false }
+
+        do {
+            let granted = try await PushNotificationsManager.shared.requestNotificationAuthorization()
+            guard granted else {
+                pushStatusMessage = "Notifications permission is disabled in Settings."
+                return
+            }
+
+            PushNotificationsManager.shared.registerForRemoteNotifications()
+            pushStatusMessage = "Configuring server..."
+
+            let secret = try await ProxyInstallerService.shared.enablePushNotifications(on: server)
+            try KeychainManager.shared.storePushSecret(secret, for: server.id)
+
+            isPushEnabled = true
+            if let activeProject = ProjectContext.shared.activeProject,
+               activeProject.serverId == server.id {
+                let agentDisplayName = "\(activeProject.displayTitle)@\(server.name)"
+                await PushNotificationsManager.shared.recordChatOpened(
+                    project: activeProject,
+                    server: server,
+                    agentDisplayName: agentDisplayName
+                )
+                pushStatusMessage = "Enabled. Subscribed for \(agentDisplayName)."
+            } else {
+                pushStatusMessage = "Enabled. Open an agent chat to subscribe."
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
+        }
+    }
+
+    private func disablePushNotifications() {
+        do {
+            try KeychainManager.shared.deletePushSecret(for: server.id)
+            isPushEnabled = false
+            pushStatusMessage = "Disabled on this device."
+        } catch {
+            errorMessage = error.localizedDescription
             showError = true
         }
     }

@@ -205,8 +205,11 @@ enum ClaudeContent: Decodable {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(String.self, forKey: .id)
             name = try container.decode(String.self, forKey: .name)
-            // Skip complex input decoding
-            input = nil
+            if let jsonObject = try? container.decodeIfPresent([String: AnyCodable].self, forKey: .input) {
+                input = jsonObject.mapValues { $0.value }
+            } else {
+                input = nil
+            }
         }
     }
     
@@ -217,6 +220,69 @@ enum ClaudeContent: Decodable {
         enum CodingKeys: String, CodingKey {
             case toolUseId = "tool_use_id"
             case content
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            toolUseId = try container.decode(String.self, forKey: .toolUseId)
+
+            if let stringContent = try? container.decode(String.self, forKey: .content) {
+                content = stringContent
+                return
+            }
+
+            if let blocks = try? container.decode([ClaudeContent].self, forKey: .content) {
+                let textContent = blocks.compactMap { block -> String? in
+                    if case .text(let text) = block {
+                        return text
+                    }
+                    return nil
+                }.joined(separator: "\n")
+
+                if !textContent.isEmpty {
+                    content = textContent
+                    return
+                }
+
+                if let data = try? JSONSerialization.data(withJSONObject: blocks.map { block in
+                    let payload: [String: Any]
+                    switch block {
+                    case .text(let text):
+                        payload = ["type": "text", "text": text]
+                    case .toolUse(let toolUse):
+                        payload = ["type": "tool_use", "id": toolUse.id, "name": toolUse.name, "input": toolUse.input ?? [:]]
+                    case .toolResult(let toolResult):
+                        payload = ["type": "tool_result", "tool_use_id": toolResult.toolUseId, "content": toolResult.content ?? ""]
+                    case .unknown:
+                        payload = ["type": "unknown"]
+                    }
+                    return payload
+                }, options: [.prettyPrinted]),
+                   let string = String(data: data, encoding: .utf8) {
+                    content = string
+                    return
+                }
+            }
+
+            if let array = try? container.decode([AnyCodable].self, forKey: .content) {
+                let values = array.map { $0.value }
+                if let data = try? JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted]),
+                   let string = String(data: data, encoding: .utf8) {
+                    content = string
+                    return
+                }
+            }
+
+            if let dict = try? container.decode([String: AnyCodable].self, forKey: .content) {
+                let values = dict.mapValues { $0.value }
+                if let data = try? JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted]),
+                   let string = String(data: data, encoding: .utf8) {
+                    content = string
+                    return
+                }
+            }
+
+            content = nil
         }
     }
     
@@ -327,6 +393,16 @@ class ClaudeCodeService: ObservableObject {
     
     /// Track the periodic cleanup task
     private var cleanupTask: Task<Void, Never>?
+
+    /// Proxy stream client for chat transport
+    private let proxyClient = ProxyStreamClient()
+
+    /// Use proxy transport for chat messages
+    private let useProxyChat = true
+
+    var isProxyChatEnabled: Bool {
+        useProxyChat
+    }
     
     
     // MARK: - Initialization
@@ -345,7 +421,7 @@ class ClaudeCodeService: ObservableObject {
         
         // Clean up all active continuations
         for (projectId, continuation) in activeStreamContinuations {
-            print("⚠️ Cleaning up abandoned continuation for project: \(projectId)")
+            print("⚠️ Cleaning up abandoned continuation for agent: \(projectId)")
             continuation.finish()
         }
         activeStreamContinuations.removeAll()
@@ -481,6 +557,59 @@ class ClaudeCodeService: ObservableObject {
             return "export CLAUDE_CODE_OAUTH_TOKEN=\"\(token)\" && "
         }
     }
+
+    private func buildAllowedTools(mcpServers: [MCPServer]) -> [String] {
+        // Allow the full tool surface; runtime execution is still governed by tool approvals.
+        // This keeps the proxy + client aligned with Claude Code's available tools list.
+        var allowedTools = [
+            "Task",
+            "TaskOutput",
+            "Bash",
+            "Write",
+            "Edit",
+            "MultiEdit",
+            "NotebookEdit",
+            "Read",
+            "LS",
+            "Grep",
+            "Glob",
+            "WebFetch",
+            "WebSearch",
+            "TodoWrite",
+            "AskUserQuestion",
+            "KillShell",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "Skill"
+        ]
+
+        for server in mcpServers where server.status == .connected {
+            allowedTools.append("mcp__\(server.name)")
+        }
+
+        return allowedTools
+    }
+
+    private func resolveProxyConversationId(
+        for project: RemoteProject,
+        session: SSHSession
+    ) async throws -> String {
+        let canonicalId = try await proxyClient.fetchCanonicalConversationId(
+            session: session,
+            cwd: project.path
+        )
+
+        var didUpdate = false
+        if project.proxyConversationId != canonicalId {
+            project.proxyConversationId = canonicalId
+            // Don't clear proxyLastEventId here; the chat layer decides whether a full resync is needed.
+            didUpdate = true
+        }
+        if didUpdate {
+            project.updateLastModified()
+        }
+        return canonicalId
+    }
     
     /// Check if credentials are configured for the current auth method
     func hasCredentials() -> Bool {
@@ -516,7 +645,11 @@ class ClaudeCodeService: ObservableObject {
         messageId: UUID? = nil,
         mcpServers: [MCPServer] = []
     ) -> AsyncThrowingStream<MessageChunk, Error> {
-        AsyncThrowingStream { continuation in
+        if useProxyChat {
+            return sendMessageViaProxy(text, in: project, mcpServers: mcpServers)
+        }
+
+        return AsyncThrowingStream { continuation in
             // Store continuation for recovery
             activeStreamContinuations[project.id] = continuation
             transitionConnectionState(for: project.id, to: .connecting)
@@ -558,15 +691,7 @@ class ClaudeCodeService: ObservableObject {
                     claudeCommand += "--output-format stream-json --verbose "
                     
                     // Build allowed tools list including MCP servers
-                    var allowedTools = ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "LS", "Grep", "Glob", "WebFetch"]
-                    
-                    // Add MCP tools with mcp__ prefix
-                    for server in mcpServers {
-                        if server.status == .connected {
-                            allowedTools.append("mcp__\(server.name)")
-                        }
-                    }
-                    
+                    let allowedTools = buildAllowedTools(mcpServers: mcpServers)
                     claudeCommand += "--allowedTools \(allowedTools.joined(separator: ",")) "
                     
                     if let claudeSessionId = project.claudeSessionId, !text.hasPrefix("/") {
@@ -661,6 +786,315 @@ class ClaudeCodeService: ObservableObject {
             }
         }
     }
+
+    private func sendMessageViaProxy(
+        _ text: String,
+        in project: RemoteProject,
+        mcpServers: [MCPServer]
+    ) -> AsyncThrowingStream<MessageChunk, Error> {
+        return AsyncThrowingStream { continuation in
+            activeStreamContinuations[project.id] = continuation
+            transitionConnectionState(for: project.id, to: .connecting)
+
+            Task {
+                do {
+                    guard projectContext.activeServer != nil else {
+                        throw ClaudeError.noActiveServer
+                    }
+
+                    let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+                    let allowedTools = buildAllowedTools(mcpServers: mcpServers)
+                    let approvals = ToolApprovalStore.shared.approvalsPayload(for: project.id)
+                    let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+                    let request = ProxyStreamRequest(
+                        agentId: project.proxyAgentId ?? project.id.uuidString,
+                        conversationId: conversationId,
+                        conversationGroup: project.proxyConversationGroupId,
+                        text: text,
+                        cwd: project.path,
+                        allowedTools: allowedTools,
+                        systemPrompt: nil,
+                        maxTurns: nil,
+                        toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
+                    )
+
+                    let stream = proxyClient.stream(
+                        session: sshSession,
+                        request: request,
+                        lastEventId: project.proxyLastEventId
+                    )
+
+                    transitionConnectionState(for: project.id, to: .active)
+                    try await processProxyStream(
+                        stream,
+                        project: project,
+                        continuation: continuation
+                    )
+
+                    cleanupContinuation(for: project.id)
+                    continuation.finish()
+                } catch {
+                    if (connectionStates[project.id]?.canRecover ?? false) || isRecoverableError(error) {
+                        await handleProxyConnectionRecovery(
+                            project: project,
+                            mcpServers: mcpServers,
+                            continuation: continuation,
+                            error: error
+                        )
+                    } else {
+                        cleanupContinuation(for: project.id)
+                        continuation.yield(MessageChunk(
+                            content: proxyErrorMessage(from: error),
+                            isComplete: true,
+                            isError: true,
+                            metadata: nil
+                        ))
+                        continuation.finish(throwing: error)
+                    }
+                }
+            }
+        }
+    }
+
+    private func processProxyStream(
+        _ stream: AsyncThrowingStream<ProxyStreamEvent, Error>,
+        project: RemoteProject,
+        continuation: AsyncThrowingStream<MessageChunk, Error>.Continuation
+    ) async throws {
+        var receivedSessionId: String?
+
+        for try await event in stream {
+            if let eventId = event.eventId {
+                project.proxyLastEventId = eventId
+                project.updateLastModified()
+            }
+
+            if let control = proxySessionControl(from: event.jsonLine) {
+                continuation.yield(MessageChunk(
+                    content: "",
+                    isComplete: true,
+                    isError: false,
+                    metadata: control
+                ))
+                continue
+            }
+
+            if let chunk = StreamingJSONParser.parseStreamingLine(event.jsonLine) {
+                let enrichedChunk = attachProxyEventId(chunk, eventId: event.eventId)
+                logProxyChunk(enrichedChunk, eventId: event.eventId)
+                continuation.yield(enhanceChunkWithAuthError(enrichedChunk))
+
+                if let type = chunk.metadata?["type"] as? String,
+                   (type == "system" || type == "result"),
+                   let sessionId = chunk.metadata?["sessionId"] as? String {
+                    receivedSessionId = sessionId
+                    if project.claudeSessionId != sessionId {
+                        project.claudeSessionId = sessionId
+                        project.updateLastModified()
+                        ProxyStreamDiagnostics.log("session updated sessionId=\(sessionId)")
+                    }
+                }
+            } else {
+                ProxyStreamDiagnostics.log(
+                    "chunk skipped eventId=\(event.eventId?.description ?? "nil") \(ProxyStreamDiagnostics.summarize(line: event.jsonLine))"
+                )
+            }
+        }
+
+        if let sessionId = receivedSessionId, project.claudeSessionId != sessionId {
+            project.claudeSessionId = sessionId
+            project.updateLastModified()
+            ProxyStreamDiagnostics.log("session finalized sessionId=\(sessionId)")
+        }
+    }
+
+    private func handleProxyConnectionRecovery(
+        project: RemoteProject,
+        mcpServers: [MCPServer],
+        continuation: AsyncThrowingStream<MessageChunk, Error>.Continuation,
+        error: Error
+    ) async {
+        print("⚠️ Proxy recovery triggered: \(error)")
+        let currentAttempt: Int
+        if case .recovering(let attempt) = connectionStates[project.id] {
+            currentAttempt = attempt + 1
+        } else {
+            currentAttempt = 1
+        }
+
+        transitionConnectionState(for: project.id, to: .recovering(attempt: currentAttempt))
+
+        do {
+            let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+            let since = project.proxyLastEventId ?? 0
+            let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+            let (replayEvents, _) = try await proxyClient.fetchEvents(
+                session: sshSession,
+                conversationId: conversationId,
+                since: since,
+                cwd: project.path,
+                conversationGroup: project.proxyConversationGroupId
+            )
+
+            var sawResult = false
+            var sawSwitch = false
+            for event in replayEvents {
+                if let eventId = event.eventId {
+                    project.proxyLastEventId = eventId
+                    project.updateLastModified()
+                }
+
+                if let control = proxySessionControl(from: event.jsonLine) {
+                    continuation.yield(MessageChunk(
+                        content: "",
+                        isComplete: true,
+                        isError: false,
+                        metadata: control
+                    ))
+                    sawSwitch = true
+                    continue
+                }
+
+                if let chunk = StreamingJSONParser.parseStreamingLine(event.jsonLine) {
+                    let enrichedChunk = attachProxyEventId(chunk, eventId: event.eventId)
+                    logProxyChunk(enrichedChunk, eventId: event.eventId)
+                    continuation.yield(enhanceChunkWithAuthError(enrichedChunk))
+                    if let type = chunk.metadata?["type"] as? String, type == "result" {
+                        sawResult = true
+                    }
+                } else {
+                    ProxyStreamDiagnostics.log(
+                        "replay skipped eventId=\(event.eventId?.description ?? "nil") \(ProxyStreamDiagnostics.summarize(line: event.jsonLine))"
+                    )
+                }
+            }
+
+            if sawSwitch {
+                cleanupContinuation(for: project.id)
+                continuation.finish()
+                return
+            }
+
+            if sawResult {
+                cleanupContinuation(for: project.id)
+                continuation.finish()
+                return
+            }
+
+            let allowedTools = buildAllowedTools(mcpServers: mcpServers)
+            let approvals = ToolApprovalStore.shared.approvalsPayload(for: project.id)
+            let attachRequest = ProxyStreamRequest(
+                agentId: project.proxyAgentId ?? project.id.uuidString,
+                conversationId: conversationId,
+                conversationGroup: project.proxyConversationGroupId,
+                text: nil,
+                cwd: project.path,
+                allowedTools: allowedTools,
+                systemPrompt: nil,
+                maxTurns: nil,
+                toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
+            )
+
+            let stream = proxyClient.stream(
+                session: sshSession,
+                request: attachRequest,
+                lastEventId: project.proxyLastEventId
+            )
+
+            transitionConnectionState(for: project.id, to: .active)
+            try await processProxyStream(stream, project: project, continuation: continuation)
+            cleanupContinuation(for: project.id)
+            continuation.finish()
+        } catch {
+            transitionConnectionState(for: project.id, to: .failed(error))
+            cleanupContinuation(for: project.id)
+            continuation.yield(MessageChunk(
+                content: proxyErrorMessage(from: error),
+                isComplete: true,
+                isError: true,
+                metadata: nil
+            ))
+            continuation.finish(throwing: error)
+        }
+    }
+
+    private func attachProxyEventId(_ chunk: MessageChunk, eventId: Int?) -> MessageChunk {
+        guard let eventId = eventId else { return chunk }
+        var metadata = chunk.metadata ?? [:]
+        metadata["proxyEventId"] = eventId
+        return MessageChunk(
+            content: chunk.content,
+            isComplete: chunk.isComplete,
+            isError: chunk.isError,
+            metadata: metadata
+        )
+    }
+
+    private func proxySessionControl(from jsonLine: String) -> [String: Any]? {
+        guard let data = jsonLine.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data, options: []),
+              let payload = json as? [String: Any],
+              let type = payload["type"] as? String,
+              type == "proxy_session" else {
+            return nil
+        }
+        return payload
+    }
+
+    private func logProxyChunk(_ chunk: MessageChunk, eventId: Int?) {
+        guard ProxyStreamDiagnostics.isEnabled else { return }
+        let metadata = chunk.metadata ?? [:]
+        let type = metadata["type"] as? String ?? "unknown"
+        let subtype = metadata["subtype"] as? String ?? "nil"
+        let sessionId = metadata["sessionId"] as? String ?? "nil"
+        ProxyStreamDiagnostics.log(
+            "chunk type=\(type) subtype=\(subtype) eventId=\(eventId?.description ?? "nil") isError=\(chunk.isError) isComplete=\(chunk.isComplete) sessionId=\(sessionId)"
+        )
+    }
+
+    private func proxyErrorMessage(from error: Error) -> String {
+        if let proxyError = error as? ProxyStreamError {
+            switch proxyError {
+            case .invalidResponse(let message):
+                return message
+            case .httpError(_, let body):
+                if let data = body.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                    if let message = json["message"] as? String {
+                        return message
+                    }
+                    if let code = json["error"] as? String {
+                        switch code {
+                        case "agent_folder_busy":
+                            if let retry = json["retry_after_ms"] as? Int {
+                                return "Agent folder is busy. Retry in \(retry) ms."
+                            }
+                            return "Agent folder is busy. Please retry shortly."
+                        case "conversation_cwd_mismatch":
+                            if let expected = json["expected_cwd"] as? String,
+                               let got = json["got_cwd"] as? String {
+                                return "Conversation cwd mismatch. Expected \(expected), got \(got)."
+                            }
+                            return "Conversation cwd mismatch."
+                        case "conversation_group_mismatch":
+                            if let expected = json["expected_group"] as? String,
+                               let got = json["got_group"] as? String {
+                                return "Conversation group mismatch. Expected \(expected), got \(got)."
+                            }
+                            return "Conversation group mismatch."
+                        case "conversation_already_running":
+                            return "Conversation already running. Please wait for it to finish."
+                        default:
+                            return body.isEmpty ? "Proxy returned an error." : body
+                        }
+                    }
+                }
+                return body.isEmpty ? "Proxy returned an error." : body
+            }
+        }
+
+        return getUserFriendlyErrorMessage(error)
+    }
     
     /// Clear Claude sessions for the active project
     func clearSessions() {
@@ -668,6 +1102,11 @@ class ClaudeCodeService: ObservableObject {
         
         // Clear the session ID
         project.claudeSessionId = nil
+        if useProxyChat {
+            project.proxyConversationId = nil
+            project.proxyConversationGroupId = nil
+            project.proxyLastEventId = nil
+        }
         project.updateLastModified()
         
         // Note: The caller should save the project context to persist this change
@@ -679,6 +1118,10 @@ class ClaudeCodeService: ObservableObject {
         project: RemoteProject,
         server: Server
     ) async -> (hasActiveSession: Bool, recentOutput: String?, messageId: UUID?) {
+        if useProxyChat {
+            return await checkForPreviousProxySession(project: project)
+        }
+
         // Check if we have an active streaming message ID
         guard let messageId = project.activeStreamingMessageId else {
             return (hasActiveSession: false, recentOutput: nil, messageId: nil)
@@ -719,9 +1162,185 @@ class ClaudeCodeService: ObservableObject {
         
         return (hasActiveSession: false, recentOutput: nil, messageId: nil)
     }
+
+    private func checkForPreviousProxySession(
+        project: RemoteProject
+    ) async -> (hasActiveSession: Bool, recentOutput: String?, messageId: UUID?) {
+        guard let messageId = project.activeStreamingMessageId else {
+            return (hasActiveSession: false, recentOutput: nil, messageId: nil)
+        }
+
+        do {
+            let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+            let since = project.proxyLastEventId ?? 0
+            let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+            let (events, _) = try await proxyClient.fetchEvents(
+                session: sshSession,
+                conversationId: conversationId,
+                since: since,
+                cwd: project.path,
+                conversationGroup: project.proxyConversationGroupId
+            )
+
+            var hasResult = false
+            let lines = events.map { $0.jsonLine }
+            for event in events {
+                if let eventId = event.eventId {
+                    project.proxyLastEventId = eventId
+                    project.updateLastModified()
+                }
+                if let chunk = StreamingJSONParser.parseStreamingLine(event.jsonLine),
+                   let type = chunk.metadata?["type"] as? String,
+                   type == "result" {
+                    hasResult = true
+                }
+            }
+
+            let output = lines.joined(separator: "\n")
+            return (hasActiveSession: !hasResult, recentOutput: output.isEmpty ? nil : output, messageId: messageId)
+        } catch {
+            print("Failed to check proxy session: \(error)")
+            return (hasActiveSession: false, recentOutput: nil, messageId: messageId)
+        }
+    }
+
+    func fetchProxyEvents(
+        project: RemoteProject,
+        since: Int
+    ) async throws -> ([ProxyStreamEvent], ProxyResponseInfo) {
+        let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+        let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+        return try await proxyClient.fetchEvents(
+            session: sshSession,
+            conversationId: conversationId,
+            since: since,
+            cwd: project.path,
+            conversationGroup: project.proxyConversationGroupId
+        )
+    }
+
+    func activateProxyConversation(project: RemoteProject) async throws {
+        guard useProxyChat else { return }
+        let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+        let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+        _ = try await proxyClient.activateConversation(
+            session: sshSession,
+            conversationId: conversationId,
+            cwd: project.path,
+            conversationGroup: project.proxyConversationGroupId
+        )
+        project.proxyLastEventId = nil
+        project.updateLastModified()
+    }
+
+    func sendProxyToolPermission(
+        project: RemoteProject,
+        permissionId: String,
+        decision: ToolApprovalDecision,
+        message: String?
+    ) async throws {
+        guard useProxyChat else { return }
+        let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+        let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+        _ = try await proxyClient.sendToolPermission(
+            session: sshSession,
+            conversationId: conversationId,
+            cwd: project.path,
+            permissionId: permissionId,
+            decision: decision,
+            message: message
+        )
+    }
+
+    func resetProxyConversation(project: RemoteProject) async throws {
+        guard useProxyChat else { return }
+        let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+        let newConversationId = UUID().uuidString
+        _ = try await proxyClient.activateConversation(
+            session: sshSession,
+            conversationId: newConversationId,
+            cwd: project.path,
+            conversationGroup: project.proxyConversationGroupId
+        )
+
+        let canonicalId = try await proxyClient.fetchCanonicalConversationId(
+            session: sshSession,
+            cwd: project.path
+        )
+        if project.proxyConversationId != canonicalId {
+            project.proxyConversationId = canonicalId
+        }
+        project.proxyLastEventId = nil
+        project.updateLastModified()
+    }
+
+    private func resumeProxyStreamingFromPreviousSession(
+        project: RemoteProject
+    ) -> AsyncThrowingStream<MessageChunk, Error> {
+        return AsyncThrowingStream { continuation in
+            activeStreamContinuations[project.id] = continuation
+            transitionConnectionState(for: project.id, to: .recovering(attempt: 1))
+
+            Task {
+                do {
+                    let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+                    let allowedTools = buildAllowedTools(mcpServers: [])
+                    let approvals = ToolApprovalStore.shared.approvalsPayload(for: project.id)
+                    let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+                    let request = ProxyStreamRequest(
+                        agentId: project.proxyAgentId ?? project.id.uuidString,
+                        conversationId: conversationId,
+                        conversationGroup: project.proxyConversationGroupId,
+                        text: nil,
+                        cwd: project.path,
+                        allowedTools: allowedTools,
+                        systemPrompt: nil,
+                        maxTurns: nil,
+                        toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
+                    )
+
+                    let stream = proxyClient.stream(
+                        session: sshSession,
+                        request: request,
+                        lastEventId: project.proxyLastEventId
+                    )
+
+                    transitionConnectionState(for: project.id, to: .active)
+                    try await processProxyStream(
+                        stream,
+                        project: project,
+                        continuation: continuation
+                    )
+
+                    cleanupContinuation(for: project.id)
+                    continuation.finish()
+                } catch {
+                    transitionConnectionState(for: project.id, to: .failed(error))
+                    cleanupContinuation(for: project.id)
+                    continuation.yield(MessageChunk(
+                        content: proxyErrorMessage(from: error),
+                        isComplete: true,
+                        isError: true,
+                        metadata: nil
+                    ))
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
     
     /// Clean up previous session files
     func cleanupPreviousSessionFiles(project: RemoteProject, server: Server, messageId: UUID? = nil) async {
+        if useProxyChat {
+            await MainActor.run {
+                if messageId != nil {
+                    project.activeStreamingMessageId = nil
+                }
+                project.updateLastModified()
+            }
+            return
+        }
+
         let fileIdentifier = messageId?.uuidString ?? project.activeStreamingMessageId?.uuidString ?? "\(server.id.uuidString.prefix(8))_\(project.id.uuidString.prefix(8))"
         let outputFile = "/tmp/\(fileIdentifier)_claude.out"
         let pidFile = "/tmp/\(fileIdentifier)_claude.pid"
@@ -748,7 +1367,11 @@ class ClaudeCodeService: ObservableObject {
         server: Server,
         messageId: UUID
     ) -> AsyncThrowingStream<MessageChunk, Error> {
-        AsyncThrowingStream { continuation in
+        if useProxyChat {
+            return resumeProxyStreamingFromPreviousSession(project: project)
+        }
+
+        return AsyncThrowingStream { continuation in
             // Store continuation for recovery
             activeStreamContinuations[project.id] = continuation
             transitionConnectionState(for: project.id, to: .recovering(attempt: 1))
@@ -908,7 +1531,7 @@ class ClaudeCodeService: ObservableObject {
                                 if project.claudeSessionId != sessionId {
                                     project.claudeSessionId = sessionId
                                     project.updateLastModified()
-                                    print("📌 Saved session ID to project: \(sessionId)")
+                                    print("📌 Saved session ID to agent: \(sessionId)")
                                 }
                             }
                         }

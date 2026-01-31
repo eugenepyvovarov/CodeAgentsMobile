@@ -140,7 +140,7 @@ enum OpenSSHECDSAParser {
     /// Extract ECDSA components from OpenSSH format
     private static func extractECDSAComponents(from buffer: inout ByteBuffer, expectedKeySize: Int) throws -> (privateKey: Data, publicKey: Data?) {
         // Read and validate curve name
-        guard let curveName = buffer.readSSHString() else {
+        guard let _ = buffer.readSSHString() else {
             throw SSHKeyParsingError.missingKeyComponent("curve name")
         }
         // Curve name is validated by the calling function

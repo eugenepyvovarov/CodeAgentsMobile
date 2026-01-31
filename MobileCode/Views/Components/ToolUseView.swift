@@ -16,8 +16,6 @@ struct ToolUseView: View {
     init(toolUseBlock: ToolUseBlock, isStreaming: Bool = false) {
         self.toolUseBlock = toolUseBlock
         self.isStreaming = isStreaming
-        // Auto-expand TodoWrite tools
-        self._isExpanded = State(initialValue: toolUseBlock.name.lowercased() == "todowrite")
     }
     
     var body: some View {

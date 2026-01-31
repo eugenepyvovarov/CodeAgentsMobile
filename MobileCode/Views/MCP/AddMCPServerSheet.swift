@@ -23,7 +23,7 @@ struct AddMCPServerSheet: View {
     @State private var newArg = ""
     @State private var envVars: [EnvVar] = []
     @State private var headers: [HeaderVar] = []
-    @State private var scope: MCPServer.MCPScope = .local
+    @State private var scope: MCPServer.MCPScope
     
     // UI state
     @State private var isAdding = false
@@ -106,6 +106,12 @@ struct AddMCPServerSheet: View {
         return server.generateAddJsonCommand(scope: scope) ?? "Invalid configuration"
     }
     
+    init(project: RemoteProject, initialScope: MCPServer.MCPScope = .local, onAdd: @escaping () -> Void) {
+        self.project = project
+        self.onAdd = onAdd
+        _scope = State(initialValue: initialScope)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -403,7 +409,7 @@ struct AddMCPServerSheet: View {
 
 #Preview {
     AddMCPServerSheet(
-        project: RemoteProject(name: "Test Project", serverId: UUID()),
+        project: RemoteProject(name: "Test Agent", serverId: UUID()),
         onAdd: { }
     )
 }

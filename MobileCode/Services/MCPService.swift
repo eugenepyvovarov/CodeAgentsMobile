@@ -17,12 +17,13 @@ class MCPService: ObservableObject {
     
     // MARK: - Public Methods
     
-    /// Fetch all MCP servers with configuration and status for a project
-    func fetchServers(for project: RemoteProject) async throws -> [MCPServer] {
+    /// Fetch MCP servers with configuration and status for a project
+    func fetchServers(for project: RemoteProject, scope: MCPServer.MCPScope? = nil) async throws -> [MCPServer] {
         // Get server list and status from claude mcp list
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        
-        let command = "cd \"\(project.path)\" && claude mcp list"
+
+        let scopeArgument = scope.flatMap { $0 == .project ? nil : $0.rawValue }
+        let command = "cd \"\(project.path)\" && claude mcp list\(scopeArgument.map { " -s \($0)" } ?? "")"
         
         SSHLogger.log("Fetching MCP servers: \(command)", level: .debug)
         
@@ -83,10 +84,11 @@ class MCPService: ObservableObject {
     }
     
     /// Remove an MCP server
-    func removeServer(named name: String, for project: RemoteProject) async throws {
+    func removeServer(named name: String, scope: MCPServer.MCPScope? = nil, for project: RemoteProject) async throws {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        
-        let command = "cd \"\(project.path)\" && claude mcp remove \"\(name)\""
+
+        let scopeArgument = scope.flatMap { $0 == .project ? nil : $0.rawValue }
+        let command = "cd \"\(project.path)\" && claude mcp remove\(scopeArgument.map { " -s \($0)" } ?? "") \"\(name)\""
         
         SSHLogger.log("Removing MCP server: \(command)", level: .info)
         
@@ -103,7 +105,7 @@ class MCPService: ObservableObject {
     /// Edit an MCP server by removing and re-adding it
     func editServer(oldName: String, newServer: MCPServer, scope: MCPServer.MCPScope = .project, for project: RemoteProject) async throws {
         // First remove the old server
-        try await removeServer(named: oldName, for: project)
+        try await removeServer(named: oldName, scope: scope, for: project)
         
         // Then add the new configuration
         try await addServer(newServer, scope: scope, for: project)
@@ -116,10 +118,11 @@ class MCPService: ObservableObject {
     }
     
     /// Get detailed information about a specific MCP server including env vars
-    func getServerDetails(named name: String, for project: RemoteProject) async throws -> (server: MCPServer, scope: MCPServer.MCPScope)? {
+    func getServerDetails(named name: String, scope: MCPServer.MCPScope? = nil, for project: RemoteProject) async throws -> (server: MCPServer, scope: MCPServer.MCPScope)? {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        
-        let command = "cd \"\(project.path)\" && claude mcp get \"\(name)\""
+
+        let scopeArgument = scope.flatMap { $0 == .project ? nil : $0.rawValue }
+        let command = "cd \"\(project.path)\" && claude mcp get\(scopeArgument.map { " -s \($0)" } ?? "") \"\(name)\""
         
         SSHLogger.log("Getting MCP server details: \(command)", level: .debug)
         

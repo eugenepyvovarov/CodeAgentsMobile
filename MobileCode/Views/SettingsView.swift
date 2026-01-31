@@ -13,68 +13,47 @@ import Crypto
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
     @Query private var servers: [Server]
     @Query(sort: \SSHKey.createdAt, order: .reverse) private var sshKeys: [SSHKey]
     @Query private var projects: [RemoteProject]
     @Query private var providers: [ServerProvider]
     @State private var showingAddServer = false
     @State private var showingCloudProviders = false
-    @State private var showingAPIKeyEntry = false
     @State private var showingImportSSHKey = false
-    @State private var showingTokenEntry = false
     @State private var selectedProvider: ServerProvider?
     @State private var selectedSSHKey: SSHKey?
-    @State private var apiKey = ""
-    @State private var authToken = ""
-    @State private var selectedAuthMethod = ClaudeCodeService.shared.getCurrentAuthMethod()
+
+    private var claudeProviderDisplayName: String {
+        guard
+            !claudeProviderConfigurationData.isEmpty,
+            let configuration = try? JSONDecoder().decode(
+                ClaudeProviderConfiguration.self,
+                from: claudeProviderConfigurationData
+            )
+        else {
+            return ClaudeProviderConfiguration.defaults().selectedProvider.displayName
+        }
+
+        return configuration.selectedProvider.displayName
+    }
+
+    private var appVersionString: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
     
     var body: some View {
         NavigationStack {
             Form(content: {
-                Section("Anthropic Account") {
-                    // Authentication Method Picker
-                    Picker("Authentication Method", selection: $selectedAuthMethod) {
-                        Text("API Key").tag(ClaudeAuthMethod.apiKey)
-                        Text("Authentication Token").tag(ClaudeAuthMethod.token)
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
-                    .onChange(of: selectedAuthMethod) { _, newMethod in
-                        // Only update the auth method, don't clear credentials when just switching tabs
-                        ClaudeCodeService.shared.setAuthMethod(newMethod)
-                    }
-                    
-                    // Show appropriate credential entry based on selection
-                    if selectedAuthMethod == .apiKey {
+                Section("Claude Provider") {
+                    NavigationLink {
+                        ClaudeProviderSettingsView()
+                    } label: {
                         HStack {
-                            Label("API Key", systemImage: "key")
+                            Label("Provider", systemImage: "brain")
                             Spacer()
-                            if apiKey.isEmpty {
-                                Text("Not Set")
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text("••••••••")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            showingAPIKeyEntry = true
-                        }
-                    } else {
-                        HStack {
-                            Label("Auth Token", systemImage: "lock.shield")
-                            Spacer()
-                            if authToken.isEmpty {
-                                Text("Not Set")
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text("••••••••")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            showingTokenEntry = true
+                            Text(claudeProviderDisplayName)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
@@ -145,12 +124,26 @@ struct SettingsView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
                 }
+
+                Section("MCP & Skills") {
+                    NavigationLink {
+                        GlobalMCPServersListView()
+                    } label: {
+                        Label("MCP Servers", systemImage: "server.rack")
+                    }
+
+                    NavigationLink {
+                        AgentSkillsListView()
+                    } label: {
+                        Label("Agent Skills", systemImage: "sparkles")
+                    }
+                }
                 
                 Section("About") {
                     HStack {
                         Text("Version")
                         Spacer()
-                        Text("1.1.0")
+                        Text(appVersionString)
                             .foregroundColor(.secondary)
                     }
                     
@@ -187,12 +180,6 @@ struct SettingsView: View {
                     showingCloudProviders = false
                 })
             }
-            .sheet(isPresented: $showingAPIKeyEntry) {
-                APIKeyEntrySheet(apiKey: $apiKey)
-            }
-            .sheet(isPresented: $showingTokenEntry) {
-                AuthTokenEntrySheet(authToken: $authToken)
-            }
             .sheet(isPresented: $showingImportSSHKey) {
                 AddSSHKeySheet()
             }
@@ -204,8 +191,6 @@ struct SettingsView: View {
             }
         }
         .onAppear {
-            loadCredentials()
-            
             // Check and generate missing public keys for SSH keys
             Task {
                 await SSHKeyMaintenanceService.shared.generateMissingPublicKeys(in: modelContext)
@@ -222,26 +207,6 @@ struct SettingsView: View {
             modelContext.delete(server)
         }
     }
-    
-    private func loadCredentials() {
-        // Load API key
-        do {
-            apiKey = try KeychainManager.shared.retrieveAPIKey()
-        } catch {
-            apiKey = ""
-        }
-        
-        // Load auth token
-        do {
-            authToken = try KeychainManager.shared.retrieveAuthToken()
-        } catch {
-            authToken = ""
-        }
-        
-        // Update auth status
-        ClaudeCodeService.shared.authStatus = ClaudeCodeService.shared.hasCredentials() ? .authenticated : .missingCredentials
-    }
-    
     
     private func getUsageCount(for key: SSHKey) -> Int {
         servers.filter { $0.sshKeyId == key.id }.count
@@ -799,7 +764,7 @@ struct ServerRow: View {
                             Image(systemName: "lock.fill")
                                 .font(.caption)
                                 .foregroundColor(.orange)
-                            Text("\(projectCount) project\(projectCount == 1 ? "" : "s")")
+                            Text("\(projectCount) agent\(projectCount == 1 ? "" : "s")")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -827,6 +792,7 @@ struct ServerRow: View {
 
 struct APIKeyEntrySheet: View {
     @Binding var apiKey: String
+    let onSave: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var tempKey = ""
     
@@ -874,6 +840,7 @@ struct APIKeyEntrySheet: View {
             // Clear the other credential only when actually saving a new value
             try? KeychainManager.shared.deleteAuthToken()
             // API Key saved to keychain
+            onSave()
             dismiss()
         } catch {
             // Failed to save API key
@@ -883,6 +850,7 @@ struct APIKeyEntrySheet: View {
 
 struct AuthTokenEntrySheet: View {
     @Binding var authToken: String
+    let onSave: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var tempToken = ""
     
@@ -942,6 +910,7 @@ struct AuthTokenEntrySheet: View {
             try? KeychainManager.shared.deleteAPIKey()
             // Update auth status
             ClaudeCodeService.shared.authStatus = .authenticated
+            onSave()
             dismiss()
         } catch {
             // Failed to save auth token

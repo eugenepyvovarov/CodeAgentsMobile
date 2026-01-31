@@ -209,7 +209,7 @@ class SSHKeyParserV2 {
             throw SSHKeyParsingError.malformedStructure("Missing KDF name")
         }
         
-        guard let kdf = OpenSSHFormat.KDF(rawValue: kdfNameString) else {
+        guard let _ = OpenSSHFormat.KDF(rawValue: kdfNameString) else {
             throw SSHKeyParsingError.unsupportedKDF(kdfNameString)
         }
         

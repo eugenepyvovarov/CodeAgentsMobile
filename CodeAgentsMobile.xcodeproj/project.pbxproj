@@ -7,9 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		32AD1948A9AB4C779243424A /* LanguageSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 01CA14F4BFA848B596A3B728 /* LanguageSupport */; };
 		877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 877CE6C72DF8902900B93778 /* NIOSSH */; };
 		87AD5F8C2E1D6B750035A296 /* SwiftASN1 in Frameworks */ = {isa = PBXBuildFile; productRef = 87AD5F8B2E1D6B750035A296 /* SwiftASN1 */; };
 		87CEB3292E156C1F00AC3F71 /* LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 87CEB3282E156C1F00AC3F71 /* LICENSE.txt */; };
+		87E5A1B12F00000100ABCDEF /* ExyteChat in Frameworks */ = {isa = PBXBuildFile; productRef = 87E5A1B02F00000100ABCDEF /* ExyteChat */; };
+		A5E9B1B311A241139090CED1 /* CodeEditorView in Frameworks */ = {isa = PBXBuildFile; productRef = 4BCD14D8013242E5894BE991 /* CodeEditorView */; };
+		DC6E111D643B618E73255EBA /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 1ECBD212526B6D69A1EC7EE4 /* FirebaseMessaging */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,8 +64,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A5E9B1B311A241139090CED1 /* CodeEditorView in Frameworks */,
+				32AD1948A9AB4C779243424A /* LanguageSupport in Frameworks */,
 				877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */,
 				87AD5F8C2E1D6B750035A296 /* SwiftASN1 in Frameworks */,
+				87E5A1B12F00000100ABCDEF /* ExyteChat in Frameworks */,
+				DC6E111D643B618E73255EBA /* FirebaseMessaging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,8 +132,12 @@
 			);
 			name = CodeAgentsMobile;
 			packageProductDependencies = (
+				4BCD14D8013242E5894BE991 /* CodeEditorView */,
+				01CA14F4BFA848B596A3B728 /* LanguageSupport */,
 				877CE6C72DF8902900B93778 /* NIOSSH */,
 				87AD5F8B2E1D6B750035A296 /* SwiftASN1 */,
+				87E5A1B02F00000100ABCDEF /* ExyteChat */,
+				1ECBD212526B6D69A1EC7EE4 /* FirebaseMessaging */,
 			);
 			productName = CodeAgentsMobile;
 			productReference = 877CE6662DF8632600B93778 /* CodeAgentsMobile.app */;
@@ -185,7 +197,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1640;
-				LastUpgradeCheck = 1640;
+				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					877CE6652DF8632600B93778 = {
 						CreatedOnToolsVersion = 16.4;
@@ -210,9 +222,13 @@
 			mainGroup = 877CE65D2DF8632600B93778;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				54E2E2A61FA74640A2198C5E /* XCRemoteSwiftPackageReference "CodeEditorView" */,
+				D7DEF1EFE09463878DB86E1B /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 				877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
 				87AD5E842E1D349A0035A296 /* XCRemoteSwiftPackageReference "OpenSSL-Package" */,
 				87AD5F8A2E1D69DF0035A296 /* XCRemoteSwiftPackageReference "swift-asn1" */,
+				87BE57602EB3F9210099D409 /* XCRemoteSwiftPackageReference "swift-eventsource" */,
+				87E5A1AF2F00000100ABCDEF /* XCRemoteSwiftPackageReference "Chat" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 877CE6672DF8632600B93778 /* Products */;
@@ -348,6 +364,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -405,6 +422,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -413,9 +431,11 @@
 		877CE68A2DF8632800B93778 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = MobileCode/CodeAgentsMobile.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
@@ -425,6 +445,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = "";
@@ -434,7 +455,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -450,9 +471,11 @@
 		877CE68B2DF8632800B93778 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = MobileCode/CodeAgentsMobile.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
@@ -462,6 +485,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = "";
@@ -471,7 +495,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -493,7 +517,7 @@
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobileTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -512,7 +536,7 @@
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobileTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -535,7 +559,7 @@
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app needs to discover and communicate with devices on your local network.";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				ITSAppUsesNonExemptEncryption = NO;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobileUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -558,7 +582,7 @@
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "This app needs to discover and communicate with devices on your local network.";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				ITSAppUsesNonExemptEncryption = NO;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobileUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -610,6 +634,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		54E2E2A61FA74640A2198C5E /* XCRemoteSwiftPackageReference "CodeEditorView" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mchakravarty/CodeEditorView";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.15.4;
+			};
+		};
 		877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/apple/swift-nio-ssh";
@@ -634,9 +666,48 @@
 				minimumVersion = 1.4.0;
 			};
 		};
+		87BE57602EB3F9210099D409 /* XCRemoteSwiftPackageReference "swift-eventsource" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/launchdarkly/swift-eventsource";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.3.0;
+			};
+		};
+		87E5A1AF2F00000100ABCDEF /* XCRemoteSwiftPackageReference "Chat" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/exyte/Chat.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.7.4;
+			};
+		};
+		D7DEF1EFE09463878DB86E1B /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 10.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		01CA14F4BFA848B596A3B728 /* LanguageSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 54E2E2A61FA74640A2198C5E /* XCRemoteSwiftPackageReference "CodeEditorView" */;
+			productName = LanguageSupport;
+		};
+		1ECBD212526B6D69A1EC7EE4 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D7DEF1EFE09463878DB86E1B /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
+		};
+		4BCD14D8013242E5894BE991 /* CodeEditorView */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 54E2E2A61FA74640A2198C5E /* XCRemoteSwiftPackageReference "CodeEditorView" */;
+			productName = CodeEditorView;
+		};
 		877CE6C72DF8902900B93778 /* NIOSSH */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 877CE6C62DF8902900B93778 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
@@ -646,6 +717,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 87AD5F8A2E1D69DF0035A296 /* XCRemoteSwiftPackageReference "swift-asn1" */;
 			productName = SwiftASN1;
+		};
+		87E5A1B02F00000100ABCDEF /* ExyteChat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 87E5A1AF2F00000100ABCDEF /* XCRemoteSwiftPackageReference "Chat" */;
+			productName = ExyteChat;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

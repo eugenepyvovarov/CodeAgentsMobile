@@ -45,6 +45,8 @@ struct StructuredMessageContent: Decodable {
         // Handle generic data field
         if let dataValue = try? container.decodeIfPresent([String: Any].self, forKey: .data) {
             data = dataValue
+        } else if type == "system" {
+            data = StructuredMessageContent.decodeTopLevelData(from: decoder)
         } else {
             data = nil
         }
@@ -59,9 +61,54 @@ struct StructuredMessageContent: Decodable {
         usage = try container.decodeIfPresent(UsageInfo.self, forKey: .usage)
         result = try container.decodeIfPresent(String.self, forKey: .result)
     }
+
+    private static func decodeTopLevelData(from decoder: Decoder) -> [String: Any]? {
+        guard let container = try? decoder.container(keyedBy: AnyCodingKey.self) else {
+            return nil
+        }
+
+        let excludedKeys: Set<String> = [
+            CodingKeys.type.stringValue,
+            CodingKeys.message.stringValue,
+            CodingKeys.subtype.stringValue,
+            CodingKeys.data.stringValue,
+            CodingKeys.durationMs.stringValue,
+            CodingKeys.durationApiMs.stringValue,
+            CodingKeys.isError.stringValue,
+            CodingKeys.numTurns.stringValue,
+            CodingKeys.sessionId.stringValue,
+            CodingKeys.totalCostUsd.stringValue,
+            CodingKeys.usage.stringValue,
+            CodingKeys.result.stringValue
+        ]
+
+        var decoded: [String: Any] = [:]
+        for key in container.allKeys where !excludedKeys.contains(key.stringValue) {
+            if let value = try? container.decode(AnyCodable.self, forKey: key).value {
+                decoded[key.stringValue] = value
+            }
+        }
+
+        return decoded.isEmpty ? nil : decoded
+    }
 }
 
 // MARK: - Message Content
+
+private struct AnyCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
+    }
+}
 
 struct MessageContent: Decodable {
     let role: String
@@ -83,6 +130,17 @@ struct MessageContent: Decodable {
         // Claude always sends content as an array, even for simple text
         if let blocks = try? container.decode([ContentBlock].self, forKey: .content) {
             content = .blocks(blocks)
+        } else if let contentArray = try? container.decode([AnyCodable].self, forKey: .content) {
+            let values = contentArray.map { $0.value }
+            let blocks = values.compactMap { ContentBlock.fromAny($0) }
+            if !blocks.isEmpty {
+                content = .blocks(blocks)
+            } else if let stringContent = try? container.decode(String.self, forKey: .content) {
+                // Backward compatibility for old messages
+                content = .text(stringContent)
+            } else {
+                content = .text(Self.formatFallbackContent(from: values))
+            }
         } else if let textContent = try? container.decode(String.self, forKey: .content) {
             // Backward compatibility for old messages
             content = .text(textContent)
@@ -90,6 +148,14 @@ struct MessageContent: Decodable {
             // Try to decode as empty array for edge cases
             content = .blocks([])
         }
+    }
+
+    private static func formatFallbackContent(from values: [Any]) -> String {
+        if let data = try? JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted]),
+           let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        return ""
     }
 }
 
@@ -99,6 +165,7 @@ enum ContentBlock: Decodable {
     case text(TextBlock)
     case toolUse(ToolUseBlock)
     case toolResult(ToolResultBlock)
+    case unknown(UnknownBlock)
     
     enum CodingKeys: String, CodingKey {
         case type
@@ -119,12 +186,44 @@ enum ContentBlock: Decodable {
             let block = try ToolResultBlock(from: decoder)
             self = .toolResult(block)
         default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .type,
-                in: container,
-                debugDescription: "Unknown content block type: \(type)"
-            )
+            self = .unknown(UnknownBlock(type: type))
         }
+    }
+
+    static func fromAny(_ value: Any) -> ContentBlock? {
+        if let text = value as? String {
+            return .text(TextBlock(type: "text", text: text))
+        }
+        guard let dict = value as? [String: Any],
+              let type = dict["type"] as? String else {
+            return nil
+        }
+
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
+           let decoded = try? JSONDecoder().decode(ContentBlock.self, from: data) {
+            return decoded
+        }
+
+        switch type {
+        case "text":
+            if let text = dict["text"] as? String {
+                return .text(TextBlock(type: "text", text: text))
+            }
+        case "tool_use":
+            let id = dict["id"] as? String ?? ""
+            let name = dict["name"] as? String ?? ""
+            let input = dict["input"] as? [String: Any] ?? [:]
+            return .toolUse(ToolUseBlock(type: "tool_use", id: id, name: name, input: input))
+        case "tool_result":
+            let toolUseId = dict["tool_use_id"] as? String ?? ""
+            let isError = dict["is_error"] as? Bool ?? false
+            let content = ToolResultBlock.normalizeContent(dict["content"])
+            return .toolResult(ToolResultBlock(type: "tool_result", toolUseId: toolUseId, content: content, isError: isError))
+        default:
+            return .unknown(UnknownBlock(type: type))
+        }
+
+        return nil
     }
 }
 
@@ -190,6 +289,118 @@ struct ToolResultBlock: Decodable {
         case content
         case isError = "is_error"
     }
+
+    init(type: String, toolUseId: String, content: String, isError: Bool) {
+        self.type = type
+        self.toolUseId = toolUseId
+        self.content = content
+        self.isError = isError
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        toolUseId = try container.decode(String.self, forKey: .toolUseId)
+        isError = try container.decodeIfPresent(Bool.self, forKey: .isError) ?? false
+
+        if let stringContent = try? container.decode(String.self, forKey: .content) {
+            content = stringContent
+            return
+        }
+
+        if let blocks = try? container.decode([ContentBlock].self, forKey: .content) {
+            let pieces = blocks.compactMap { block -> String? in
+                switch block {
+                case .text(let textBlock):
+                    return textBlock.text
+                case .toolResult(let toolResult):
+                    return toolResult.content
+                default:
+                    return nil
+                }
+            }
+            let combined = pieces.joined(separator: "\n")
+            if !combined.isEmpty {
+                content = combined
+                return
+            }
+
+            if let data = try? JSONSerialization.data(withJSONObject: blocks.map { block in
+                var blockJSON: [String: Any] = [:]
+                switch block {
+                case .text(let textBlock):
+                    blockJSON = ["type": "text", "text": textBlock.text]
+                case .toolUse(let toolUseBlock):
+                    blockJSON = [
+                        "type": "tool_use",
+                        "id": toolUseBlock.id,
+                        "name": toolUseBlock.name,
+                        "input": toolUseBlock.input
+                    ]
+                case .toolResult(let toolResultBlock):
+                    blockJSON = [
+                        "type": "tool_result",
+                        "tool_use_id": toolResultBlock.toolUseId,
+                        "content": toolResultBlock.content,
+                        "is_error": toolResultBlock.isError
+                    ]
+                case .unknown(let unknownBlock):
+                    blockJSON = ["type": unknownBlock.type]
+                }
+                return blockJSON
+            }, options: [.prettyPrinted]),
+               let string = String(data: data, encoding: .utf8) {
+                content = string
+                return
+            }
+        }
+
+        if let contentArray = try? container.decode([AnyCodable].self, forKey: .content) {
+            let values = contentArray.map { $0.value }
+            if let data = try? JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted]),
+               let string = String(data: data, encoding: .utf8) {
+                content = string
+                return
+            }
+        }
+
+        if let contentObject = try? container.decode([String: AnyCodable].self, forKey: .content) {
+            let values = contentObject.mapValues { $0.value }
+            if let data = try? JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted]),
+               let string = String(data: data, encoding: .utf8) {
+                content = string
+                return
+            }
+        }
+
+        content = ""
+    }
+
+    static func normalizeContent(_ value: Any?) -> String {
+        if let content = value as? String {
+            return content
+        }
+        if let blocks = value as? [[String: Any]],
+           let data = try? JSONSerialization.data(withJSONObject: blocks, options: [.prettyPrinted]),
+           let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        if let dict = value as? [String: Any],
+           let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted]),
+           let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        if let array = value as? [Any],
+           let data = try? JSONSerialization.data(withJSONObject: array, options: [.prettyPrinted]),
+           let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        return ""
+    }
+}
+
+struct UnknownBlock: Decodable {
+    let type: String
 }
 
 // MARK: - Supporting Types

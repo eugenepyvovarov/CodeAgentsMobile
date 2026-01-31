@@ -123,6 +123,27 @@ class FileBrowserViewModel {
             print("Failed to create folder: \(error)")
         }
     }
+
+    /// Create a new empty file in the current directory.
+    /// - Parameter name: File name (relative to the current directory)
+    func createFile(name: String) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw FileBrowserError.invalidName
+        }
+        guard !trimmed.contains("/") else {
+            throw FileBrowserError.invalidName
+        }
+
+        let filePath = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
+
+        try await executeCommand(": > '\(filePath)'")
+        await loadRemoteFiles()
+
+        if let createdNode = rootNodes.first(where: { $0.name == trimmed && !$0.isDirectory }) {
+            selectedFile = createdNode
+        }
+    }
     
     /// Delete a file or folder
     /// - Parameter node: The file node to delete
@@ -184,6 +205,45 @@ class FileBrowserViewModel {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         return try await session.readFile(path)
     }
+
+    /// Save file content
+    func saveFileContent(path: String, content: String) async throws {
+        guard let project = currentProject else {
+            throw FileBrowserError.noProject
+        }
+
+        guard let data = content.data(using: .utf8) else {
+            throw FileBrowserError.invalidContent
+        }
+
+        let base64Content = data.base64EncodedString()
+        let command = "echo '\(base64Content)' | base64 -d > '\(path)'"
+
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        _ = try await session.execute(command)
+
+        await loadRemoteFiles()
+    }
+
+    /// Download a remote file to a temporary local URL
+    func downloadFile(_ node: FileNode) async throws -> URL {
+        guard let project = currentProject else {
+            throw FileBrowserError.noProject
+        }
+
+        guard !node.isDirectory else {
+            throw FileBrowserError.invalidFile
+        }
+
+        let tempDirectory = FileManager.default.temporaryDirectory
+        let filename = "\(UUID().uuidString)_\(node.name)"
+        let localURL = tempDirectory.appendingPathComponent(filename)
+
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        try await session.downloadFile(remotePath: node.path, localPath: localURL)
+
+        return localURL
+    }
     
     // MARK: - Private Methods
     
@@ -202,11 +262,20 @@ class FileBrowserViewModel {
 
 enum FileBrowserError: LocalizedError {
     case noProject
+    case invalidFile
+    case invalidContent
+    case invalidName
     
     var errorDescription: String? {
         switch self {
         case .noProject:
-            return "No active project"
+            return "No active agent"
+        case .invalidFile:
+            return "Invalid file"
+        case .invalidContent:
+            return "Invalid file content"
+        case .invalidName:
+            return "Invalid name"
         }
     }
 }

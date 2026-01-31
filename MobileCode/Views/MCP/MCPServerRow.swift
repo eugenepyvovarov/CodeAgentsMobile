@@ -126,7 +126,7 @@ private extension Optional where Wrapped: Collection {
         MCPServerRow(server: MCPServer(
             name: "sqlite",
             command: "uv",
-            args: ["--directory", "/Users/path/to/project", "run", "mcp-server-sqlite"],
+            args: ["--directory", "/Users/path/to/agent", "run", "mcp-server-sqlite"],
             env: ["DB_PATH": "/path/to/db.sqlite"],
             status: .disconnected
         ))
