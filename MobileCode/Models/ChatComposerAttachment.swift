@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import UniformTypeIdentifiers
 
 enum ChatComposerAttachment: Hashable, Identifiable {
     case projectFile(id: UUID = UUID(), displayName: String, relativePath: String)
@@ -37,5 +38,16 @@ enum ChatComposerAttachment: Hashable, Identifiable {
             return nil
         }
     }
-}
 
+    var systemImageName: String {
+        isImageAttachment ? "photo" : "doc"
+    }
+
+    private var isImageAttachment: Bool {
+        let ext = (displayName as NSString).pathExtension.lowercased()
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else {
+            return false
+        }
+        return type.conforms(to: .image)
+    }
+}
