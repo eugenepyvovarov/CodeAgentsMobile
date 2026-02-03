@@ -94,7 +94,7 @@ final class SSHChannelDataHandler: ChannelInboundHandler, @unchecked Sendable {
     func getAccumulatedOutput() -> (stdout: String, stderr: String) {
         let stdout = stdoutBuffer.getString(at: 0, length: stdoutBuffer.readableBytes) ?? ""
         let stderr = stderrBuffer.getString(at: 0, length: stderrBuffer.readableBytes) ?? ""
-        return (cleanSSHOutput(stdout), cleanSSHOutput(stderr))
+        return (stdout, stderr)
     }
 }
 
