@@ -158,12 +158,16 @@ class SwiftSHSession: SSHSession, @unchecked Sendable {
             throw SSHError.connectionFailed("Not connected")
         }
         
-        // Use base64 encoding to transfer file
-        let command = "base64 -w 0 '\(remotePath)' 2>/dev/null || base64 '\(remotePath)'"
-        let base64Output = try await executeRaw(command)
+        // Use base64 encoding to transfer file.
+        // Wrap the payload in markers so we can reliably extract it even if the remote shell prints banners/noise.
+        let beginMarker = "__CODEAGENTS_BASE64_BEGIN__"
+        let endMarker = "__CODEAGENTS_BASE64_END__"
+        let command = "printf '\(beginMarker)'; (base64 -w 0 '\(remotePath)' 2>/dev/null || base64 '\(remotePath)'); printf '\(endMarker)'"
+        let output = try await executeRaw(command)
 
         // Decode and save
-        let cleanedBase64 = base64Output
+        let base64Payload = try Self.extractMarkedPayload(from: output, beginMarker: beginMarker, endMarker: endMarker)
+        let cleanedBase64 = base64Payload
             .components(separatedBy: .whitespacesAndNewlines)
             .joined()
         guard let data = Data(base64Encoded: cleanedBase64) else {
@@ -171,6 +175,16 @@ class SwiftSHSession: SSHSession, @unchecked Sendable {
         }
         
         try data.write(to: localPath)
+    }
+
+    static func extractMarkedPayload(from output: String, beginMarker: String, endMarker: String) throws -> String {
+        guard let startRange = output.range(of: beginMarker) else {
+            throw SSHError.fileTransferFailed("Failed to locate base64 payload (missing begin marker).")
+        }
+        guard let endRange = output.range(of: endMarker, range: startRange.upperBound..<output.endIndex) else {
+            throw SSHError.fileTransferFailed("Failed to locate base64 payload (missing end marker).")
+        }
+        return String(output[startRange.upperBound..<endRange.lowerBound])
     }
     
     func readFile(_ remotePath: String) async throws -> String {
@@ -549,9 +563,15 @@ class SwiftSHSession: SSHSession, @unchecked Sendable {
             guard components.count >= 9 else { continue }
             
             let permissions = components[0]
-            let isDirectory = permissions.hasPrefix("d")
+            guard let fileType = permissions.first, "-dlcbps".contains(fileType) else {
+                continue
+            }
+            let isDirectory = fileType == "d"
             let sizeString = components[4]
-            let size = isDirectory ? nil : Int64(sizeString)
+            guard let parsedSize = Int64(sizeString) else {
+                continue
+            }
+            let size = isDirectory ? nil : parsedSize
             
             // Parse date - ls shows year for old files, time for recent files
             let month = components[5]
