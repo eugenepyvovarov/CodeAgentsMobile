@@ -138,7 +138,7 @@ private struct CodeAgentsUIGalleryView: View {
     let project: RemoteProject?
     @State private var previewPayload: CodeAgentsUIMediaPreviewPayload?
     @State private var isPreparingPreview = false
-    private let thumbnailHeight: CGFloat = 140
+    private let thumbnailHeight: CGFloat = 180
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -251,7 +251,7 @@ private func fileURLExists(_ url: URL) -> Bool {
 }
 
 private struct CodeAgentsUIMediaImageView: View {
-    static let fallbackAspectRatio: Double = 4.0 / 3.0
+    static let fallbackAspectRatio: Double = 1.0
 
     let source: CodeAgentsUIMediaSource
     let project: RemoteProject?
