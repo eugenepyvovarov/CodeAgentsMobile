@@ -103,7 +103,10 @@ final class ChatMediaLoader: ObservableObject {
 
         let cacheKey = "project:\(project.id.uuidString):\(path)"
         if let cached = cache[cacheKey] {
+            if fileManager.fileExists(atPath: cached.path) {
             return .local(cached)
+            }
+            cache[cacheKey] = nil
         }
 
         if let task = inFlight[cacheKey] {
@@ -152,7 +155,10 @@ final class ChatMediaLoader: ObservableObject {
 
         let cacheKey = "base64:\(data.hashValue)"
         if let cached = cache[cacheKey] {
+            if fileManager.fileExists(atPath: cached.path) {
             return .local(cached)
+            }
+            cache[cacheKey] = nil
         }
 
         let ext = extensionForMediaType(mediaType)
@@ -170,7 +176,10 @@ final class ChatMediaLoader: ObservableObject {
         guard isAllowedURL(url) else { return nil }
         let cacheKey = "url:\(url.absoluteString)"
         if let cached = previewCache[cacheKey] {
+            if fileManager.fileExists(atPath: cached.path) {
             return cached
+            }
+            previewCache[cacheKey] = nil
         }
         if let task = previewInFlight[cacheKey] {
             return await task.value
