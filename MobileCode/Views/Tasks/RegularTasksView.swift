@@ -10,16 +10,21 @@ import SwiftData
 
 struct RegularTasksView: View {
     @StateObject private var projectContext = ProjectContext.shared
+    @StateObject private var claudeService = ClaudeCodeService.shared
     @Environment(\.modelContext) private var modelContext
+    @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
     @Query(
         sort: [SortDescriptor(\AgentScheduledTask.createdAt, order: .reverse)]
     ) private var allTasks: [AgentScheduledTask]
     @StateObject private var syncReporter = TaskSyncReporter()
 
+    @State private var providerMismatch: ClaudeProviderMismatch?
+    @State private var showingProviderSettings = false
     @State private var showingNewTask = false
     @State private var editingTask: AgentScheduledTask?
 
     var body: some View {
+        let isLocked = providerMismatch != nil
         NavigationStack {
             Group {
                 if projectContext.activeProject == nil {
@@ -38,6 +43,7 @@ struct RegularTasksView: View {
                             PrimaryGlassButton(action: { showingNewTask = true }) {
                                 Label("Add Task", systemImage: "plus")
                             }
+                            .disabled(isLocked)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -49,11 +55,14 @@ struct RegularTasksView: View {
                                                isEnabled: binding(for: task)) {
                                     editingTask = task
                                 }
+                                .disabled(isLocked)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        Task { await deleteTask(task) }
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
+                                    if !isLocked {
+                                        Button(role: .destructive) {
+                                            Task { await deleteTask(task) }
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
                                     }
                                 }
                             }
@@ -75,12 +84,23 @@ struct RegularTasksView: View {
                     } label: {
                         Image(systemName: "plus")
                     }
+                    .disabled(isLocked)
                 }
             }
         }
-        .modifier(TaskSyncStatusPillModifier(state: syncReporter.state,
-                                             lastSuccess: syncReporter.lastSuccess,
-                                             isVisible: shouldShowStatusPill))
+        .modifier(
+            TaskTopOverlayModifier(
+                providerMismatch: providerMismatch,
+                syncState: syncReporter.state,
+                lastSuccess: syncReporter.lastSuccess,
+                showSyncPill: shouldShowStatusPill,
+                onClearChat: { clearChatAndResetProviderMarker() },
+                onChangeProvider: { showingProviderSettings = true }
+                )
+        )
+        .onAppear {
+            refreshProviderMismatch()
+        }
         .sheet(isPresented: $showingNewTask) {
             RegularTaskEditorView(syncReporter: syncReporter)
         }
@@ -88,7 +108,19 @@ struct RegularTasksView: View {
             RegularTaskEditorView(task: task, syncReporter: syncReporter)
         }
         .task(id: projectContext.activeProject?.id) {
+            refreshProviderMismatch()
             await refreshTasks()
+        }
+        .onChange(of: projectContext.activeProject?.id) { _, _ in
+            refreshProviderMismatch()
+        }
+        .onChange(of: claudeProviderConfigurationData) { _, _ in
+            refreshProviderMismatch()
+        }
+        .sheet(isPresented: $showingProviderSettings) {
+            NavigationStack {
+                ClaudeProviderSettingsView()
+            }
         }
     }
 
@@ -112,6 +144,7 @@ struct RegularTasksView: View {
         Binding(
             get: { task.isEnabled },
             set: { newValue in
+                guard providerMismatch == nil else { return }
                 let previousValue = task.isEnabled
                 task.isEnabled = newValue
                 task.markUpdated()
@@ -132,6 +165,7 @@ struct RegularTasksView: View {
     }
 
     private func deleteTasks(at offsets: IndexSet) {
+        guard providerMismatch == nil else { return }
         let tasksToDelete = offsets.map { tasks[$0] }
         Task {
             for task in tasksToDelete {
@@ -148,7 +182,10 @@ struct RegularTasksView: View {
             do {
                 _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
             } catch {
-                SSHLogger.log("Failed to ensure proxy agent id for tasks refresh (projectId=\(project.id)): \(error)", level: .warning)
+                SSHLogger.log(
+                    "Failed to ensure proxy agent id for tasks refresh (projectId=\(project.id)): \(error)",
+                    level: .warning
+                )
             }
             let remoteTasks = try await ProxyTaskService.shared.fetchTasks(for: project)
             applyRemoteTasks(remoteTasks, project: project)
@@ -170,23 +207,25 @@ struct RegularTasksView: View {
             if let local = localByRemoteId[remote.id] {
                 updateLocalTask(local, from: remote)
             } else if let schedule = remote.schedule, let prompt = remote.prompt {
-                let newTask = AgentScheduledTask(projectId: project.id,
-                                                 title: remote.title ?? "",
-                                                 prompt: prompt,
-                                                 isEnabled: remote.isEnabled ?? true,
-                                                 timeZoneId: remote.timeZoneId ?? TimeZone.current.identifier,
-                                                 frequency: schedule.frequency,
-                                                 interval: schedule.interval,
-                                                 weekdayMask: schedule.weekdayMask,
-                                                 monthlyMode: schedule.monthlyMode,
-                                                 dayOfMonth: schedule.dayOfMonth,
-                                                 ordinalWeek: schedule.ordinalWeek,
-                                                 ordinalWeekday: schedule.ordinalWeekday,
-                                                 monthOfYear: schedule.monthOfYear,
-                                                 timeOfDayMinutes: schedule.timeOfDayMinutes,
-                                                 nextRunAt: remote.nextRunAt,
-                                                 lastRunAt: remote.lastRunAt,
-                                                 remoteId: remote.id)
+                let newTask = AgentScheduledTask(
+                    projectId: project.id,
+                    title: remote.title ?? "",
+                    prompt: prompt,
+                    isEnabled: remote.isEnabled ?? true,
+                    timeZoneId: remote.timeZoneId ?? TimeZone.current.identifier,
+                    frequency: schedule.frequency,
+                    interval: schedule.interval,
+                    weekdayMask: schedule.weekdayMask,
+                    monthlyMode: schedule.monthlyMode,
+                    dayOfMonth: schedule.dayOfMonth,
+                    ordinalWeek: schedule.ordinalWeek,
+                    ordinalWeekday: schedule.ordinalWeekday,
+                    monthOfYear: schedule.monthOfYear,
+                    timeOfDayMinutes: schedule.timeOfDayMinutes,
+                    nextRunAt: remote.nextRunAt,
+                    lastRunAt: remote.lastRunAt,
+                    remoteId: remote.id
+                )
                 modelContext.insert(newTask)
             }
         }
@@ -223,6 +262,7 @@ struct RegularTasksView: View {
     }
 
     private func syncTask(_ task: AgentScheduledTask, previousValue: Bool) async {
+        guard providerMismatch == nil else { return }
         guard let project = projectContext.activeProject else { return }
         syncReporter.markSyncing()
 
@@ -243,6 +283,7 @@ struct RegularTasksView: View {
     }
 
     private func deleteTask(_ task: AgentScheduledTask) async {
+        guard providerMismatch == nil else { return }
         guard let project = projectContext.activeProject else { return }
         syncReporter.markSyncing()
 
@@ -264,6 +305,56 @@ struct RegularTasksView: View {
             task.lastRunAt = lastRun
         }
         task.markUpdated()
+    }
+
+    private func refreshProviderMismatch() {
+        providerMismatch = ClaudeProviderMismatchGuard.mismatch(for: projectContext.activeProject)
+    }
+
+    private func clearChatAndResetProviderMarker() {
+        guard let project = projectContext.activeProject else { return }
+
+        Task { @MainActor in
+            project.lastSuccessfulClaudeProviderRawValue = nil
+            project.activeStreamingMessageId = nil
+            claudeService.clearSessions()
+
+            do {
+                let projectId: UUID? = project.id
+                let descriptor = FetchDescriptor<Message>(
+                    predicate: #Predicate { message in
+                        message.projectId == projectId
+                    }
+                )
+                let fetched = try modelContext.fetch(descriptor)
+                for message in fetched {
+                    modelContext.delete(message)
+                }
+            } catch {
+                SSHLogger.log("Failed to clear messages for project \(project.id): \(error)", level: .warning)
+            }
+
+            if claudeService.isProxyChatEnabled {
+                do {
+                    try await claudeService.resetProxyConversation(project: project)
+                } catch {
+                    SSHLogger.log("Failed to reset proxy conversation for project \(project.id): \(error)", level: .warning)
+                }
+            }
+
+            do {
+                try modelContext.save()
+            } catch {
+                SSHLogger.log("Failed to persist chat reset for project \(project.id): \(error)", level: .warning)
+            }
+
+            refreshProviderMismatch()
+            NotificationCenter.default.post(
+                name: .projectChatDidReset,
+                object: nil,
+                userInfo: ["projectId": project.id]
+            )
+        }
     }
 }
 
@@ -408,24 +499,31 @@ private struct TaskSyncStatusPillView: View {
     }
 }
 
-private struct TaskSyncStatusPillModifier: ViewModifier {
-    let state: TaskSyncState
+private struct TaskTopOverlayModifier: ViewModifier {
+    let providerMismatch: ClaudeProviderMismatch?
+    let syncState: TaskSyncState
     let lastSuccess: Date?
-    let isVisible: Bool
+    let showSyncPill: Bool
+    let onClearChat: () -> Void
+    let onChangeProvider: () -> Void
+
+    private var isVisible: Bool {
+        providerMismatch != nil || showSyncPill
+    }
 
     func body(content: Content) -> some View {
         Group {
             if #available(iOS 26.0, *) {
                 content
                     .safeAreaBar(edge: .top) {
-                        statusPill
+                        overlayContent
                     }
             } else {
                 if isVisible {
                     content
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .safeAreaInset(edge: .top, spacing: 0) {
-                            statusPillInset
+                            overlayInset
                         }
                 } else {
                     content
@@ -435,21 +533,41 @@ private struct TaskSyncStatusPillModifier: ViewModifier {
     }
 
     @ViewBuilder
-    private var statusPill: some View {
+    private var overlayContent: some View {
         if isVisible {
-            TaskSyncStatusPillView(state: state, lastSuccess: lastSuccess)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+            VStack(spacing: 6) {
+                if let providerMismatch {
+                    ClaudeProviderResetBannerView(
+                        mismatch: providerMismatch,
+                        onClearChat: onClearChat,
+                        onChangeProvider: onChangeProvider
+                    )
+                }
+                if showSyncPill {
+                    TaskSyncStatusPillView(state: syncState, lastSuccess: lastSuccess)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
     }
 
     @ViewBuilder
-    private var statusPillInset: some View {
+    private var overlayInset: some View {
         if isVisible {
-            HStack {
-                TaskSyncStatusPillView(state: state, lastSuccess: lastSuccess)
+            VStack(spacing: 6) {
+                if let providerMismatch {
+                    ClaudeProviderResetBannerView(
+                        mismatch: providerMismatch,
+                        onClearChat: onClearChat,
+                        onChangeProvider: onChangeProvider
+                    )
+                }
+                if showSyncPill {
+                    TaskSyncStatusPillView(state: syncState, lastSuccess: lastSuccess)
+                }
             }
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 4)
         }

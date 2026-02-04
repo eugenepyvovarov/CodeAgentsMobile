@@ -17,6 +17,7 @@ import SwiftData
 // MARK: - Notifications
 extension Notification.Name {
     static let mcpConfigurationChanged = Notification.Name("mcpConfigurationChanged")
+    static let projectChatDidReset = Notification.Name("projectChatDidReset")
 }
 
 
@@ -71,6 +72,10 @@ class ChatViewModel {
 
     /// Show when proxy sync retries have failed repeatedly
     var showSyncRetryIndicator = false
+
+    /// Set when the selected Claude provider differs from the provider that last successfully ran this chat.
+    /// When non-nil, the UI should show a reset banner and sending should be blocked.
+    var providerMismatch: ClaudeProviderMismatch?
     
     /// Track if we've already checked for previous session
     private var hasCheckedForPreviousSession = false
@@ -191,6 +196,7 @@ class ChatViewModel {
         self.modelContext = modelContext
         self.projectId = projectId
         loadMessages()
+        refreshProviderMismatch(for: ProjectContext.shared.activeProject)
 
         toolApprovalStore.ensureDefaults(for: projectId)
         
@@ -259,6 +265,11 @@ class ChatViewModel {
     func sendMessage(_ text: String) async {
         guard let project = ProjectContext.shared.activeProject else {
             addErrorMessage("No active agent. Please select an agent first.")
+            return
+        }
+
+        refreshProviderMismatch(for: project)
+        if providerMismatch != nil {
             return
         }
         
@@ -477,11 +488,17 @@ class ChatViewModel {
                     if let finalMessage = lastAssistantTextMessage {
                         finalMessage.timestamp = Date()
                     }
+
+                    if !chunk.isError {
+                        project.lastSuccessfulClaudeProviderRawValue = ClaudeProviderMismatchGuard.currentProvider().rawValue
+                    }
+
                     project.activeStreamingMessageId = nil
                     project.updateLastModified()
                     isProcessing = false
                     streamingMessage = nil
                     streamingBlocks = []
+                    refreshProviderMismatch(for: project)
                     saveChanges()
                     break
                 }
@@ -516,6 +533,15 @@ class ChatViewModel {
         streamingBlocks = []
         isProcessing = false
     }
+
+    func refreshProviderMismatch(for project: RemoteProject?) {
+        providerMismatch = ClaudeProviderMismatchGuard.mismatch(for: project)
+    }
+
+    func reloadMessages() {
+        loadMessages()
+        refreshProviderMismatch(for: ProjectContext.shared.activeProject)
+    }
     
     /// Clear all messages and start fresh
     func clearChat() {
@@ -536,6 +562,10 @@ class ChatViewModel {
         
         messages.removeAll()
         claudeService.clearSessions()
+        if let project = ProjectContext.shared.activeProject {
+            project.lastSuccessfulClaudeProviderRawValue = nil
+        }
+        providerMismatch = nil
         hasCheckedForPreviousSession = false
         sessionCheckTask?.cancel()
         isLoadingPreviousSession = false

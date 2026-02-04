@@ -13,9 +13,14 @@ struct RegularTaskEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @StateObject private var projectContext = ProjectContext.shared
+    @StateObject private var claudeService = ClaudeCodeService.shared
+    @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
 
     let task: AgentScheduledTask?
     private let syncReporter: TaskSyncReporter?
+
+    @State private var providerMismatch: ClaudeProviderMismatch?
+    @State private var showingProviderSettings = false
 
     @State private var title: String
     @State private var promptBody: String
@@ -95,6 +100,18 @@ struct RegularTaskEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let providerMismatch {
+                    Section {
+                        ClaudeProviderResetBannerView(
+                            mismatch: providerMismatch,
+                            onClearChat: { clearChatAndResetProviderMarker() },
+                            onChangeProvider: { showingProviderSettings = true }
+                        )
+                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                        .listRowBackground(Color.clear)
+                    }
+                }
+
                 Section {
                     GlassInfoCard(title: isEnabled ? "Schedule Preview" : "Schedule Preview (Disabled)",
                                   subtitle: scheduleSummary,
@@ -214,7 +231,7 @@ struct RegularTaskEditorView: View {
                     Button("Save") {
                         saveTask()
                     }
-                    .disabled(isSaveDisabled || isSaving || isUploadingAttachments)
+                    .disabled(isSaveDisabled || isSaving || isUploadingAttachments || providerMismatch != nil)
                 }
             }
             .alert("Delete Task?", isPresented: $showDeleteAlert) {
@@ -229,6 +246,20 @@ struct RegularTaskEditorView: View {
                 Button("OK") { }
             } message: {
                 Text(errorMessage)
+            }
+            .onAppear {
+                refreshProviderMismatch()
+            }
+            .onChange(of: projectContext.activeProject?.id) { _, _ in
+                refreshProviderMismatch()
+            }
+            .onChange(of: claudeProviderConfigurationData) { _, _ in
+                refreshProviderMismatch()
+            }
+            .sheet(isPresented: $showingProviderSettings) {
+                NavigationStack {
+                    ClaudeProviderSettingsView()
+                }
             }
             .sheet(isPresented: $showingSkillPicker) {
                 if let projectId = projectContext.activeProject?.id {
@@ -474,6 +505,12 @@ struct RegularTaskEditorView: View {
 
     @MainActor
     private func performSave() async {
+        if providerMismatch != nil {
+            errorMessage = "Provider changed. Clear chat to continue, or switch back to the previous provider."
+            showError = true
+            return
+        }
+
         guard let project = projectContext.activeProject else {
             errorMessage = "No active agent selected."
             showError = true
@@ -593,6 +630,12 @@ struct RegularTaskEditorView: View {
 
     @MainActor
     private func performDelete() async {
+        if providerMismatch != nil {
+            errorMessage = "Provider changed. Clear chat to continue, or switch back to the previous provider."
+            showError = true
+            return
+        }
+
         guard let task else { return }
         guard let project = projectContext.activeProject else {
             errorMessage = "No active agent selected."
@@ -623,6 +666,56 @@ struct RegularTaskEditorView: View {
             task.lastRunAt = lastRun
         }
         task.markUpdated()
+    }
+
+    private func refreshProviderMismatch() {
+        providerMismatch = ClaudeProviderMismatchGuard.mismatch(for: projectContext.activeProject)
+    }
+
+    private func clearChatAndResetProviderMarker() {
+        guard let project = projectContext.activeProject else { return }
+
+        Task { @MainActor in
+            project.lastSuccessfulClaudeProviderRawValue = nil
+            project.activeStreamingMessageId = nil
+            claudeService.clearSessions()
+
+            do {
+                let projectId: UUID? = project.id
+                let descriptor = FetchDescriptor<Message>(
+                    predicate: #Predicate { message in
+                        message.projectId == projectId
+                    }
+                )
+                let fetched = try modelContext.fetch(descriptor)
+                for message in fetched {
+                    modelContext.delete(message)
+                }
+            } catch {
+                SSHLogger.log("Failed to clear messages for project \(project.id): \(error)", level: .warning)
+            }
+
+            if claudeService.isProxyChatEnabled {
+                do {
+                    try await claudeService.resetProxyConversation(project: project)
+                } catch {
+                    SSHLogger.log("Failed to reset proxy conversation for project \(project.id): \(error)", level: .warning)
+                }
+            }
+
+            do {
+                try modelContext.save()
+            } catch {
+                SSHLogger.log("Failed to persist chat reset for project \(project.id): \(error)", level: .warning)
+            }
+
+            refreshProviderMismatch()
+            NotificationCenter.default.post(
+                name: .projectChatDidReset,
+                object: nil,
+                userInfo: ["projectId": project.id]
+            )
+        }
     }
 
     private func weekdayDisplayName(_ weekday: Weekday) -> String {

@@ -138,6 +138,11 @@ struct ChatView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .projectChatDidReset)) { notification in
+            guard let projectId = notification.userInfo?["projectId"] as? UUID else { return }
+            guard projectContext.activeProject?.id == projectId else { return }
+            viewModel.reloadMessages()
+        }
         .sheet(isPresented: $showingMCPServers) {
             MCPServersListView()
                 .onDisappear {
