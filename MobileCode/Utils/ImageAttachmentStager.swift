@@ -6,8 +6,6 @@
 //
 
 import Foundation
-import CoreTransferable
-import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 
@@ -78,23 +76,6 @@ struct ImageAttachmentStager {
             throw ImageAttachmentStagerError.invalidImageData
         }
         return try stageImage(from: image, preferredName: preferredName ?? url.lastPathComponent, directoryName: directoryName)
-    }
-
-    @available(iOS 16.0, *)
-    static func stagePhotoPickerItem(
-        _ item: PhotosPickerItem,
-        directoryName: String
-    ) async throws -> StagedImageAttachment {
-        if let file = try await item.loadTransferable(type: PhotoPickerImageFile.self) {
-            return try stageImage(at: file.url, preferredName: file.url.lastPathComponent, directoryName: directoryName)
-        }
-
-        if let data = try await item.loadTransferable(type: Data.self),
-           let image = UIImage(data: data) {
-            return try stageImage(from: image, preferredName: nil, directoryName: directoryName)
-        }
-
-        throw ImageAttachmentStagerError.missingImageData
     }
 
     // MARK: - Private
@@ -179,15 +160,4 @@ struct ImageAttachmentStager {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return formatter
     }()
-}
-
-@available(iOS 16.0, *)
-private struct PhotoPickerImageFile: Transferable {
-    let url: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { received in
-            PhotoPickerImageFile(url: received.file)
-        }
-    }
 }
