@@ -92,6 +92,7 @@ struct ChatDetailView: View {
                     text: text,
                     state: state,
                     isFocused: $isInputFocused,
+                    agentDisplayName: agentDisplayName,
                     selectedSkillName: selectedSkill.map { SkillNameFormatter.displayName(from: $0.name) },
                     attachments: attachments,
                     isAddEnabled: projectContext.activeProject != nil && !isUploadingAttachments,
@@ -424,6 +425,10 @@ struct ChatDetailView: View {
         return !hasCompletedSession
     }
 
+    private var agentDisplayName: String {
+        projectContext.activeProject?.displayTitle ?? assistantLabel
+    }
+
     private var statusPillLines: [String] {
         var lines: [String] = []
         if isUploadingAttachments {
@@ -439,7 +444,8 @@ struct ChatDetailView: View {
             lines.append("Reconnecting...")
         }
         if shouldShowThinkingIndicator {
-            lines.append(viewModel.showActiveSessionIndicator ? "Claude is still processing..." : "Claude is thinking...")
+            let status = viewModel.showActiveSessionIndicator ? "is still processing..." : "is thinking..."
+            lines.append("\(agentDisplayName) \(status)")
         }
         return lines
     }
@@ -591,6 +597,7 @@ private struct ExyteChatInputComposer: View {
     @Binding var text: String
     let state: InputViewState
     let isFocused: FocusState<Bool>.Binding
+    let agentDisplayName: String
     let selectedSkillName: String?
     let attachments: [ChatComposerAttachment]
     let isAddEnabled: Bool
@@ -666,7 +673,7 @@ private struct ExyteChatInputComposer: View {
                 .disabled(!isAddEnabled)
                 .accessibilityLabel("Add")
 
-                TextField("Ask Claude...", text: $text, axis: .vertical)
+                TextField("Ask \(agentDisplayName)...", text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
                     .autocapitalization(.none)

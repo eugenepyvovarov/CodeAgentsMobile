@@ -171,7 +171,7 @@ struct ChatView: View {
     }
 
     private var assistantLabel: String {
-        guard let project = projectContext.activeProject else { return "Claude" }
+        guard let project = projectContext.activeProject else { return "Agent" }
         if let server = projectContext.activeServer {
             return "\(project.displayTitle)@\(server.name)"
         }
