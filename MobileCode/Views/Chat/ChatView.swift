@@ -275,7 +275,8 @@ struct MessageBubble: View {
                         TextBlockView(
                             textBlock: textBlock,
                             textColor: message.role == MessageRole.user ? .white : .primary,
-                            isStreaming: true
+                            isStreaming: true,
+                            isAssistant: message.role == MessageRole.assistant
                         )
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -290,7 +291,8 @@ struct MessageBubble: View {
                         ContentBlockView(
                             block: block,
                             textColor: .primary,
-                            isStreaming: true
+                            isStreaming: true,
+                            isAssistant: message.role == MessageRole.assistant
                         )
                         .frame(maxWidth: UIScreen.main.bounds.width * 0.9, alignment: .leading)
                         .transition(.opacity)
@@ -352,8 +354,12 @@ struct MessageBubble: View {
         case .blocks(let blocks):
             return blocks.contains { block in
                 switch block {
-                case .text, .toolUse, .toolResult:
-                    return true
+                case .text(let textBlock):
+                    return !textBlock.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                case .toolUse(let toolUseBlock):
+                    return !BlockFormattingUtils.isBlockedToolName(toolUseBlock.name)
+                case .toolResult(let toolResultBlock):
+                    return !BlockFormattingUtils.isBlockedToolResultContent(toolResultBlock.content)
                 case .unknown:
                     return false
                 }
@@ -598,6 +604,11 @@ struct PlainMessageBubble: View {
         let bubbleBackground = isUser ? Color.accentColor : Color(.systemGray6)
         let bubbleTextColor: Color = isUser ? .white : .primary
         let bubbleBorderColor = Color(.systemGray4).opacity(0.6)
+        let bubbleMaxWidth = UIScreen.main.bounds.width * 0.78
+        let lowercasedContent = message.content.lowercased()
+        let shouldForceFullWidth = !isUser
+            && lowercasedContent.contains("codeagents_ui")
+            && lowercasedContent.contains("```")
 
         ZStack {
             // Invisible background to catch taps outside
@@ -617,7 +628,11 @@ struct PlainMessageBubble: View {
                 }
                 
                 VStack(alignment: message.role == MessageRole.user ? .trailing : .leading, spacing: 8) {
-                    FullMarkdownTextView(text: message.content, textColor: bubbleTextColor)
+                    CodeAgentsUIMessageContentView(
+                        text: message.content,
+                        textColor: bubbleTextColor,
+                        isAssistant: message.role == MessageRole.assistant
+                    )
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(bubbleBackground)
@@ -628,7 +643,11 @@ struct PlainMessageBubble: View {
                                 .stroke(isUser ? .clear : bubbleBorderColor, lineWidth: 0.5)
                         )
                         .shadow(color: isUser ? Color.accentColor.opacity(0.15) : Color.black.opacity(0.08), radius: 2, y: 1)
-                        .frame(maxWidth: UIScreen.main.bounds.width * 0.78, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                        .frame(
+                            minWidth: shouldForceFullWidth ? bubbleMaxWidth : nil,
+                            maxWidth: bubbleMaxWidth,
+                            alignment: isUser ? .trailing : .leading
+                        )
                         .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showActionButtons.toggle()
@@ -757,7 +776,11 @@ struct StructuredMessageBubble: View {
                         switch block {
                         case .text(let textBlock):
                             // Text blocks get the traditional bubble styling
-                            TextBlockView(textBlock: textBlock, textColor: bubbleTextColor)
+                            TextBlockView(
+                                textBlock: textBlock,
+                                textColor: bubbleTextColor,
+                                isAssistant: message.role == MessageRole.assistant
+                            )
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 10)
                                 .background(bubbleBackground)
@@ -779,7 +802,8 @@ struct StructuredMessageBubble: View {
                             // Tool use and results get their own special styling
                             ContentBlockView(
                                 block: block, 
-                                textColor: .primary
+                                textColor: .primary,
+                                isAssistant: message.role == MessageRole.assistant
                             )
                             .frame(maxWidth: UIScreen.main.bounds.width * 0.9, alignment: .leading)
                         case .unknown:
