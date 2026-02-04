@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 
@@ -25,7 +24,6 @@ struct FileBrowserView: View {
     @State private var showShareError = false
     @State private var showingUploadFileImporter = false
     @State private var showingPhotoPicker = false
-    @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var showingCameraPicker = false
     @State private var isUploadingFiles = false
     @State private var fileActionErrorMessage: String?
@@ -171,14 +169,24 @@ struct FileBrowserView: View {
         } message: {
             Text(fileActionErrorMessage ?? "Something went wrong.")
         }
-        .photosPicker(
-            isPresented: $showingPhotoPicker,
-            selection: $photoPickerItems,
-            maxSelectionCount: 0,
-            matching: .images
-        )
-        .onChange(of: photoPickerItems) { _, items in
-            handlePhotoPickerSelection(items)
+        .sheet(isPresented: $showingPhotoPicker) {
+            PhotoLibraryPicker(
+                selectionLimit: 0,
+                directoryName: "file-browser-uploads",
+                onComplete: { staged, error in
+                    if !staged.isEmpty {
+                        uploadStagedImages(staged)
+                    }
+                    if let error {
+                        fileActionErrorMessage = error.localizedDescription
+                        showFileActionError = true
+                    }
+                    showingPhotoPicker = false
+                },
+                onCancel: {
+                    showingPhotoPicker = false
+                }
+            )
         }
         .sheet(isPresented: $showingCameraPicker) {
             CameraPicker(
@@ -405,46 +413,6 @@ struct FileBrowserView: View {
 
         isPreparingShare = false
         shareCandidate = nil
-    }
-
-    private func handlePhotoPickerSelection(_ items: [PhotosPickerItem]) {
-        guard !items.isEmpty else { return }
-
-        Task {
-            var staged: [StagedImageAttachment] = []
-            var firstError: Error?
-
-            for item in items {
-                do {
-                    let result = try await ImageAttachmentStager.stagePhotoPickerItem(
-                        item,
-                        directoryName: "file-browser-uploads"
-                    )
-                    staged.append(result)
-                } catch {
-                    if firstError == nil {
-                        firstError = error
-                    }
-                }
-            }
-
-            await MainActor.run {
-                photoPickerItems = []
-            }
-
-            if !staged.isEmpty {
-                await MainActor.run {
-                    uploadStagedImages(staged)
-                }
-            }
-
-            if let firstError {
-                await MainActor.run {
-                    fileActionErrorMessage = firstError.localizedDescription
-                    showFileActionError = true
-                }
-            }
-        }
     }
 
     private func handleCameraImage(_ image: UIImage) {

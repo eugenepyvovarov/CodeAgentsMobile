@@ -7,7 +7,6 @@
 
 import SwiftUI
 import SwiftData
-import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 
@@ -40,7 +39,6 @@ struct RegularTaskEditorView: View {
     @State private var showingProjectFilePicker = false
     @State private var showingLocalFileImporter = false
     @State private var showingPhotoPicker = false
-    @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var showingCameraPicker = false
     @State private var isUploadingAttachments = false
 
@@ -283,14 +281,24 @@ struct RegularTaskEditorView: View {
                     addAttachment(attachment)
                 })
             }
-            .photosPicker(
-                isPresented: $showingPhotoPicker,
-                selection: $photoPickerItems,
-                maxSelectionCount: 0,
-                matching: .images
-            )
-            .onChange(of: photoPickerItems) { _, items in
-                handlePhotoPickerSelection(items)
+            .sheet(isPresented: $showingPhotoPicker) {
+                PhotoLibraryPicker(
+                    selectionLimit: 0,
+                    directoryName: "task-attachments",
+                    onComplete: { staged, error in
+                        for item in staged {
+                            addAttachment(.localFile(displayName: item.displayName, localURL: item.localURL))
+                        }
+                        if let error {
+                            errorMessage = error.localizedDescription
+                            showError = true
+                        }
+                        showingPhotoPicker = false
+                    },
+                    onCancel: {
+                        showingPhotoPicker = false
+                    }
+                )
             }
             .sheet(isPresented: $showingCameraPicker) {
                 CameraPicker(
@@ -704,41 +712,6 @@ struct RegularTaskEditorView: View {
         } catch {
             errorMessage = error.localizedDescription
             showError = true
-        }
-    }
-
-    private func handlePhotoPickerSelection(_ items: [PhotosPickerItem]) {
-        guard !items.isEmpty else { return }
-
-        Task {
-            var staged: [StagedImageAttachment] = []
-            var firstError: Error?
-
-            for item in items {
-                do {
-                    let result = try await ImageAttachmentStager.stagePhotoPickerItem(
-                        item,
-                        directoryName: "task-attachments"
-                    )
-                    staged.append(result)
-                } catch {
-                    if firstError == nil {
-                        firstError = error
-                    }
-                }
-            }
-
-            await MainActor.run {
-                for result in staged {
-                    addAttachment(.localFile(displayName: result.displayName, localURL: result.localURL))
-                }
-                photoPickerItems = []
-
-                if let firstError {
-                    errorMessage = firstError.localizedDescription
-                    showError = true
-                }
-            }
         }
     }
 
