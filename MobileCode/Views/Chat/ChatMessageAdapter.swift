@@ -204,6 +204,9 @@ struct ChatMessageAdapter {
                 appendLine(truncate(trimmed, maxLength: maxTextLength))
 
             case .toolUse(let toolUseBlock):
+                if BlockFormattingUtils.isBlockedToolName(toolUseBlock.name) {
+                    continue
+                }
                 appendLine("Tool: \(toolUseBlock.name)")
                 if let summary = toolInputSummary(toolUseBlock.input) {
                     appendLine(summary)
@@ -211,6 +214,9 @@ struct ChatMessageAdapter {
                 appendLine("") // pad to approximate ToolUseView height
 
             case .toolResult(let toolResultBlock):
+                if BlockFormattingUtils.isBlockedToolResultContent(toolResultBlock.content) {
+                    continue
+                }
                 appendLine(toolResultBlock.isError ? "Tool Result (error)" : "Tool Result")
                 let trimmed = toolResultBlock.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {

@@ -133,6 +133,11 @@ final class AgentRulesViewModel: ObservableObject {
             let rulesDirectory = (rulesPath as NSString).deletingLastPathComponent
             _ = try await session.execute("mkdir -p '\(rulesDirectory)'")
 
+            let updatedContent = CodeAgentsUIRules.ensuringToolCallGuard(in: content)
+            if updatedContent != content {
+                content = updatedContent
+            }
+
             guard let data = content.data(using: .utf8) else {
                 throw SSHError.fileTransferFailed("Invalid rules content")
             }
@@ -140,6 +145,17 @@ final class AgentRulesViewModel: ObservableObject {
             let base64Content = data.base64EncodedString()
             let writeCommand = "printf '%s' '\(base64Content)' | base64 -d > '\(rulesPath)'"
             _ = try await session.execute(writeCommand)
+
+            do {
+                try await CodeAgentsUIRules.ensureRulesFile(
+                    session: session,
+                    project: project,
+                    onlyIfMissing: false
+                )
+            } catch {
+                saveErrorMessage = "Saved rules, but failed to update codeagents-ui rules: \(error.localizedDescription)"
+                return
+            }
 
             originalContent = content
             isMissingFile = false
