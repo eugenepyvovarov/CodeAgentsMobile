@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 import UniformTypeIdentifiers
 
 struct RegularTaskEditorView: View {
@@ -42,6 +43,8 @@ struct RegularTaskEditorView: View {
     @State private var showingSkillPicker = false
     @State private var showingProjectFilePicker = false
     @State private var showingLocalFileImporter = false
+    @State private var showingPhotoPicker = false
+    @State private var showingCameraPicker = false
     @State private var isUploadingAttachments = false
 
     @State private var isSaving = false
@@ -136,6 +139,17 @@ struct RegularTaskEditorView: View {
                         },
                         onAddLocalFile: {
                             showingLocalFileImporter = true
+                        },
+                        onAddPhotoLibrary: {
+                            showingPhotoPicker = true
+                        },
+                        onAddCamera: {
+                            guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                                errorMessage = "Camera not available on this device."
+                                showError = true
+                                return
+                            }
+                            showingCameraPicker = true
                         },
                         onClearSkill: {
                             selectedSkillName = nil
@@ -297,6 +311,41 @@ struct RegularTaskEditorView: View {
                 ChatProjectFilePickerSheet(onSelect: { attachment in
                     addAttachment(attachment)
                 })
+            }
+            .sheet(isPresented: $showingPhotoPicker) {
+                PhotoLibraryPicker(
+                    selectionLimit: 0,
+                    directoryName: "task-attachments",
+                    onComplete: { staged, error in
+                        for item in staged {
+                            addAttachment(.localFile(displayName: item.displayName, localURL: item.localURL))
+                        }
+                        if let error {
+                            errorMessage = error.localizedDescription
+                            showError = true
+                        }
+                        showingPhotoPicker = false
+                    },
+                    onCancel: {
+                        showingPhotoPicker = false
+                    }
+                )
+            }
+            .sheet(isPresented: $showingCameraPicker) {
+                CameraPicker(
+                    onImage: { image in
+                        showingCameraPicker = false
+                        handleCameraImage(image)
+                    },
+                    onCancel: {
+                        showingCameraPicker = false
+                    },
+                    onError: { error in
+                        showingCameraPicker = false
+                        errorMessage = error.localizedDescription
+                        showError = true
+                    }
+                )
             }
             .fileImporter(
                 isPresented: $showingLocalFileImporter,
@@ -759,6 +808,29 @@ struct RegularTaskEditorView: View {
         }
     }
 
+    private func handleCameraImage(_ image: UIImage) {
+        Task {
+            do {
+                let staged = try await Task.detached(priority: .userInitiated) {
+                    try ImageAttachmentStager.stageImage(
+                        from: image,
+                        preferredName: nil,
+                        directoryName: "task-attachments"
+                    )
+                }.value
+
+                await MainActor.run {
+                    addAttachment(.localFile(displayName: staged.displayName, localURL: staged.localURL))
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    showError = true
+                }
+            }
+        }
+    }
+
     private func stageLocalFile(_ url: URL) throws -> URL {
         let didAccess = url.startAccessingSecurityScopedResource()
         defer {
@@ -817,6 +889,8 @@ private struct TaskPromptAttachmentComposer: View {
     let onAddSkill: () -> Void
     let onAddProjectFile: () -> Void
     let onAddLocalFile: () -> Void
+    let onAddPhotoLibrary: () -> Void
+    let onAddCamera: () -> Void
     let onClearSkill: () -> Void
     let onRemoveAttachment: (UUID) -> Void
 
@@ -832,7 +906,7 @@ private struct TaskPromptAttachmentComposer: View {
                         }
 
                         ForEach(attachments) { attachment in
-                            TaskComposerChip(systemImage: "doc",
+                            TaskComposerChip(systemImage: attachment.systemImageName,
                                              title: attachment.displayName) {
                                 onRemoveAttachment(attachment.id)
                             }
@@ -851,6 +925,12 @@ private struct TaskPromptAttachmentComposer: View {
                     }
                     Button(action: onAddLocalFile) {
                         Label("Local File", systemImage: "doc")
+                    }
+                    Button(action: onAddPhotoLibrary) {
+                        Label("Photo Library", systemImage: "photo.on.rectangle")
+                    }
+                    Button(action: onAddCamera) {
+                        Label("Take Photo", systemImage: "camera")
                     }
                 } label: {
                     Image(systemName: "plus.circle")
