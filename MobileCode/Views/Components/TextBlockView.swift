@@ -11,15 +11,26 @@ struct TextBlockView: View {
     let textBlock: TextBlock
     let textColor: Color
     let isStreaming: Bool
+    let isAssistant: Bool
     
-    init(textBlock: TextBlock, textColor: Color = .primary, isStreaming: Bool = false) {
+    init(
+        textBlock: TextBlock,
+        textColor: Color = .primary,
+        isStreaming: Bool = false,
+        isAssistant: Bool = false
+    ) {
         self.textBlock = textBlock
         self.textColor = textColor
         self.isStreaming = isStreaming
+        self.isAssistant = isAssistant
     }
     
     var body: some View {
         // No cursor animation per user preference
-        FullMarkdownTextView(text: textBlock.text, textColor: textColor)
+        CodeAgentsUIMessageContentView(
+            text: textBlock.text,
+            textColor: textColor,
+            isAssistant: isAssistant
+        )
     }
 }

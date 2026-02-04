@@ -400,6 +400,8 @@ class ClaudeCodeService: ObservableObject {
     
     /// Default alias used when no preference is stored
     private let defaultModelAlias = "default"
+
+    private let codeAgentsUISystemPrompt = CodeAgentsUIRules.rulesMarkdown
     
     /// Available Claude model options surfaced in settings
     private let availableModelOptions: [ClaudeModelOption] = [
@@ -450,7 +452,20 @@ class ClaudeCodeService: ObservableObject {
     var isProxyChatEnabled: Bool {
         useProxyChat
     }
-    
+
+    func ensureCodeAgentsUIRulesIfMissing(project: RemoteProject) async {
+        do {
+            let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+            try await CodeAgentsUIRules.ensureRulesFile(
+                session: session,
+                project: project,
+                onlyIfMissing: true
+            )
+        } catch {
+            print("⚠️ Failed to ensure codeagents-ui rules file: \(error.localizedDescription)")
+        }
+    }
+
     
     // MARK: - Initialization
     
@@ -911,7 +926,7 @@ class ClaudeCodeService: ObservableObject {
                         text: text,
                         cwd: project.path,
                         allowedTools: allowedTools,
-                        systemPrompt: nil,
+                        systemPrompt: codeAgentsUISystemPrompt,
                         maxTurns: nil,
                         toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
                     )
@@ -1088,7 +1103,7 @@ class ClaudeCodeService: ObservableObject {
                 text: nil,
                 cwd: project.path,
                 allowedTools: allowedTools,
-                systemPrompt: nil,
+                systemPrompt: codeAgentsUISystemPrompt,
                 maxTurns: nil,
                 toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
             )
@@ -1392,7 +1407,7 @@ class ClaudeCodeService: ObservableObject {
                         text: nil,
                         cwd: project.path,
                         allowedTools: allowedTools,
-                        systemPrompt: nil,
+                        systemPrompt: codeAgentsUISystemPrompt,
                         maxTurns: nil,
                         toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
                     )
