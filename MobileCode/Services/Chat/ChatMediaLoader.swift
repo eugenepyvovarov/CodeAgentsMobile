@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import ImageIO
 
 enum CodeAgentsUIMediaResolved {
     case remote(URL)
@@ -23,6 +24,7 @@ final class ChatMediaLoader: ObservableObject {
     private var inFlight: [String: Task<URL?, Never>] = [:]
     private var previewCache: [String: URL] = [:]
     private var previewInFlight: [String: Task<URL?, Never>] = [:]
+    private var aspectRatioCache: [String: Double] = [:]
 
     private let maxProjectImageBytes = 25 * 1024 * 1024
     private let maxProjectVideoBytes = 200 * 1024 * 1024
@@ -46,6 +48,53 @@ final class ChatMediaLoader: ObservableObject {
             return await resolveProjectFile(path: path, project: project)
         case .base64(let mediaType, let data):
             return await resolveBase64(mediaType: mediaType, data: data)
+        }
+    }
+
+    func cachedResolvedMedia(
+        _ source: CodeAgentsUIMediaSource,
+        project: RemoteProject?
+    ) -> CodeAgentsUIMediaResolved? {
+        switch source {
+        case .url(let url):
+            guard isAllowedURL(url) else { return nil }
+            return .remote(url)
+        case .projectFile(let path):
+            guard let project else { return nil }
+            let cacheKey = "project:\(project.id.uuidString):\(path)"
+            if let cached = cache[cacheKey] {
+                if fileManager.fileExists(atPath: cached.path) {
+                    return .local(cached)
+                }
+                cache[cacheKey] = nil
+                aspectRatioCache[cacheKey] = nil
+            }
+            return nil
+        case .base64(_, let data):
+            let cacheKey = "base64:\(data.hashValue)"
+            if let cached = cache[cacheKey] {
+                if fileManager.fileExists(atPath: cached.path) {
+                    return .local(cached)
+                }
+                cache[cacheKey] = nil
+                aspectRatioCache[cacheKey] = nil
+            }
+            return nil
+        }
+    }
+
+    func cachedAspectRatio(
+        _ source: CodeAgentsUIMediaSource,
+        project: RemoteProject?
+    ) -> Double? {
+        switch source {
+        case .url(let url):
+            return aspectRatioCache["url:\(url.absoluteString)"]
+        case .projectFile(let path):
+            guard let project else { return nil }
+            return aspectRatioCache["project:\(project.id.uuidString):\(path)"]
+        case .base64(_, let data):
+            return aspectRatioCache["base64:\(data.hashValue)"]
         }
     }
 
@@ -104,9 +153,10 @@ final class ChatMediaLoader: ObservableObject {
         let cacheKey = "project:\(project.id.uuidString):\(path)"
         if let cached = cache[cacheKey] {
             if fileManager.fileExists(atPath: cached.path) {
-            return .local(cached)
+                return .local(cached)
             }
             cache[cacheKey] = nil
+            aspectRatioCache[cacheKey] = nil
         }
 
         if let task = inFlight[cacheKey] {
@@ -143,6 +193,11 @@ final class ChatMediaLoader: ObservableObject {
 
         if let result {
             cache[cacheKey] = result
+            if mediaType == "image" {
+                if let ratio = await imageAspectRatio(for: result) {
+                    aspectRatioCache[cacheKey] = ratio
+                }
+            }
             return .local(result)
         }
 
@@ -156,9 +211,10 @@ final class ChatMediaLoader: ObservableObject {
         let cacheKey = "base64:\(data.hashValue)"
         if let cached = cache[cacheKey] {
             if fileManager.fileExists(atPath: cached.path) {
-            return .local(cached)
+                return .local(cached)
             }
             cache[cacheKey] = nil
+            aspectRatioCache[cacheKey] = nil
         }
 
         let ext = extensionForMediaType(mediaType)
@@ -166,6 +222,9 @@ final class ChatMediaLoader: ObservableObject {
         do {
             try data.write(to: tempURL, options: [.atomic])
             cache[cacheKey] = tempURL
+            if let ratio = await imageAspectRatio(for: tempURL) {
+                aspectRatioCache[cacheKey] = ratio
+            }
             return .local(tempURL)
         } catch {
             return nil
@@ -177,9 +236,10 @@ final class ChatMediaLoader: ObservableObject {
         let cacheKey = "url:\(url.absoluteString)"
         if let cached = previewCache[cacheKey] {
             if fileManager.fileExists(atPath: cached.path) {
-            return cached
+                return cached
             }
             previewCache[cacheKey] = nil
+            aspectRatioCache[cacheKey] = nil
         }
         if let task = previewInFlight[cacheKey] {
             return await task.value
@@ -214,6 +274,14 @@ final class ChatMediaLoader: ObservableObject {
                     return nil
                 }
 
+                if mediaType == "image" {
+                    if let ratio = await imageAspectRatio(for: destination) {
+                        await MainActor.run {
+                            aspectRatioCache[cacheKey] = ratio
+                        }
+                    }
+                }
+
                 return destination
             } catch {
                 return nil
@@ -229,6 +297,33 @@ final class ChatMediaLoader: ObservableObject {
         }
 
         return result
+    }
+
+    private func imageAspectRatio(for url: URL) async -> Double? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let options: [CFString: Any] = [
+                    kCGImageSourceShouldCache: false,
+                    kCGImageSourceShouldCacheImmediately: false
+                ]
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+                guard let width = properties?[kCGImagePropertyPixelWidth] as? Double,
+                      let height = properties?[kCGImagePropertyPixelHeight] as? Double,
+                      width > 0,
+                      height > 0 else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let orientation = properties?[kCGImagePropertyOrientation] as? UInt32
+                let shouldSwap = orientation.map { (5...8).contains(Int($0)) } ?? false
+                continuation.resume(returning: shouldSwap ? (height / width) : (width / height))
+            }
+        }
     }
 
     private func remoteFileSize(_ path: String, session: SSHSession) async -> Int64? {

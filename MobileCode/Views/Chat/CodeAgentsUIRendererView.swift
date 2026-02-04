@@ -8,6 +8,7 @@
 import SwiftUI
 import AVKit
 import Charts
+import ImageIO
 import UIKit
 
 struct CodeAgentsUIRendererView: View {
@@ -168,10 +169,12 @@ private struct CodeAgentsUIGalleryView: View {
                 HStack(spacing: 12) {
                     ForEach(Array(gallery.images.enumerated()), id: \.element.id) { index, image in
                         let ratio = image.aspectRatio ?? CodeAgentsUIMediaImageView.fallbackAspectRatio
+                        let pixelSize = Int(max(thumbnailHeight, thumbnailHeight * ratio) * UIScreen.main.scale)
                         CodeAgentsUIMediaImageView(
                             source: image.source,
                             project: project,
-                            aspectRatio: image.aspectRatio
+                            aspectRatio: image.aspectRatio,
+                            maxPixelSize: max(1, pixelSize)
                         )
                         .frame(width: thumbnailHeight * ratio, height: thumbnailHeight)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -289,11 +292,42 @@ private struct CodeAgentsUIMediaImageView: View {
     let source: CodeAgentsUIMediaSource
     let project: RemoteProject?
     let aspectRatio: Double?
+    let maxPixelSize: Int?
 
     @State private var resolved: CodeAgentsUIMediaResolved?
     @State private var didFail = false
     @State private var resolvedImage: UIImage?
     @State private var resolvedAspectRatio: Double?
+
+    init(
+        source: CodeAgentsUIMediaSource,
+        project: RemoteProject?,
+        aspectRatio: Double?,
+        maxPixelSize: Int? = nil
+    ) {
+        self.source = source
+        self.project = project
+        self.aspectRatio = aspectRatio
+        self.maxPixelSize = maxPixelSize
+
+        let resolvedProject = project ?? ProjectContext.shared.activeProject
+        let cachedResolved = ChatMediaLoader.shared.cachedResolvedMedia(source, project: resolvedProject)
+        _resolved = State(initialValue: cachedResolved)
+
+        let cachedRatio: Double? = {
+            guard aspectRatio == nil else { return nil }
+            return ChatMediaLoader.shared.cachedAspectRatio(source, project: resolvedProject)
+        }()
+        _resolvedAspectRatio = State(initialValue: cachedRatio)
+
+        if let cachedResolved,
+           let cachedImage = CodeAgentsUIMediaImageCache.shared.image(for: cachedResolved.cacheKeyURL) {
+            _resolvedImage = State(initialValue: cachedImage)
+            if aspectRatio == nil, cachedRatio == nil, cachedImage.size.width > 0 {
+                _resolvedAspectRatio = State(initialValue: cachedImage.size.width / cachedImage.size.height)
+            }
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -308,38 +342,60 @@ private struct CodeAgentsUIMediaImageView: View {
         .frame(maxWidth: .infinity)
         .background(Color(.systemGray6).opacity(0.25))
         .aspectRatio(currentAspectRatio, contentMode: .fit)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
         .task {
             guard resolved == nil, !didFail else { return }
             let resolved = await ChatMediaLoader.shared.resolveMedia(source, project: project ?? ProjectContext.shared.activeProject)
             if let resolved {
                 self.resolved = resolved
+                if aspectRatio == nil, resolvedAspectRatio == nil {
+                    resolvedAspectRatio = ChatMediaLoader.shared.cachedAspectRatio(
+                        source,
+                        project: project ?? ProjectContext.shared.activeProject
+                    )
+                }
             } else {
                 didFail = true
             }
         }
         .task(id: mediaTaskId) {
-            resolvedImage = nil
-            resolvedAspectRatio = nil
             guard let resolved else { return }
+
+            if aspectRatio == nil, resolvedAspectRatio == nil {
+                resolvedAspectRatio = ChatMediaLoader.shared.cachedAspectRatio(
+                    source,
+                    project: project ?? ProjectContext.shared.activeProject
+                )
+            }
+
+            if resolvedImage != nil {
+                return
+            }
 
             if let cached = CodeAgentsUIMediaImageCache.shared.image(for: resolved.cacheKeyURL) {
                 resolvedImage = cached
-                resolvedAspectRatio = cached.size.width > 0 ? cached.size.width / cached.size.height : nil
+                if aspectRatio == nil {
+                    resolvedAspectRatio = cached.size.width > 0 ? cached.size.width / cached.size.height : nil
+                }
                 return
             }
 
             let loaded: UIImage?
             switch resolved {
             case .local(let url):
-                loaded = await loadLocalImage(url: url)
+                loaded = await loadLocalImage(url: url, maxPixelSize: effectiveMaxPixelSize)
             case .remote(let url):
-                loaded = await loadRemoteImage(url: url)
+                loaded = await loadRemoteImage(url: url, maxPixelSize: effectiveMaxPixelSize)
             }
 
             if let loaded {
                 CodeAgentsUIMediaImageCache.shared.store(loaded, for: resolved.cacheKeyURL)
                 resolvedImage = loaded
-                resolvedAspectRatio = loaded.size.width > 0 ? loaded.size.width / loaded.size.height : nil
+                if aspectRatio == nil {
+                    resolvedAspectRatio = loaded.size.width > 0 ? loaded.size.width / loaded.size.height : nil
+                }
             } else {
                 didFail = true
             }
@@ -355,7 +411,7 @@ private struct CodeAgentsUIMediaImageView: View {
     }
 
     private var currentAspectRatio: Double {
-        let ratio = resolvedAspectRatio ?? aspectRatio ?? Self.fallbackAspectRatio
+        let ratio = aspectRatio ?? resolvedAspectRatio ?? Self.fallbackAspectRatio
         if ratio > 0 {
             return ratio
         }
@@ -366,26 +422,87 @@ private struct CodeAgentsUIMediaImageView: View {
         resolved?.cacheKeyURL.absoluteString ?? ""
     }
 
-    private func loadLocalImage(url: URL) async -> UIImage? {
+    private var effectiveMaxPixelSize: Int {
+        if let maxPixelSize {
+            return maxPixelSize
+        }
+        let bubbleWidth = UIScreen.main.bounds.width * 0.78
+        let paddedWidth = max(0, bubbleWidth - 32)
+        return max(1, Int(paddedWidth * UIScreen.main.scale))
+    }
+
+    private func loadLocalImage(url: URL, maxPixelSize: Int) async -> UIImage? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let image = UIImage(contentsOfFile: url.path)
+                guard let (image, _) = downsampleImage(from: url, maxPixelSize: maxPixelSize) else {
+                    continuation.resume(returning: UIImage(contentsOfFile: url.path))
+                    return
+                }
                 continuation.resume(returning: image)
             }
         }
     }
 
-    private func loadRemoteImage(url: URL) async -> UIImage? {
+    private func loadRemoteImage(url: URL, maxPixelSize: Int) async -> UIImage? {
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             if let mimeType = response.mimeType, !mimeType.hasPrefix("image/") {
                 return nil
             }
-            return UIImage(data: data)
+            return await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    if let (image, _) = downsampleImage(from: data, maxPixelSize: maxPixelSize) {
+                        continuation.resume(returning: image)
+                    } else {
+                        continuation.resume(returning: UIImage(data: data))
+                    }
+                }
+            }
         } catch {
             return nil
         }
     }
+}
+
+private func downsampleImage(from url: URL, maxPixelSize: Int) -> (UIImage, Double?)? {
+    let options: [CFString: Any] = [
+        kCGImageSourceShouldCache: false,
+        kCGImageSourceShouldCacheImmediately: false
+    ]
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary) else { return nil }
+    return downsampleImage(from: source, maxPixelSize: maxPixelSize)
+}
+
+private func downsampleImage(from data: Data, maxPixelSize: Int) -> (UIImage, Double?)? {
+    let options: [CFString: Any] = [
+        kCGImageSourceShouldCache: false,
+        kCGImageSourceShouldCacheImmediately: false
+    ]
+    guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else { return nil }
+    return downsampleImage(from: source, maxPixelSize: maxPixelSize)
+}
+
+private func downsampleImage(from source: CGImageSource, maxPixelSize: Int) -> (UIImage, Double?)? {
+    let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+    let width = properties?[kCGImagePropertyPixelWidth] as? Double
+    let height = properties?[kCGImagePropertyPixelHeight] as? Double
+    let ratio: Double? = {
+        guard let width, let height, width > 0, height > 0 else { return nil }
+        return width / height
+    }()
+
+    let clampedMaxPixelSize = max(1, maxPixelSize)
+    let thumbnailOptions: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceThumbnailMaxPixelSize: clampedMaxPixelSize,
+        kCGImageSourceShouldCacheImmediately: true
+    ]
+
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+        return nil
+    }
+
+    return (UIImage(cgImage: cgImage), ratio)
 }
 
 private struct CodeAgentsUIMediaVideoView: View {

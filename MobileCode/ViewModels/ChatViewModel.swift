@@ -62,6 +62,8 @@ class ChatViewModel {
     
     /// MCP service reference
     private let mcpService = MCPService.shared
+
+    private var mediaPrefetchTasks: [String: Task<Void, Never>] = [:]
     
     /// Loading state for previous session
     var isLoadingPreviousSession = false
@@ -207,6 +209,7 @@ class ChatViewModel {
 
             if let project = ProjectContext.shared.activeProject {
                 await claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
+                prefetchCodeAgentsUIMedia(in: project, messages: messages)
             }
         }
         
@@ -1480,6 +1483,9 @@ class ChatViewModel {
             updateMessageWithJSON(message, content: content, originalJSON: jsonData, proxyEventId: eventId)
             message.isStreaming = false
             message.isComplete = true
+            if message.role == .assistant, let project = ProjectContext.shared.activeProject {
+                prefetchCodeAgentsUIMedia(in: project, messages: [message])
+            }
             return message
         }
 
@@ -1487,7 +1493,105 @@ class ChatViewModel {
         let message = createMessage(content: content, role: role, isComplete: true, isStreaming: false, proxyEventId: eventId)
         updateMessageWithJSON(message, content: content, originalJSON: jsonData, proxyEventId: eventId)
         ProxyStreamDiagnostics.log("render created id=\(message.id) role=\(role)")
+        if message.role == .assistant, let project = ProjectContext.shared.activeProject {
+            prefetchCodeAgentsUIMedia(in: project, messages: [message])
+        }
         return message
+    }
+
+    private func prefetchCodeAgentsUIMedia(in project: RemoteProject, messages: [Message]) {
+        guard !messages.isEmpty else { return }
+
+        let maxPrefetchSources = 40
+        var seenKeys = Set<String>()
+        seenKeys.reserveCapacity(32)
+        var sources: [CodeAgentsUIMediaSource] = []
+        sources.reserveCapacity(32)
+
+        for message in messages {
+            guard message.role == .assistant else { continue }
+            guard message.isComplete else { continue }
+            let content = message.content
+            let lowercased = content.lowercased()
+            guard lowercased.contains("codeagents_ui"), lowercased.contains("```") else { continue }
+
+            let segments = CodeAgentsUIBlockExtractor.segments(from: content)
+            for segment in segments {
+                guard case .ui(let block) = segment else { continue }
+                for element in block.elements {
+                    switch element {
+                    case .image(let image):
+                        appendPrefetchSource(image.source)
+                    case .gallery(let gallery):
+                        for image in gallery.images {
+                            appendPrefetchSource(image.source)
+                        }
+                    case .video(let video):
+                        if let poster = video.poster {
+                            appendPrefetchSource(poster)
+                        }
+                    case .card(let card):
+                        for nested in card.content {
+                            if case .image(let image) = nested {
+                                appendPrefetchSource(image.source)
+                            }
+                            if case .gallery(let gallery) = nested {
+                                for image in gallery.images {
+                                    appendPrefetchSource(image.source)
+                                }
+                            }
+                            if case .video(let video) = nested, let poster = video.poster {
+                                appendPrefetchSource(poster)
+                            }
+                        }
+                    case .markdown, .table, .chart:
+                        continue
+                    }
+
+                    if sources.count >= maxPrefetchSources {
+                        break
+                    }
+                }
+
+                if sources.count >= maxPrefetchSources {
+                    break
+                }
+            }
+
+            if sources.count >= maxPrefetchSources {
+                break
+            }
+        }
+
+        for source in sources {
+            let key = mediaPrefetchKey(for: source, project: project)
+            guard mediaPrefetchTasks[key] == nil else { continue }
+            let task = Task { [weak self] in
+                _ = await ChatMediaLoader.shared.resolveMedia(source, project: project)
+                await MainActor.run {
+                    self?.mediaPrefetchTasks[key] = nil
+                }
+            }
+            mediaPrefetchTasks[key] = task
+        }
+
+        func appendPrefetchSource(_ source: CodeAgentsUIMediaSource) {
+            let key = mediaPrefetchKey(for: source, project: project)
+            guard !seenKeys.contains(key) else { return }
+            seenKeys.insert(key)
+            sources.append(source)
+        }
+    }
+
+    private func mediaPrefetchKey(for source: CodeAgentsUIMediaSource, project: RemoteProject) -> String {
+        switch source {
+        case .url(let url):
+            return "url:\(url.absoluteString)"
+        case .projectFile(let path):
+            return "project:\(project.id.uuidString):\(path)"
+        case .base64(let mediaType, let data):
+            return "base64:\(mediaType):\(data.hashValue)"
+        }
     }
 
     private func messageContainingJSONLine(_ jsonLine: String) -> Message? {
