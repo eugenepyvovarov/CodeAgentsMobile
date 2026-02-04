@@ -599,6 +599,11 @@ struct PlainMessageBubble: View {
         let bubbleBackground = isUser ? Color.accentColor : Color(.systemGray6)
         let bubbleTextColor: Color = isUser ? .white : .primary
         let bubbleBorderColor = Color(.systemGray4).opacity(0.6)
+        let bubbleMaxWidth = UIScreen.main.bounds.width * 0.78
+        let lowercasedContent = message.content.lowercased()
+        let shouldForceFullWidth = !isUser
+            && lowercasedContent.contains("codeagents_ui")
+            && lowercasedContent.contains("```")
 
         ZStack {
             // Invisible background to catch taps outside
@@ -633,7 +638,11 @@ struct PlainMessageBubble: View {
                                 .stroke(isUser ? .clear : bubbleBorderColor, lineWidth: 0.5)
                         )
                         .shadow(color: isUser ? Color.accentColor.opacity(0.15) : Color.black.opacity(0.08), radius: 2, y: 1)
-                        .frame(maxWidth: UIScreen.main.bounds.width * 0.78, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                        .frame(
+                            minWidth: shouldForceFullWidth ? bubbleMaxWidth : nil,
+                            maxWidth: bubbleMaxWidth,
+                            alignment: isUser ? .trailing : .leading
+                        )
                         .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showActionButtons.toggle()
