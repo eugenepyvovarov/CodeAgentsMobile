@@ -204,6 +204,10 @@ class ChatViewModel {
             if cachedMCPServers.isEmpty {
                 await fetchMCPServers()
             }
+
+            if let project = ProjectContext.shared.activeProject {
+                await claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
+            }
         }
         
         // Check for previous session after configuration (only if not already checked)

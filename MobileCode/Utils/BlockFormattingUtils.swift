@@ -105,6 +105,17 @@ struct BlockFormattingUtils {
             return .gray
         }
     }
+
+    // MARK: - Tool Filtering
+    static func isBlockedToolName(_ tool: String) -> Bool {
+        let lower = tool.lowercased()
+        return lower == "codeagents-ui" || lower == "codeagents_ui"
+    }
+
+    static func isBlockedToolResultContent(_ content: String) -> Bool {
+        let lower = content.lowercased()
+        return lower.contains("codeagents-ui") || lower.contains("codeagents_ui")
+    }
     
     // MARK: - Content Truncation
     static func truncateContent(_ content: String, maxLength: Int = 100) -> String {
