@@ -88,6 +88,28 @@ private struct CodeAgentsUIMediaPreviewPayload: Identifiable {
     let startIndex: Int
 }
 
+private final class CodeAgentsUIMediaImageCache {
+    static let shared = CodeAgentsUIMediaImageCache()
+
+    private let cache = NSCache<NSString, UIImage>()
+
+    private init() {
+        cache.countLimit = 120
+        cache.totalCostLimit = 60 * 1024 * 1024
+    }
+
+    func image(for url: URL) -> UIImage? {
+        cache.object(forKey: url.absoluteString as NSString)
+    }
+
+    func store(_ image: UIImage, for url: URL) {
+        let pixelWidth = Int(image.size.width * image.scale)
+        let pixelHeight = Int(image.size.height * image.scale)
+        let estimatedBytes = max(1, pixelWidth * pixelHeight * 4)
+        cache.setObject(image, forKey: url.absoluteString as NSString, cost: estimatedBytes)
+    }
+}
+
 private struct CodeAgentsUIImageView: View {
     let image: CodeAgentsUIImage
     let project: RemoteProject?
@@ -250,8 +272,19 @@ private func fileURLExists(_ url: URL) -> Bool {
     return exists && !isDirectory.boolValue
 }
 
+private extension CodeAgentsUIMediaResolved {
+    var cacheKeyURL: URL {
+        switch self {
+        case .remote(let url):
+            return url
+        case .local(let url):
+            return url
+        }
+    }
+}
+
 private struct CodeAgentsUIMediaImageView: View {
-    static let fallbackAspectRatio: Double = 1.0
+    static let fallbackAspectRatio: Double = 4.0 / 3.0
 
     let source: CodeAgentsUIMediaSource
     let project: RemoteProject?
@@ -259,12 +292,13 @@ private struct CodeAgentsUIMediaImageView: View {
 
     @State private var resolved: CodeAgentsUIMediaResolved?
     @State private var didFail = false
+    @State private var resolvedImage: UIImage?
+    @State private var resolvedAspectRatio: Double?
 
     var body: some View {
-        let ratio = containerAspectRatio
-        return ZStack {
-            if let resolved {
-                imageView(for: resolved)
+        ZStack {
+            if let resolvedImage {
+                formattedImage(Image(uiImage: resolvedImage).resizable())
             } else if didFail {
                 EmptyView()
             } else {
@@ -273,7 +307,7 @@ private struct CodeAgentsUIMediaImageView: View {
         }
         .frame(maxWidth: .infinity)
         .background(Color(.systemGray6).opacity(0.25))
-        .aspectRatio(ratio, contentMode: .fit)
+        .aspectRatio(currentAspectRatio, contentMode: .fit)
         .task {
             guard resolved == nil, !didFail else { return }
             let resolved = await ChatMediaLoader.shared.resolveMedia(source, project: project ?? ProjectContext.shared.activeProject)
@@ -283,27 +317,31 @@ private struct CodeAgentsUIMediaImageView: View {
                 didFail = true
             }
         }
-    }
+        .task(id: mediaTaskId) {
+            resolvedImage = nil
+            resolvedAspectRatio = nil
+            guard let resolved else { return }
 
-    @ViewBuilder
-    private func imageView(for resolved: CodeAgentsUIMediaResolved) -> some View {
-        switch resolved {
-        case .remote(let url):
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    formattedImage(image.resizable())
-                case .failure(_):
-                    EmptyView()
-                default:
-                    ProgressView()
-                }
+            if let cached = CodeAgentsUIMediaImageCache.shared.image(for: resolved.cacheKeyURL) {
+                resolvedImage = cached
+                resolvedAspectRatio = cached.size.width > 0 ? cached.size.width / cached.size.height : nil
+                return
             }
-        case .local(let url):
-            if let uiImage = UIImage(contentsOfFile: url.path) {
-                formattedImage(Image(uiImage: uiImage).resizable())
+
+            let loaded: UIImage?
+            switch resolved {
+            case .local(let url):
+                loaded = await loadLocalImage(url: url)
+            case .remote(let url):
+                loaded = await loadRemoteImage(url: url)
+            }
+
+            if let loaded {
+                CodeAgentsUIMediaImageCache.shared.store(loaded, for: resolved.cacheKeyURL)
+                resolvedImage = loaded
+                resolvedAspectRatio = loaded.size.width > 0 ? loaded.size.width / loaded.size.height : nil
             } else {
-                EmptyView()
+                didFail = true
             }
         }
     }
@@ -316,12 +354,37 @@ private struct CodeAgentsUIMediaImageView: View {
         )
     }
 
-    private var containerAspectRatio: Double {
-        let ratio = aspectRatio ?? Self.fallbackAspectRatio
-        if ratio <= 0 {
-            return Self.fallbackAspectRatio
+    private var currentAspectRatio: Double {
+        let ratio = resolvedAspectRatio ?? aspectRatio ?? Self.fallbackAspectRatio
+        if ratio > 0 {
+            return ratio
         }
-        return ratio
+        return Self.fallbackAspectRatio
+    }
+
+    private var mediaTaskId: String {
+        resolved?.cacheKeyURL.absoluteString ?? ""
+    }
+
+    private func loadLocalImage(url: URL) async -> UIImage? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let image = UIImage(contentsOfFile: url.path)
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    private func loadRemoteImage(url: URL) async -> UIImage? {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let mimeType = response.mimeType, !mimeType.hasPrefix("image/") {
+                return nil
+            }
+            return UIImage(data: data)
+        } catch {
+            return nil
+        }
     }
 }
 

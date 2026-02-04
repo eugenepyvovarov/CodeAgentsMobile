@@ -39,6 +39,9 @@ struct ChatMessageAdapter {
             let isStreaming = message.id == streamingMessageId
             let text: String = {
                 if !message.content.isEmpty {
+                    if !isUser, let condensed = ChatMessageAdapter.condensedSizingTextIfNeeded(from: message.content) {
+                        return condensed
+                    }
                     return message.content
                 }
 
@@ -81,6 +84,53 @@ struct ChatMessageAdapter {
     }
 
     // MARK: - ExyteChat Text Sizing
+
+    private static func condensedSizingTextIfNeeded(from content: String) -> String? {
+        let lowercased = content.lowercased()
+        guard lowercased.contains("codeagents_ui"), lowercased.contains("```") else {
+            return nil
+        }
+
+        let segments = CodeAgentsUIBlockExtractor.segments(from: content)
+        guard segments.contains(where: { if case .ui = $0 { return true }; return false }) else {
+            return nil
+        }
+
+        let widgetPadding = String(repeating: "\n", count: 12)
+        let maxCharacters = 800
+
+        var parts: [String] = []
+        parts.reserveCapacity(segments.count)
+        var characterCount = 0
+
+        for segment in segments {
+            guard characterCount < maxCharacters else { break }
+            switch segment {
+            case .markdown(let markdown):
+                let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                parts.append(trimmed)
+                characterCount += trimmed.count
+            case .ui(let block):
+                if let title = block.title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let line = "Widget: \(title)"
+                    parts.append(line)
+                    characterCount += line.count
+                } else {
+                    parts.append("Widget")
+                    characterCount += 6
+                }
+                parts.append(widgetPadding)
+                characterCount += widgetPadding.count
+            }
+        }
+
+        let result = parts.joined(separator: "\n\n")
+        if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return nil
+        }
+        return result
+    }
 
     /// ExyteChat currently uses the message `text` for sizing/layout in some paths.
     /// If our message content is purely structured blocks (tool calls/results), `Message.content` can be empty,
