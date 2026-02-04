@@ -8,6 +8,7 @@
 import SwiftUI
 import Observation
 import ExyteChat
+import UIKit
 import UniformTypeIdentifiers
 
 struct ChatDetailView: View {
@@ -26,6 +27,8 @@ struct ChatDetailView: View {
     @State private var attachments: [ChatComposerAttachment] = []
     @State private var showingProjectFilePicker = false
     @State private var showingLocalFileImporter = false
+    @State private var showingPhotoPicker = false
+    @State private var showingCameraPicker = false
     @State private var isUploadingAttachments = false
     @State private var showAttachmentError = false
     @State private var attachmentErrorMessage = ""
@@ -104,6 +107,19 @@ struct ChatDetailView: View {
                         guard projectContext.activeProject != nil else { return }
                         showingLocalFileImporter = true
                     },
+                    onAddPhotoLibrary: {
+                        guard projectContext.activeProject != nil else { return }
+                        showingPhotoPicker = true
+                    },
+                    onAddCamera: {
+                        guard projectContext.activeProject != nil else { return }
+                        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                            attachmentErrorMessage = "Camera not available on this device."
+                            showAttachmentError = true
+                            return
+                        }
+                        showingCameraPicker = true
+                    },
                     onClearSkill: {
                         selectedSkill = nil
                     },
@@ -120,13 +136,20 @@ struct ChatDetailView: View {
             didUpdateAttachmentStatus: nil,
             didSendMessage: { draft in
                 Task {
+                    let attachmentsSnapshot = attachments
+                    let selectedSkillSnapshot = selectedSkill
+
+                    await MainActor.run {
+                        selectedSkill = nil
+                        attachments = []
+                    }
+
                     guard let project = projectContext.activeProject else {
                         await viewModel.sendMessage(draft.text)
                         return
                     }
 
-                    let attachmentsSnapshot = attachments
-                    let skillSlug = selectedSkill?.slug
+                    let skillSlug = selectedSkillSnapshot?.slug
                     let hasLocalFiles = attachmentsSnapshot.contains { attachment in
                         if case .localFile = attachment { return true }
                         return false
@@ -150,17 +173,12 @@ struct ChatDetailView: View {
 
                         let prompt = ChatSkillPromptBuilder.build(
                             message: draft.text,
-                            skillName: selectedSkill.map { SkillNameFormatter.displayName(from: $0.name) },
+                            skillName: selectedSkillSnapshot.map { SkillNameFormatter.displayName(from: $0.name) },
                             skillSlug: skillSlug,
                             fileReferences: references
                         )
 
                         await viewModel.sendMessage(prompt)
-
-                        await MainActor.run {
-                            selectedSkill = nil
-                            attachments = []
-                        }
                     } catch {
                         await MainActor.run {
                             attachmentErrorMessage = error.localizedDescription
@@ -328,6 +346,41 @@ struct ChatDetailView: View {
                     addAttachment(attachment)
                 })
             }
+            .sheet(isPresented: $showingPhotoPicker) {
+                PhotoLibraryPicker(
+                    selectionLimit: 0,
+                    directoryName: "chat-attachments",
+                    onComplete: { staged, error in
+                        for item in staged {
+                            addAttachment(.localFile(displayName: item.displayName, localURL: item.localURL))
+                        }
+                        if let error {
+                            attachmentErrorMessage = error.localizedDescription
+                            showAttachmentError = true
+                        }
+                        showingPhotoPicker = false
+                    },
+                    onCancel: {
+                        showingPhotoPicker = false
+                    }
+                )
+            }
+            .sheet(isPresented: $showingCameraPicker) {
+                CameraPicker(
+                    onImage: { image in
+                        showingCameraPicker = false
+                        handleCameraImage(image)
+                    },
+                    onCancel: {
+                        showingCameraPicker = false
+                    },
+                    onError: { error in
+                        showingCameraPicker = false
+                        attachmentErrorMessage = error.localizedDescription
+                        showAttachmentError = true
+                    }
+                )
+            }
             .fileImporter(
                 isPresented: $showingLocalFileImporter,
                 allowedContentTypes: [.item],
@@ -446,6 +499,29 @@ struct ChatDetailView: View {
         }
     }
 
+    private func handleCameraImage(_ image: UIImage) {
+        Task {
+            do {
+                let staged = try await Task.detached(priority: .userInitiated) {
+                    try ImageAttachmentStager.stageImage(
+                        from: image,
+                        preferredName: nil,
+                        directoryName: "chat-attachments"
+                    )
+                }.value
+
+                await MainActor.run {
+                    addAttachment(.localFile(displayName: staged.displayName, localURL: staged.localURL))
+                }
+            } catch {
+                await MainActor.run {
+                    attachmentErrorMessage = error.localizedDescription
+                    showAttachmentError = true
+                }
+            }
+        }
+    }
+
     private func stageLocalFile(_ url: URL) throws -> URL {
         let didAccess = url.startAccessingSecurityScopedResource()
         defer {
@@ -521,6 +597,8 @@ private struct ExyteChatInputComposer: View {
     let onAddSkill: () -> Void
     let onAddProjectFile: () -> Void
     let onAddLocalFile: () -> Void
+    let onAddPhotoLibrary: () -> Void
+    let onAddCamera: () -> Void
     let onClearSkill: () -> Void
     let onRemoveAttachment: (UUID) -> Void
     let onSend: () -> Void
@@ -551,7 +629,7 @@ private struct ExyteChatInputComposer: View {
 
                         ForEach(attachments) { attachment in
                             ChatComposerChip(
-                                systemImage: "doc",
+                                systemImage: attachment.systemImageName,
                                 title: attachment.displayName,
                                 onRemove: {
                                     onRemoveAttachment(attachment.id)
@@ -572,6 +650,12 @@ private struct ExyteChatInputComposer: View {
                     }
                     Button(action: onAddLocalFile) {
                         Label("Local File", systemImage: "doc")
+                    }
+                    Button(action: onAddPhotoLibrary) {
+                        Label("Photo Library", systemImage: "photo.on.rectangle")
+                    }
+                    Button(action: onAddCamera) {
+                        Label("Take Photo", systemImage: "camera")
                     }
                 } label: {
                     Image(systemName: "plus.circle")

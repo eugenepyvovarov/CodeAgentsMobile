@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct FileBrowserView: View {
@@ -22,6 +23,8 @@ struct FileBrowserView: View {
     @State private var shareErrorMessage: String?
     @State private var showShareError = false
     @State private var showingUploadFileImporter = false
+    @State private var showingPhotoPicker = false
+    @State private var showingCameraPicker = false
     @State private var isUploadingFiles = false
     @State private var fileActionErrorMessage: String?
     @State private var showFileActionError = false
@@ -166,6 +169,41 @@ struct FileBrowserView: View {
         } message: {
             Text(fileActionErrorMessage ?? "Something went wrong.")
         }
+        .sheet(isPresented: $showingPhotoPicker) {
+            PhotoLibraryPicker(
+                selectionLimit: 0,
+                directoryName: "file-browser-uploads",
+                onComplete: { staged, error in
+                    if !staged.isEmpty {
+                        uploadStagedImages(staged)
+                    }
+                    if let error {
+                        fileActionErrorMessage = error.localizedDescription
+                        showFileActionError = true
+                    }
+                    showingPhotoPicker = false
+                },
+                onCancel: {
+                    showingPhotoPicker = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingCameraPicker) {
+            CameraPicker(
+                onImage: { image in
+                    showingCameraPicker = false
+                    handleCameraImage(image)
+                },
+                onCancel: {
+                    showingCameraPicker = false
+                },
+                onError: { error in
+                    showingCameraPicker = false
+                    fileActionErrorMessage = error.localizedDescription
+                    showFileActionError = true
+                }
+            )
+        }
         .fileImporter(
             isPresented: $showingUploadFileImporter,
             allowedContentTypes: [.item],
@@ -261,6 +299,23 @@ struct FileBrowserView: View {
                 showingUploadFileImporter = true
             } label: {
                 Label("Upload File", systemImage: "arrow.up.doc")
+            }
+
+            Button {
+                showingPhotoPicker = true
+            } label: {
+                Label("Upload Photo", systemImage: "photo.on.rectangle")
+            }
+
+            Button {
+                guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                    fileActionErrorMessage = "Camera not available on this device."
+                    showFileActionError = true
+                    return
+                }
+                showingCameraPicker = true
+            } label: {
+                Label("Take Photo", systemImage: "camera")
             }
             
             Divider()
@@ -358,6 +413,79 @@ struct FileBrowserView: View {
 
         isPreparingShare = false
         shareCandidate = nil
+    }
+
+    private func handleCameraImage(_ image: UIImage) {
+        Task {
+            do {
+                let staged = try await Task.detached(priority: .userInitiated) {
+                    try ImageAttachmentStager.stageImage(
+                        from: image,
+                        preferredName: nil,
+                        directoryName: "file-browser-uploads"
+                    )
+                }.value
+
+                await MainActor.run {
+                    uploadStagedImages([staged])
+                }
+            } catch {
+                await MainActor.run {
+                    fileActionErrorMessage = error.localizedDescription
+                    showFileActionError = true
+                }
+            }
+        }
+    }
+
+    private func uploadStagedImages(_ staged: [StagedImageAttachment]) {
+        guard let project = projectContext.activeProject else {
+            fileActionErrorMessage = FileBrowserError.noProject.localizedDescription
+            showFileActionError = true
+            return
+        }
+
+        let remoteDirectory = viewModel.currentPath
+        let existingNames = Set(viewModel.rootNodes.map(\.name))
+
+        Task {
+            await MainActor.run {
+                isUploadingFiles = true
+            }
+
+            var usedNames = existingNames
+            do {
+                for image in staged {
+                    let remoteName = uniqueFilename(originalName: image.displayName, taken: usedNames)
+                    usedNames.insert(remoteName)
+
+                    let remotePath = remoteDirectory.hasSuffix("/")
+                        ? "\(remoteDirectory)\(remoteName)"
+                        : "\(remoteDirectory)/\(remoteName)"
+
+                    try await RemoteFileUploadService.shared.uploadFile(
+                        localURL: image.localURL,
+                        remotePath: remotePath,
+                        in: project
+                    )
+                }
+
+                await viewModel.loadRemoteFiles()
+            } catch {
+                await MainActor.run {
+                    fileActionErrorMessage = error.localizedDescription
+                    showFileActionError = true
+                }
+            }
+
+            for image in staged {
+                try? FileManager.default.removeItem(at: image.localURL)
+            }
+
+            await MainActor.run {
+                isUploadingFiles = false
+            }
+        }
     }
 
     private func uploadLocalFiles(_ urls: [URL]) {
