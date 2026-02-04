@@ -54,6 +54,12 @@ final class ShortcutClaudeRunner {
         _ = ensureServer(metadata: metadata, modelContext: modelContext)
         let previousProject = projectContext.activeProject
         projectContext.setActiveProject(project)
+
+        if let mismatch = ClaudeProviderMismatchGuard.mismatch(for: project) {
+            throw ShortcutExecutionError.claudeFailure(
+                "Provider changed from \(mismatch.previous.displayName) to \(mismatch.current.displayName). Open the app and clear chat to continue, or switch back to \(mismatch.previous.displayName)."
+            )
+        }
         
         let chatViewModel = ChatViewModel()
         chatViewModel.configure(modelContext: modelContext, projectId: project.id)

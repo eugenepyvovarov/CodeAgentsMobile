@@ -15,12 +15,14 @@ struct ChatDetailView: View {
     let assistantLabel: String
     let userLabel: String = "You"
     @StateObject private var projectContext = ProjectContext.shared
+    @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
     @State private var scrollToBottomWorkItem: DispatchWorkItem?
     @State private var followUpScrollWorkItem: DispatchWorkItem?
     @State private var isVisible = false
     @FocusState private var isInputFocused: Bool
     @State private var selectedSkill: AgentSkill?
     @State private var showingSkillPicker = false
+    @State private var showingProviderSettings = false
     @State private var attachments: [ChatComposerAttachment] = []
     @State private var showingProjectFilePicker = false
     @State private var showingLocalFileImporter = false
@@ -182,6 +184,7 @@ struct ChatDetailView: View {
             chat
                 .onAppear {
                     isVisible = true
+                    viewModel.refreshProviderMismatch(for: projectContext.activeProject)
                     shouldAutoScrollToUnreadBottom = (projectContext.activeProject?.unreadCount ?? 0) > 0
                     maybeAutoScrollToBottomForUnread()
                     attemptMarkAsRead()
@@ -223,12 +226,15 @@ struct ChatDetailView: View {
                         requestScrollToBottom(force: true, followUpDelay: 0.3)
                     }
                 }
-                .modifier(ChatStatusPillModifier(lines: statusPillLines, isVisible: shouldShowStatusPill))
                 .onChange(of: projectContext.activeProject?.id) { _, _ in
                     selectedSkill = nil
                     attachments = []
                     isBottomMessageVisible = false
+                    viewModel.refreshProviderMismatch(for: projectContext.activeProject)
                     attemptMarkAsRead()
+                }
+                .onChange(of: claudeProviderConfigurationData) { _, _ in
+                    viewModel.refreshProviderMismatch(for: projectContext.activeProject)
                 }
         )
 
@@ -275,6 +281,22 @@ struct ChatDetailView: View {
         )
 
         return chatAlerts
+            .modifier(
+                ChatTopOverlayModifier(
+                    providerMismatch: viewModel.providerMismatch,
+                    statusLines: statusPillLines,
+                    showStatusPill: shouldShowStatusPill,
+                    onClearChat: { viewModel.clearChat() },
+                    onChangeProvider: { showingProviderSettings = true }
+                )
+            )
+            .sheet(isPresented: $showingProviderSettings) {
+                NavigationStack {
+                    ClaudeProviderSettingsView()
+                        .navigationTitle("Claude Provider")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
+            }
             .sheet(isPresented: $showingSkillPicker) {
                 if let projectId = projectContext.activeProject?.id {
                     ChatSkillPickerSheet(
@@ -666,23 +688,30 @@ private struct ChatStatusPillView: View {
     }
 }
 
-private struct ChatStatusPillModifier: ViewModifier {
-    let lines: [String]
-    let isVisible: Bool
+private struct ChatTopOverlayModifier: ViewModifier {
+    let providerMismatch: ClaudeProviderMismatch?
+    let statusLines: [String]
+    let showStatusPill: Bool
+    let onClearChat: () -> Void
+    let onChangeProvider: () -> Void
+
+    private var isVisible: Bool {
+        providerMismatch != nil || showStatusPill
+    }
 
     func body(content: Content) -> some View {
         Group {
             if #available(iOS 26.0, *) {
                 content
                     .safeAreaBar(edge: .top) {
-                        statusPill
+                        overlayContent
                     }
             } else {
                 if isVisible {
                     content
                         .toolbarBackground(.hidden, for: .navigationBar)
                         .safeAreaInset(edge: .top, spacing: 0) {
-                            statusPillInset
+                            overlayInset
                         }
                 } else {
                     content
@@ -692,21 +721,41 @@ private struct ChatStatusPillModifier: ViewModifier {
     }
 
     @ViewBuilder
-    private var statusPill: some View {
+    private var overlayContent: some View {
         if isVisible {
-            ChatStatusPillView(lines: lines)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+            VStack(spacing: 6) {
+                if let providerMismatch {
+                    ClaudeProviderResetBannerView(
+                        mismatch: providerMismatch,
+                        onClearChat: onClearChat,
+                        onChangeProvider: onChangeProvider
+                    )
+                }
+                if showStatusPill {
+                    ChatStatusPillView(lines: statusLines)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
     }
 
     @ViewBuilder
-    private var statusPillInset: some View {
+    private var overlayInset: some View {
         if isVisible {
-            HStack {
-                ChatStatusPillView(lines: lines)
+            VStack(spacing: 6) {
+                if let providerMismatch {
+                    ClaudeProviderResetBannerView(
+                        mismatch: providerMismatch,
+                        onClearChat: onClearChat,
+                        onChangeProvider: onChangeProvider
+                    )
+                }
+                if showStatusPill {
+                    ChatStatusPillView(lines: statusLines)
+                }
             }
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 4)
         }

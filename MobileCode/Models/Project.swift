@@ -60,6 +60,12 @@ final class RemoteProject {
     var proxyVersion: String?
     var proxyStartedAt: String?
 
+    // MARK: - Claude Provider Tracking
+
+    /// Raw provider value (`ClaudeModelProvider.rawValue`) recorded after the last successful chat result.
+    /// Used to detect when the user switches providers and requires a chat reset to continue.
+    var lastSuccessfulClaudeProviderRawValue: String?
+
     // MARK: - Unread Tracking (per-device)
 
     /// Conversation identifier associated with unread cursors.
