@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6 (Unreleased)
 
 ### Chat
 - Use the active agent name in chat UI (no more “Claude” labels).
