@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Chat
+- Use the active agent name in chat UI (no more “Claude” labels).
+- When switching AI providers, existing chats now require a reset before you can continue (shows a banner with actions).
+
+### Attachments & Media
+- Add a photo library picker for image attachments.
+- Improve image preview rendering, sizing, and caching.
+
+### Fixes
+- Fix attachment chip clearing.
+- Fix heatmap layout issues.
+
 ## 1.5 (2026-01-30)
 
 ### Highlights
