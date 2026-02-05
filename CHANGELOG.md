@@ -5,10 +5,14 @@
 ### Chat
 - Use the active agent name in chat UI (no more “Claude” labels).
 - When switching AI providers, existing chats now require a reset before you can continue (shows a banner with actions).
+- Render richer “embedded UI” blocks in chat messages (with more stable media loading).
 
 ### Attachments & Media
-- Add a photo library picker for image attachments.
-- Improve image preview rendering, sizing, and caching.
+- Add camera + photo library pickers for image attachments.
+- Improve image preview rendering, sizing, caching, and prefetching.
+
+### Files
+- Add a file browser for easier navigation and sharing.
 
 ### Fixes
 - Fix attachment chip clearing.
