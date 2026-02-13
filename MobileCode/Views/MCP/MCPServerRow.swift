@@ -46,17 +46,9 @@ struct MCPServerRow: View {
             
             // Server details
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(cleanServerName(server.displayName))
-                        .font(.headline)
-                        .lineLimit(1)
-                    
-                    if server.isManagedSchedulerServer {
-                        Label("Built-in", systemImage: "lock.fill")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
+                Text(cleanServerName(server.displayName))
+                    .font(.headline)
+                    .lineLimit(1)
                 
                 Text(server.fullCommand)
                     .font(.caption)
@@ -77,29 +69,32 @@ struct MCPServerRow: View {
             
             Spacer()
             
-            // Status text
             VStack(alignment: .trailing, spacing: 2) {
-                Text(server.status.displayText)
-                    .font(.caption)
-                    .foregroundColor(server.status == .checking ? .primary : statusColor)
-                
-                if server.status == .checking {
-                    ProgressView()
-                        .scaleEffect(0.7)
+                HStack(spacing: 8) {
+                    if server.status == .checking {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    } else {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 9, height: 9)
+                    }
+
+                    if server.isManagedSchedulerServer {
+                        Image(systemName: "lock.fill")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-                
+
                 if server.isRemote {
                     Label("Remote", systemImage: "network")
                         .font(.caption2)
                         .foregroundColor(.blue)
                 }
             }
-            
-            if server.isManagedSchedulerServer {
-                Image(systemName: "lock.fill")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else {
+
+            if !server.isManagedSchedulerServer {
                 // Edit indicator
                 Image(systemName: "chevron.right")
                     .font(.caption)
