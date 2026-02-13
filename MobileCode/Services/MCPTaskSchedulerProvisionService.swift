@@ -71,9 +71,10 @@ final class MCPTaskSchedulerProvisionService {
         do {
             try await mcpService.removeServer(named: name, scope: scope, for: project, allowManaged: true)
         } catch {
-            if let errorMessage = error.localizedDescription.lowercased(),
-               errorMessage.contains("not found") ||
-               errorMessage.contains("no server named") {
+            let errorMessage = error.localizedDescription.lowercased()
+            if errorMessage.contains("not found") ||
+               errorMessage.contains("no server named") ||
+               errorMessage.contains("no mcp server found") {
                 return
             }
             throw error
