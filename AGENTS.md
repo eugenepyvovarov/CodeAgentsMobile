@@ -46,6 +46,9 @@
 
 ## Proxy Deployment
 Local proxy repo: `~/Projects/mobilecode.swift/MobileCode/server/claude-proxy`
+
+- Policy: For proxy-only work, do not push iOS app code changes. If a task is MCP/proxy/server related and does not touch `MobileCode/` UI/app logic, update only `server/claude-proxy` and avoid committing/pushing iOS project files.
+
 1. Commit proxy code changes to the proxy repo.
 2. Push the proxy repo to GitHub.
 3. SSH to the test server (if available).
