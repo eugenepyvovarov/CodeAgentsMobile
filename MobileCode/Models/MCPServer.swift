@@ -26,6 +26,7 @@ struct MCPServer: Identifiable, Equatable {
     var status: MCPStatus = .unknown
 
     static let managedSchedulerServerName = "codeagents-scheduled-tasks"
+    static let managedSchedulerDisplayName = "Task Scheduler"
     
     /// Expected built-in MCP server that powers scheduled-task tooling.
     /// Update this value if the proxy exposes scheduler tools through a different
@@ -42,6 +43,14 @@ struct MCPServer: Identifiable, Equatable {
     /// Whether this server is the managed scheduler MCP server required by the app.
     var isManagedSchedulerServer: Bool {
         return name == MCPServer.managedSchedulerServerName
+    }
+
+    /// Display name used in the UI.
+    var displayName: String {
+        if isManagedSchedulerServer {
+            return MCPServer.managedSchedulerDisplayName
+        }
+        return name
     }
     
     /// Whether this server matches the managed scheduler MCP definition.
