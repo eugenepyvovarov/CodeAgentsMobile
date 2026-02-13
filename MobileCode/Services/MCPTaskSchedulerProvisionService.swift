@@ -18,7 +18,7 @@ final class MCPTaskSchedulerProvisionService {
     func ensureManagedSchedulerServer(for project: RemoteProject) async throws {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         let configPath = "\(project.path)/.mcp.json"
-        let expectedServer = managedSchedulerServerConfiguration()
+        let expectedServer = managedSchedulerServerConfiguration(for: project)
         
         var root = try await loadProjectMCPRoot(from: session, at: configPath)
         var mcpServers = root["mcpServers"] as? [String: Any] ?? [:]
@@ -34,17 +34,58 @@ final class MCPTaskSchedulerProvisionService {
         try await writeProjectMCPRoot(root, to: session, at: configPath)
     }
     
-    private func managedSchedulerServerConfiguration() -> [String: Any] {
-        var config: [String: Any] = [
-            "type": "http",
-            "url": MCPServer.managedSchedulerServer.url ?? ""
+    private func managedSchedulerServerConfiguration(for project: RemoteProject) -> [String: Any] {
+        let agentId = resolvedAgentId(for: project)
+        let conversationId = resolvedConversationId(for: project)
+        var headers: [String: String] = [
+            "x-codeagents-agent-id": agentId,
+            "x-codeagents-project-id": agentId,
+            "x-codeagents-conversation-id": conversationId,
+            "x-codeagents-project-path": project.path,
+            "x-codeagents-cwd": project.path
         ]
-        
-        if let headers = MCPServer.managedSchedulerServer.headers, !headers.isEmpty {
-            config["headers"] = headers
+
+        if let staticHeaders = MCPServer.managedSchedulerServer.headers {
+            headers.merge(staticHeaders) { _, new in new }
         }
-        
+
+        let config: [String: Any] = [
+            "type": "http",
+            "url": MCPServer.managedSchedulerServer.url ?? "",
+            "headers": headers
+        ]
         return config
+    }
+
+    private func resolvedAgentId(for project: RemoteProject) -> String {
+        if let candidate = sanitizeProxyId(project.proxyAgentId) {
+            return candidate
+        }
+        return project.id.uuidString.lowercased()
+    }
+
+    private func resolvedConversationId(for project: RemoteProject) -> String {
+        if let candidate = sanitizeProxyId(project.proxyConversationId) {
+            return candidate
+        }
+        return "scheduler-\(project.id.uuidString.lowercased())"
+    }
+
+    private func sanitizeProxyId(_ raw: String?) -> String? {
+        guard let raw else {
+            return nil
+        }
+
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let pattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        guard trimmed.range(of: pattern, options: .regularExpression) != nil else {
+            return nil
+        }
+        return trimmed
     }
     
     private func loadProjectMCPRoot(
