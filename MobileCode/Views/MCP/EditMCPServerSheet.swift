@@ -96,13 +96,28 @@ struct EditMCPServerSheet: View {
             self._headers = State(initialValue: headers.map { HeaderVar(key: $0.key, value: $0.value) })
         }
     }
+
+    private var isManagedServer: Bool {
+        MCPServer.isManagedSchedulerServer(originalName)
+    }
     
     private var isValid: Bool {
-        if serverType == .local {
-            return !serverName.isEmpty && !command.isEmpty
-        } else {
-            return !serverName.isEmpty && !url.isEmpty
+        let normalizedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if MCPServer.isManagedSchedulerServer(normalizedName) && normalizedName != originalName {
+            return false
         }
+        
+        if serverType == .local {
+            return !normalizedName.isEmpty && !command.isEmpty
+        } else {
+            return !normalizedName.isEmpty && !url.isEmpty
+        }
+    }
+
+    private var isReservedNameCollision: Bool {
+        MCPServer.isManagedSchedulerServer(serverName.trimmingCharacters(in: .whitespacesAndNewlines))
+            && serverName.trimmingCharacters(in: .whitespacesAndNewlines) != originalName
     }
     
     private var hasChanges: Bool {
@@ -129,6 +144,7 @@ struct EditMCPServerSheet: View {
     }
     
     private var generatedCommand: String {
+        let normalizedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
         let editedServer: MCPServer
         
         if serverType == .local {
@@ -140,7 +156,7 @@ struct EditMCPServerSheet: View {
             finalArgs.append(contentsOf: args)
             
             editedServer = MCPServer(
-                name: serverName,
+                name: normalizedName,
                 command: parsedCommand,
                 args: finalArgs.isEmpty ? nil : finalArgs,
                 env: envVars.isEmpty ? nil : envVarsDict,
@@ -149,7 +165,7 @@ struct EditMCPServerSheet: View {
             )
         } else {
             editedServer = MCPServer(
-                name: serverName,
+                name: normalizedName,
                 command: nil,
                 args: nil,
                 env: nil,
@@ -164,6 +180,20 @@ struct EditMCPServerSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if isManagedServer {
+                    Section("Managed Server") {
+                        Text("This MCP server is managed by CodeAgents Mobile and cannot be edited here.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                } else if isReservedNameCollision {
+                    Section("Reserved Name") {
+                        Text("This name is reserved for the managed scheduler MCP server and cannot be assigned.")
+                            .font(.footnote)
+                            .foregroundColor(.orange)
+                    }
+                }
+                
                 Section("Server Type") {
                     Picker("Type", selection: $serverType) {
                         ForEach(ServerType.allCases, id: \.self) { type in
@@ -334,6 +364,7 @@ struct EditMCPServerSheet: View {
                     }
                 }
             }
+            .disabled(isManagedServer)
             .navigationTitle("Edit MCP Server")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -347,7 +378,7 @@ struct EditMCPServerSheet: View {
                     Button("Save") {
                         editServer()
                     }
-                    .disabled(!isValid || !hasChanges || isEditing)
+                    .disabled(!isValid || !hasChanges || isEditing || isManagedServer)
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -389,7 +420,7 @@ struct EditMCPServerSheet: View {
                 
                 // Update all fields with the detailed information
                 await MainActor.run {
-                    serverName = detailedServer.name
+                    serverName = detailedServer.name.trimmingCharacters(in: .whitespacesAndNewlines)
                     serverType = detailedServer.isRemote ? .remote : .local
                     originalScope = serverScope
                     scope = serverScope
@@ -427,11 +458,13 @@ struct EditMCPServerSheet: View {
     }
     
     private func editServer() {
+        guard !isManagedServer else { return }
         isEditing = true
         
         Task {
             do {
                 let editedServer: MCPServer
+                let normalizedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
                 
                 if serverType == .local {
                     // Parse command if it contains spaces
@@ -442,7 +475,7 @@ struct EditMCPServerSheet: View {
                     finalArgs.append(contentsOf: args)
                     
                     editedServer = MCPServer(
-                        name: serverName,
+                        name: normalizedName,
                         command: parsedCommand,
                         args: finalArgs.isEmpty ? nil : finalArgs,
                         env: envVars.isEmpty ? nil : envVarsDict,
@@ -451,7 +484,7 @@ struct EditMCPServerSheet: View {
                     )
                 } else {
                     editedServer = MCPServer(
-                        name: serverName,
+                        name: normalizedName,
                         command: nil,
                         args: nil,
                         env: nil,

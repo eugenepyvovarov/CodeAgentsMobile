@@ -24,6 +24,35 @@ struct MCPServer: Identifiable, Equatable {
     
     // Runtime status (not persisted in .mcp.json)
     var status: MCPStatus = .unknown
+
+    static let managedSchedulerServerName = "codeagents-scheduled-tasks"
+    
+    /// Expected built-in MCP server that powers scheduled-task tooling.
+    /// Update this value if the proxy exposes scheduler tools through a different
+    /// command or URL in your deployment.
+    static let managedSchedulerServer = MCPServer(
+        name: managedSchedulerServerName,
+        command: nil,
+        args: nil,
+        env: nil,
+        url: "http://127.0.0.1:8787/mcp",
+        headers: nil
+    )
+    
+    /// Whether this server is the managed scheduler MCP server required by the app.
+    var isManagedSchedulerServer: Bool {
+        return name == MCPServer.managedSchedulerServerName
+    }
+    
+    /// Whether this server matches the managed scheduler MCP definition.
+    func matchesManagedSchedulerDefinition() -> Bool {
+        return name == MCPServer.managedSchedulerServer.name &&
+            (command ?? "") == (MCPServer.managedSchedulerServer.command ?? "") &&
+            (args ?? []) == (MCPServer.managedSchedulerServer.args ?? []) &&
+            (env ?? [:]) == (MCPServer.managedSchedulerServer.env ?? [:]) &&
+            (url ?? "") == (MCPServer.managedSchedulerServer.url ?? "") &&
+            (headers ?? [:]) == (MCPServer.managedSchedulerServer.headers ?? [:])
+    }
     
     /// Server connection status
     enum MCPStatus: Equatable {
@@ -171,6 +200,10 @@ struct MCPServer: Identifiable, Equatable {
 
 // MARK: - Codable Support
 extension MCPServer {
+    static func isManagedSchedulerServer(_ name: String) -> Bool {
+        return name == managedSchedulerServerName
+    }
+
     /// Configuration structure matching .mcp.json format
     struct Configuration: Codable {
         // Local server properties
