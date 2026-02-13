@@ -92,7 +92,7 @@ struct MCPServer: Identifiable, Equatable {
     enum MCPScope: String, CaseIterable {
         case project = "project"  // Shared via .mcp.json (default)
         case local = "local"      // Private to this machine
-        case global = "global"    // Available across all projects
+        case global = "user"      // Synonym for user-level config in current CLI
         
         var displayName: String {
             switch self {
