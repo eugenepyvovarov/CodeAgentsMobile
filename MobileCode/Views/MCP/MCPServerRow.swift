@@ -46,9 +46,17 @@ struct MCPServerRow: View {
             
             // Server details
             VStack(alignment: .leading, spacing: 4) {
-                Text(cleanServerName(server.name))
-                    .font(.headline)
-                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Text(cleanServerName(server.displayName))
+                        .font(.headline)
+                        .lineLimit(1)
+                    
+                    if server.isManagedSchedulerServer {
+                        Label("Built-in", systemImage: "lock.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
                 
                 Text(server.fullCommand)
                     .font(.caption)
@@ -87,10 +95,16 @@ struct MCPServerRow: View {
                 }
             }
             
-            // Edit indicator
-            Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            if server.isManagedSchedulerServer {
+                Image(systemName: "lock.fill")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                // Edit indicator
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
         .padding(.vertical, 4)
     }
