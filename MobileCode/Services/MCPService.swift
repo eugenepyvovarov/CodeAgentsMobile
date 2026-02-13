@@ -22,8 +22,7 @@ class MCPService: ObservableObject {
         // Get server list and status from claude mcp list
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
 
-        let scopeArgument = scope.flatMap { $0 == .project ? nil : $0.rawValue }
-        let command = "cd \"\(project.path)\" && claude mcp list\(scopeArgument.map { " -s \($0)" } ?? "")"
+        let command = "cd \"\(project.path)\" && claude mcp list"
         
         SSHLogger.log("Fetching MCP servers: \(command)", level: .debug)
         
@@ -146,8 +145,7 @@ class MCPService: ObservableObject {
     func getServerDetails(named name: String, scope: MCPServer.MCPScope? = nil, for project: RemoteProject) async throws -> (server: MCPServer, scope: MCPServer.MCPScope)? {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
 
-        let scopeArgument = scope.flatMap { $0 == .project ? nil : $0.rawValue }
-        let command = "cd \"\(project.path)\" && claude mcp get\(scopeArgument.map { " -s \($0)" } ?? "") \"\(name)\""
+        let command = "cd \"\(project.path)\" && claude mcp get \"\(name)\""
         
         SSHLogger.log("Getting MCP server details: \(command)", level: .debug)
         
