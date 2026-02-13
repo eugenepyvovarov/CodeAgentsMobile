@@ -66,14 +66,20 @@ struct AddMCPServerSheet: View {
     }
     
     private var isValid: Bool {
+        let normalizedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
         if serverType == .local {
-            return !serverName.isEmpty && !command.isEmpty
+            return !normalizedName.isEmpty && !command.isEmpty && !managedNameConflict
         } else {
-            return !serverName.isEmpty && !url.isEmpty
+            return !normalizedName.isEmpty && !url.isEmpty && !managedNameConflict
         }
+    }
+
+    private var managedNameConflict: Bool {
+        MCPServer.isManagedSchedulerServer(serverName.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     
     private var generatedCommand: String {
+        let normalizedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
         let server: MCPServer
         
         if serverType == .local {
@@ -85,7 +91,7 @@ struct AddMCPServerSheet: View {
             finalArgs.append(contentsOf: args)
             
             server = MCPServer(
-                name: serverName,
+                name: normalizedName,
                 command: parsedCommand,
                 args: finalArgs.isEmpty ? nil : finalArgs,
                 env: envVars.isEmpty ? nil : Dictionary(uniqueKeysWithValues: envVars.map { ($0.key, $0.value) }),
@@ -94,7 +100,7 @@ struct AddMCPServerSheet: View {
             )
         } else {
             server = MCPServer(
-                name: serverName,
+                name: normalizedName,
                 command: nil,
                 args: nil,
                 env: nil,
@@ -333,10 +339,17 @@ struct AddMCPServerSheet: View {
     }
     
     private func addServer() {
+        guard !managedNameConflict else {
+            errorMessage = "This server name is reserved for a managed server and cannot be used."
+            showError = true
+            return
+        }
+
         isAdding = true
         
         Task {
             do {
+                let normalizedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
                 let server: MCPServer
                 
                 if serverType == .local {
@@ -351,7 +364,7 @@ struct AddMCPServerSheet: View {
                     finalArgs.append(contentsOf: args)
                     
                     server = MCPServer(
-                        name: serverName,
+                        name: normalizedName,
                         command: parsedCommand,
                         args: finalArgs.isEmpty ? nil : finalArgs,
                         env: cleanedEnvVars.isEmpty ? nil : Dictionary(uniqueKeysWithValues: cleanedEnvVars.map { ($0.key, $0.value) }),
@@ -363,7 +376,7 @@ struct AddMCPServerSheet: View {
                     let cleanedHeaders = headers.filter { !$0.key.isEmpty && !$0.value.isEmpty }
                     
                     server = MCPServer(
-                        name: serverName,
+                        name: normalizedName,
                         command: nil,
                         args: nil,
                         env: nil,

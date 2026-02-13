@@ -62,7 +62,14 @@ class MCPService: ObservableObject {
     }
     
     /// Add a new MCP server using claude mcp add-json
-    func addServer(_ server: MCPServer, scope: MCPServer.MCPScope = .project, for project: RemoteProject) async throws {
+    func addServer(_ server: MCPServer, scope: MCPServer.MCPScope = .project, for project: RemoteProject, allowManaged: Bool = false) async throws {
+        if MCPServer.isManagedSchedulerServer(server.name) && !server.matchesManagedSchedulerDefinition() {
+            throw MCPServiceError.managedServerNotModifiable
+        }
+        guard allowManaged || !MCPServer.isManagedSchedulerServer(server.name) else {
+            throw MCPServiceError.managedServerNotModifiable
+        }
+
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         
         // Generate the claude mcp add-json command
@@ -84,7 +91,11 @@ class MCPService: ObservableObject {
     }
     
     /// Remove an MCP server
-    func removeServer(named name: String, scope: MCPServer.MCPScope? = nil, for project: RemoteProject) async throws {
+    func removeServer(named name: String, scope: MCPServer.MCPScope? = nil, for project: RemoteProject, allowManaged: Bool = false) async throws {
+        guard allowManaged || !MCPServer.isManagedSchedulerServer(name) else {
+            throw MCPServiceError.managedServerNotModifiable
+        }
+
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
 
         let scopeArgument = scope.flatMap { $0 == .project ? nil : $0.rawValue }
@@ -103,12 +114,26 @@ class MCPService: ObservableObject {
     }
     
     /// Edit an MCP server by removing and re-adding it
-    func editServer(oldName: String, newServer: MCPServer, scope: MCPServer.MCPScope = .project, for project: RemoteProject) async throws {
+    func editServer(oldName: String, newServer: MCPServer, scope: MCPServer.MCPScope = .project, for project: RemoteProject, allowManaged: Bool = false) async throws {
+        guard allowManaged || !MCPServer.isManagedSchedulerServer(oldName) else {
+            throw MCPServiceError.managedServerNotModifiable
+        }
+        if MCPServer.isManagedSchedulerServer(newServer.name) && !newServer.matchesManagedSchedulerDefinition() {
+            throw MCPServiceError.managedServerNotModifiable
+        }
+        guard allowManaged || !MCPServer.isManagedSchedulerServer(newServer.name) else {
+            throw MCPServiceError.managedServerNotModifiable
+        }
+
+        if MCPServer.isManagedSchedulerServer(oldName) && !newServer.matchesManagedSchedulerDefinition() {
+            throw MCPServiceError.managedServerNotModifiable
+        }
+
         // First remove the old server
-        try await removeServer(named: oldName, scope: scope, for: project)
+        try await removeServer(named: oldName, scope: scope, for: project, allowManaged: true)
         
         // Then add the new configuration
-        try await addServer(newServer, scope: scope, for: project)
+        try await addServer(newServer, scope: scope, for: project, allowManaged: allowManaged)
     }
     
     /// Get details of a specific server
@@ -157,6 +182,7 @@ enum MCPServiceError: LocalizedError {
     case invalidConfiguration(String)
     case permissionDenied
     case serverNotFound
+    case managedServerNotModifiable
     
     var errorDescription: String? {
         switch self {
@@ -170,6 +196,8 @@ enum MCPServiceError: LocalizedError {
             return "Permission denied to modify .mcp.json"
         case .serverNotFound:
             return "MCP server not found"
+        case .managedServerNotModifiable:
+            return "This MCP server is managed by the app and cannot be changed here."
         }
     }
 }

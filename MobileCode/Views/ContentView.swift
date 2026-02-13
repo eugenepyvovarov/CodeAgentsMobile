@@ -63,6 +63,9 @@ struct ContentView: View {
                 break
             }
         }
+        .onChange(of: projectContext.activeProject?.id) { _, _ in
+            configureManagers()
+        }
     }
     
     private func configureManagers() {
@@ -71,6 +74,16 @@ struct ContentView: View {
         // Start cloud-init monitoring for servers that need it
         startCloudInitMonitoring()
         ShortcutSyncService.shared.sync(using: modelContext)
+        
+        if let project = projectContext.activeProject {
+            Task {
+                do {
+                    try await MCPTaskSchedulerProvisionService.shared.ensureManagedSchedulerServer(for: project)
+                } catch {
+                    SSHLogger.log("Failed to ensure managed scheduler MCP server: \(error)", level: .warning)
+                }
+            }
+        }
     }
     
     private func startCloudInitMonitoring() {

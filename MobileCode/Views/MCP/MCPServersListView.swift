@@ -92,7 +92,12 @@ struct MCPServersListView: View {
                                 MCPServerRow(server: server)
                                     .contentShape(Rectangle())
                                     .onTapGesture {
-                                        editingServer = server
+                                        if server.isManagedSchedulerServer {
+                                            errorMessage = "The managed MCP server is required and cannot be edited."
+                                            showError = true
+                                        } else {
+                                            editingServer = server
+                                        }
                                     }
                             }
                             .onDelete(perform: deleteServers)
@@ -165,6 +170,7 @@ struct MCPServersListView: View {
         isLoading = true
         
         do {
+            try await MCPTaskSchedulerProvisionService.shared.ensureManagedSchedulerServer(for: project)
             let newServers = try await mcpService.fetchServers(for: project)
             // Update servers after fetch completes
             servers = newServers
@@ -183,9 +189,24 @@ struct MCPServersListView: View {
     private func deleteServers(at offsets: IndexSet) {
         guard let project = project else { return }
         
-        // Remove from local list immediately for better UX
-        let serversToDelete = offsets.map { servers[$0] }
-        servers.remove(atOffsets: offsets)
+        let managedIndexes = offsets.filter { servers[$0].isManagedSchedulerServer }
+        if !managedIndexes.isEmpty {
+            errorMessage = "The managed MCP server is required and cannot be removed."
+            showError = true
+        }
+        
+        let deletableIndexes = offsets.filter { !servers[$0].isManagedSchedulerServer }
+        if deletableIndexes.isEmpty {
+            return
+        }
+        
+        // Remove non-managed entries immediately for better UX
+        let serversToDelete = deletableIndexes.compactMap { index in
+            index < servers.count ? servers[index] : nil
+        }
+        for index in deletableIndexes.sorted(by: >) {
+            servers.remove(at: index)
+        }
         
         Task {
             var hasError = false
