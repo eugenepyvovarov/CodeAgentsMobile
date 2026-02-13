@@ -37,12 +37,14 @@ final class MCPTaskSchedulerProvisionService {
     private func managedSchedulerServerConfiguration(for project: RemoteProject) -> [String: Any] {
         let agentId = resolvedAgentId(for: project)
         let conversationId = resolvedConversationId(for: project)
+        let localTimeZone = TimeZone.current.identifier
         var headers: [String: String] = [
             "x-codeagents-agent-id": agentId,
             "x-codeagents-project-id": agentId,
             "x-codeagents-conversation-id": conversationId,
             "x-codeagents-project-path": project.path,
-            "x-codeagents-cwd": project.path
+            "x-codeagents-cwd": project.path,
+            "x-codeagents-time-zone": localTimeZone
         ]
 
         if let staticHeaders = MCPServer.managedSchedulerServer.headers {
