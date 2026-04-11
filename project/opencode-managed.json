@@ -19,5 +19,12 @@
   },
   "deployment": {
     "command": "/bin/bash ./scripts/deploy.sh"
+  },
+  "demo": {
+    "workflow": ".gitea/workflows/demo-evidence.yml",
+    "supported": false,
+    "provider": "playwright",
+    "platform": "web",
+    "record_video": true
   }
 }

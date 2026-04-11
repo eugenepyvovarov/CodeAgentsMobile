@@ -1,0 +1,130 @@
+name: OpenCode Demo Evidence
+
+"on":
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Pull request number to generate demo evidence for
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  demo-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        run: |
+          PYTHON_BIN="$(command -v python3)"
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "DEMO_EVIDENCE_VENV=$PWD/.demo-evidence-venv" >> "$GITHUB_ENV"
+
+      - name: Load managed demo settings
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+          assert config["schema_version"] == 1
+          controller = config["controller"]
+          assert controller["repository"]
+          assert controller["setup_branch"]
+          review = config["review"]
+          assert review["persona"]
+          assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
+          validation = config["validation"]
+          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
+          demo = config["demo"]
+          assert demo["workflow"] == ".gitea/workflows/demo-evidence.yml"
+          assert isinstance(demo["supported"], bool)
+          assert demo["provider"]
+          assert demo["platform"]
+          assert demo["record_video"] is True
+          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
+          repo = os.environ["OPENCODE_REPO_NAME"].strip()
+          raw = f"{owner}-{repo}".lower()
+          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+          project_key = re.sub(r"-{2,}", "-", project_key)
+          if not project_key:
+              raise SystemExit("Unable to derive project key from repository owner/name")
+          github_env = os.environ["GITHUB_ENV"]
+          with open(github_env, "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
+              handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
+              handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
+              handle.write(f"OPENCODE_DEMO_SUPPORTED={'true' if demo['supported'] else 'false'}\n")
+              handle.write(f"OPENCODE_DEMO_PROVIDER={demo['provider']}\n")
+              handle.write(f"OPENCODE_DEMO_PLATFORM={demo['platform']}\n")
+              handle.write(f"OPENCODE_DEMO_RECORD_VIDEO={'true' if demo['record_video'] else 'false'}\n")
+          print("managed demo config ok")
+          PY
+
+      - name: Skip bootstrap setup PR demo workflow
+        if: ${{ github.event_name == 'pull_request' && github.head_ref == env.OPENCODE_SETUP_BRANCH }}
+        run: echo "Bootstrap setup PR detected; skipping demo evidence workflow."
+
+      - name: Skip unsupported repositories
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && (env.OPENCODE_DEMO_SUPPORTED != 'true' || env.OPENCODE_DEMO_PROVIDER != 'playwright' || env.OPENCODE_DEMO_PLATFORM != 'web') }}
+        run: echo "Managed repository does not declare supported web Playwright demo evidence; skipping."
+
+      - name: Check out controller repository
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_DEMO_SUPPORTED == 'true' && env.OPENCODE_DEMO_PROVIDER == 'playwright' && env.OPENCODE_DEMO_PLATFORM == 'web' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install controller dependencies
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_DEMO_SUPPORTED == 'true' && env.OPENCODE_DEMO_PROVIDER == 'playwright' && env.OPENCODE_DEMO_PLATFORM == 'web' }}
+        run: |
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m venv "$DEMO_EVIDENCE_VENV"
+          "$DEMO_EVIDENCE_VENV/bin/python" --version
+          "$DEMO_EVIDENCE_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
+
+      - name: Run demo evidence worker
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_DEMO_SUPPORTED == 'true' && env.OPENCODE_DEMO_PROVIDER == 'playwright' && env.OPENCODE_DEMO_PLATFORM == 'web' }}
+        run: |
+          cat > .opencode-demo-project.json <<EOF
+          {
+            "project_key": "$OPENCODE_PROJECT_KEY",
+            "repo_owner": "$OPENCODE_REPO_OWNER",
+            "repo_name": "$OPENCODE_REPO_NAME"
+          }
+          EOF
+          "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
+            --repo-root "$PWD" \
+            --config "$PWD/.opencode-demo-project.json" \
+            --automation-config "$PWD/controller/automation.json" \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --event-path "$GITHUB_EVENT_PATH"

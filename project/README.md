@@ -8,6 +8,10 @@ This repository is bootstrap-managed by the OpenCode Gitea automation controller
 - `scripts/coverage.sh` is the canonical coverage entrypoint used by the review workflow.
 - `scripts/deploy.sh` is the canonical deployment entrypoint when this repo needs deploy automation.
 
+For managed web repositories that already use Playwright, `.gitea/workflows/demo-evidence.yml` is the dedicated demo workflow for PR evidence. It stays separate from validation and review, records browser video by default, runs only the `Demo Scenario` repo command declared in the linked issue spec for that PR, and uses the standard Linux web runner path rather than requiring a native recording host.
+
+Demo evidence support in v1 is web-only Playwright automation. Older demo scripts may remain in the repository after a task ships, but they are not reused automatically on later tasks. A later UI task must explicitly point its `Demo Scenario` at the same command if that scenario should be reused.
+
 The bootstrap-managed `scripts/ci.sh`, `scripts/coverage.sh`, and `scripts/deploy.sh` files are placeholders. Replace them with the real project-specific commands before you rely on validation, coverage, or deployment automation.
 
 Persona behavior is controlled from the automation controller repository, not from this managed repository.
