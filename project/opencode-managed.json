@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "managed_by": "opencode-gitea-automation",
+  "controller": {
+    "repository": "eugene/opencode-gitea-automation",
+    "setup_branch": "opencode/bootstrap-managed"
+  },
+  "review": {
+    "persona": "review-bot",
+    "persona_token_secret": "OPENCODE_PERSONA_REVIEW_BOT_TOKEN"
+  },
+  "validation": {
+    "workflow": ".gitea/workflows/pr-tests.yml",
+    "runner": "swift-xcode",
+    "command": "/bin/bash ./scripts/ci.sh"
+  },
+  "coverage": {
+    "command": "/bin/bash ./scripts/coverage.sh"
+  },
+  "deployment": {
+    "command": "/bin/bash ./scripts/deploy.sh"
+  }
+}

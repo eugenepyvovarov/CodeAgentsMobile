@@ -1,0 +1,147 @@
+name: OpenCode Review
+
+"on":
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  pull_request_review:
+  issue_comment:
+    types:
+      - created
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review-bot:
+    runs-on: macos-ultramac
+    timeout-minutes: 10
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_REVIEW_PERSONA: "review-bot"
+      OPENCODE_REVIEW_PERSONA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        run: |
+          HOST_HOME="$(eval echo "~$(whoami)")"
+          echo "HOST_HOME=$HOST_HOME" >> "$GITHUB_ENV"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "$HOST_HOME/.opencode/bin" >> "$GITHUB_PATH"
+          echo "PYTHON_BIN=/opt/homebrew/bin/python3.14" >> "$GITHUB_ENV"
+          echo "REVIEW_BOT_VENV=$PWD/.review-bot-venv" >> "$GITHUB_ENV"
+
+      - name: Load managed review settings
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+          controller = config["controller"]
+          assert controller["repository"]
+          assert controller["setup_branch"]
+          review = config["review"]
+          assert review["persona"] == "review-bot"
+          assert review["persona_token_secret"] == "OPENCODE_PERSONA_REVIEW_BOT_TOKEN"
+          validation = config["validation"]
+          assert validation["command"]
+          coverage = config["coverage"]
+          assert coverage["command"]
+          deployment = config["deployment"]
+          assert deployment["command"]
+          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
+          repo = os.environ["OPENCODE_REPO_NAME"].strip()
+          raw = f"{owner}-{repo}".lower()
+          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+          project_key = re.sub(r"-{2,}", "-", project_key)
+          if not project_key:
+              raise SystemExit("Unable to derive project key from repository owner/name")
+          github_env = os.environ["GITHUB_ENV"]
+          with open(github_env, "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
+              handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
+              handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
+              handle.write(f"OPENCODE_VALIDATION_COMMAND={validation['command']}\n")
+              handle.write(f"OPENCODE_COVERAGE_COMMAND={coverage['command']}\n")
+              handle.write(f"OPENCODE_DEPLOYMENT_COMMAND={deployment['command']}\n")
+          print("managed review config ok")
+          PY
+
+      - name: Skip bootstrap setup PR review
+        if: ${{ github.event_name == 'pull_request' && github.head_ref == env.OPENCODE_SETUP_BRANCH }}
+        run: echo "Bootstrap setup PR detected; skipping controller review worker."
+
+      - name: Check out controller repository
+        if: ${{ github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install controller dependencies
+        if: ${{ github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH }}
+        run: |
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m venv "$REVIEW_BOT_VENV"
+          "$REVIEW_BOT_VENV/bin/python" --version
+          "$REVIEW_BOT_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
+
+      - name: Verify host OpenCode runtime
+        if: ${{ github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH }}
+        run: |
+          export HOME="$HOST_HOME"
+          export PATH="/opt/homebrew/bin:$HOME/.opencode/bin:$PATH"
+          zsh -lc '
+            echo "HOME=$HOME"
+            echo "PATH=$PATH"
+            which opencode
+            opencode --version
+            opencode auth list
+            "'"$REVIEW_BOT_VENV"'/bin/python" --version
+          '
+
+      - name: Run review worker
+        if: ${{ github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH }}
+        run: |
+          export HOME="$HOST_HOME"
+          export PATH="/opt/homebrew/bin:$HOME/.opencode/bin:$PATH"
+          zsh -lc '
+            cat > .opencode-review-project.json <<EOF
+            {
+              "project_key": "'"$OPENCODE_PROJECT_KEY"'",
+              "repo_owner": "'"$OPENCODE_REPO_OWNER"'",
+              "repo_name": "'"$OPENCODE_REPO_NAME"'",
+              "review_local_test_command": "'"$OPENCODE_VALIDATION_COMMAND"'",
+              "review_local_coverage_command": "'"$OPENCODE_COVERAGE_COMMAND"'"
+            }
+            EOF
+            "'"$REVIEW_BOT_VENV"'/bin/python" controller/scripts/review_worker.py \
+              --repo-root . \
+              --config "$PWD/.opencode-review-project.json" \
+              --automation-config "$PWD/controller/automation.json" \
+              --event-name "$GITHUB_EVENT_NAME" \
+              --event-path "$GITHUB_EVENT_PATH"
+          '
