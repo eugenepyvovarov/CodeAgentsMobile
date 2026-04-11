@@ -29,11 +29,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
       - name: Load managed validation settings
         run: |
           python3 - <<'PY'
@@ -60,7 +55,7 @@ jobs:
 
       - name: Show Python version
         if: ${{ github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH }}
-        run: python --version
+        run: python3 --version
 
       - name: Run repository validation command
         if: ${{ github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH }}
