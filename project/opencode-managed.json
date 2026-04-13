@@ -20,6 +20,24 @@
   "deployment": {
     "command": "/bin/bash ./scripts/deploy.sh"
   },
+  "preview": {
+    "supported": false,
+    "artifact": {
+      "command": "/bin/bash ./scripts/artifact.sh"
+    },
+    "preview": {
+      "command": "/bin/bash ./scripts/preview.sh"
+    },
+    "destroy": {
+      "command": "/bin/bash ./scripts/destroy-preview.sh"
+    },
+    "result": {
+      "format": "json",
+      "transport": "stdout",
+      "required_fields": ["backend_url"],
+      "optional_fields": ["health_url", "reviewer_notes"]
+    }
+  },
   "demo": {
     "workflow": ".gitea/workflows/demo-evidence.yml",
     "supported": false,

@@ -95,6 +95,12 @@ jobs:
         if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && (env.OPENCODE_DEMO_SUPPORTED != 'true' || env.OPENCODE_DEMO_PROVIDER != 'playwright' || env.OPENCODE_DEMO_PLATFORM != 'web') }}
         run: echo "Managed repository does not declare supported web Playwright demo evidence; skipping."
 
+      - name: Set up Node.js
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_DEMO_SUPPORTED == 'true' && env.OPENCODE_DEMO_PROVIDER == 'playwright' && env.OPENCODE_DEMO_PLATFORM == 'web' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Check out controller repository
         if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_DEMO_SUPPORTED == 'true' && env.OPENCODE_DEMO_PROVIDER == 'playwright' && env.OPENCODE_DEMO_PLATFORM == 'web' }}
         uses: actions/checkout@v4
