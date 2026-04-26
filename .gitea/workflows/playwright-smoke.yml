@@ -1,0 +1,85 @@
+name: OpenCode Playwright Smoke
+
+"on":
+  workflow_call:
+    inputs:
+      head_sha:
+        description: Expected pull request head SHA to smoke test
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: Expected pull request head SHA to smoke test
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  playwright-smoke:
+    runs-on: ubuntu-latest
+    container:
+      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1
+      credentials:
+        username: review-bot
+        password: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    timeout-minutes: 15
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - name: Load managed Playwright smoke settings
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+          assert config["schema_version"] == 1
+          controller = config["controller"]
+          assert controller["repository"]
+          assert controller["setup_branch"]
+          review = config["review"]
+          assert review["persona"]
+          assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
+          validation = config["validation"]
+          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
+          playwright_smoke = config["playwright_smoke"]
+          assert playwright_smoke["workflow"] == ".gitea/workflows/playwright-smoke.yml"
+          assert isinstance(playwright_smoke["supported"], bool)
+          assert playwright_smoke["provider"]
+          assert playwright_smoke["platform"]
+          assert playwright_smoke["command"]
+          github_env = os.environ["GITHUB_ENV"]
+          with open(github_env, "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
+              handle.write(
+                  f"OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED={'true' if playwright_smoke['supported'] else 'false'}\n"
+              )
+              handle.write(f"OPENCODE_PLAYWRIGHT_SMOKE_PROVIDER={playwright_smoke['provider']}\n")
+              handle.write(f"OPENCODE_PLAYWRIGHT_SMOKE_PLATFORM={playwright_smoke['platform']}\n")
+              handle.write(f"OPENCODE_PLAYWRIGHT_SMOKE_COMMAND={playwright_smoke['command']}\n")
+          print("managed Playwright smoke config ok")
+          PY
+
+      - name: Skip repositories without supported web Playwright smoke coverage
+        if: ${{ env.OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED != 'true' || env.OPENCODE_PLAYWRIGHT_SMOKE_PROVIDER != 'playwright' || env.OPENCODE_PLAYWRIGHT_SMOKE_PLATFORM != 'web' }}
+        run: echo "Managed repository does not declare supported web Playwright smoke coverage; skipping."
+
+      - name: Run repository Playwright smoke command
+        if: ${{ env.OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED == 'true' && env.OPENCODE_PLAYWRIGHT_SMOKE_PROVIDER == 'playwright' && env.OPENCODE_PLAYWRIGHT_SMOKE_PLATFORM == 'web' }}
+        run: /bin/bash -lc "$OPENCODE_PLAYWRIGHT_SMOKE_COMMAND"

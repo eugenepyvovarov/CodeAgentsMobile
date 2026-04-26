@@ -9,6 +9,16 @@
     "persona": "review-bot",
     "persona_token_secret": "OPENCODE_PERSONA_REVIEW_BOT_TOKEN"
   },
+  "pr_prep": {
+    "workflow": ".gitea/workflows/pr-prep.yml",
+    "authoritative": true,
+    "stages": [
+      "validation"
+    ],
+    "handoff": {
+      "review_workflow": ".gitea/workflows/review-bot.yml"
+    }
+  },
   "validation": {
     "workflow": ".gitea/workflows/pr-tests.yml",
     "runner": "swift-xcode",
@@ -19,6 +29,17 @@
   },
   "deployment": {
     "command": "/bin/bash ./scripts/deploy.sh"
+  },
+  "production_artifact": {
+    "workflow": ".gitea/workflows/production-artifact.yml",
+    "supported": false,
+    "command": "/bin/bash ./scripts/artifact.sh",
+    "result": {
+      "format": "json",
+      "transport": "stdout",
+      "required_fields": ["published_artifacts"],
+      "optional_fields": ["summary"]
+    }
   },
   "preview": {
     "supported": false,
@@ -44,5 +65,19 @@
     "provider": "playwright",
     "platform": "web",
     "record_video": true
+  },
+  "visual_validation": {
+    "workflow": ".gitea/workflows/visual-validation.yml",
+    "supported": false,
+    "provider": "playwright",
+    "platform": "web",
+    "full_page": true
+  },
+  "playwright_smoke": {
+    "workflow": ".gitea/workflows/playwright-smoke.yml",
+    "supported": false,
+    "provider": "playwright",
+    "platform": "web",
+    "command": "/bin/bash ./scripts/playwright-smoke.sh"
   }
 }

@@ -1,24 +1,19 @@
-name: OpenCode Final Demo Media
+name: OpenCode Production Artifact
 
 "on":
   workflow_dispatch:
     inputs:
       pull_request_number:
-        description: Merged pull request number to finalize demo media from the retained preview
+        description: Merged pull request number to build the pinned production artifact for
         required: true
 
 permissions:
   contents: read
 
 jobs:
-  demo-evidence:
+  production-artifact:
     runs-on: ubuntu-latest
-    container:
-      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1
-      credentials:
-        username: review-bot
-        password: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       GIT_SSL_NO_VERIFY: "1"
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -41,8 +36,9 @@ jobs:
         run: |
           PYTHON_BIN="$(command -v python3)"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "PRODUCTION_ARTIFACT_VENV=$PWD/.production-artifact-venv" >> "$GITHUB_ENV"
 
-      - name: Load managed demo settings
+      - name: Load managed production-artifact settings
         run: |
           python3 - <<'PY'
           import json
@@ -60,14 +56,11 @@ jobs:
           assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
           validation = config["validation"]
           assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
-          preview = config["preview"]
-          assert isinstance(preview["supported"], bool)
-          demo = config["demo"]
-          assert demo["workflow"] == ".gitea/workflows/demo-evidence.yml"
-          assert isinstance(demo["supported"], bool)
-          assert demo["provider"]
-          assert demo["platform"]
-          assert demo["record_video"] is True
+          production_artifact = config["production_artifact"]
+          assert production_artifact["workflow"] == ".gitea/workflows/production-artifact.yml"
+          assert isinstance(production_artifact["supported"], bool)
+          assert production_artifact["result"]["format"] == "json"
+          assert production_artifact["result"]["transport"] == "stdout"
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
           raw = f"{owner}-{repo}".lower()
@@ -80,24 +73,22 @@ jobs:
               handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
               handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
               handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
-              handle.write(f"OPENCODE_PREVIEW_SUPPORTED={'true' if preview['supported'] else 'false'}\n")
-              handle.write(f"OPENCODE_DEMO_SUPPORTED={'true' if demo['supported'] else 'false'}\n")
-              handle.write(f"OPENCODE_DEMO_PROVIDER={demo['provider']}\n")
-              handle.write(f"OPENCODE_DEMO_PLATFORM={demo['platform']}\n")
-              handle.write(f"OPENCODE_DEMO_RECORD_VIDEO={'true' if demo['record_video'] else 'false'}\n")
-          print("managed demo config ok")
+              handle.write(
+                  f"OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED={'true' if production_artifact['supported'] else 'false'}\n"
+              )
+          print("managed production-artifact config ok")
           PY
 
-      - name: Skip bootstrap setup PR demo workflow
+      - name: Skip bootstrap setup PR production-artifact workflow
         if: ${{ github.ref_name == env.OPENCODE_SETUP_BRANCH }}
-        run: echo "Bootstrap setup PR detected; skipping final demo media workflow."
+        run: echo "Bootstrap setup PR detected; skipping production-artifact workflow."
 
-      - name: Skip repositories without preview-backed current-preview demo support
-        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && (env.OPENCODE_PREVIEW_SUPPORTED != 'true' || env.OPENCODE_DEMO_SUPPORTED != 'true' || env.OPENCODE_DEMO_PROVIDER != 'playwright' || env.OPENCODE_DEMO_PLATFORM != 'web') }}
-        run: echo "Managed repository does not declare supported retained-preview web Playwright final demo media; skipping."
+      - name: Skip repositories without production-artifact support
+        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED != 'true' }}
+        run: echo "Managed repository does not declare supported production-artifact finalization; skipping."
 
       - name: Check out controller repository
-        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_DEMO_SUPPORTED == 'true' && env.OPENCODE_DEMO_PROVIDER == 'playwright' && env.OPENCODE_DEMO_PLATFORM == 'web' }}
+        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
@@ -105,19 +96,27 @@ jobs:
           token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
           fetch-depth: 0
 
-      - name: Run retained-preview final demo media worker
-        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_DEMO_SUPPORTED == 'true' && env.OPENCODE_DEMO_PROVIDER == 'playwright' && env.OPENCODE_DEMO_PLATFORM == 'web' }}
+      - name: Install controller dependencies
+        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED == 'true' }}
         run: |
-          cat > .opencode-demo-project.json <<EOF
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m venv "$PRODUCTION_ARTIFACT_VENV"
+          "$PRODUCTION_ARTIFACT_VENV/bin/python" --version
+          "$PRODUCTION_ARTIFACT_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
+
+      - name: Run pinned production-artifact worker
+        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED == 'true' }}
+        run: |
+          cat > .opencode-production-artifact-project.json <<EOF
           {
             "project_key": "$OPENCODE_PROJECT_KEY",
             "repo_owner": "$OPENCODE_REPO_OWNER",
             "repo_name": "$OPENCODE_REPO_NAME"
           }
           EOF
-          "$PYTHON_BIN" controller/scripts/demo_evidence_worker.py \
+          "$PRODUCTION_ARTIFACT_VENV/bin/python" controller/scripts/production_artifact_worker.py \
             --repo-root "$PWD" \
-            --config "$PWD/.opencode-demo-project.json" \
+            --config "$PWD/.opencode-production-artifact-project.json" \
             --automation-config "$PWD/controller/automation.json" \
             --event-name "$GITHUB_EVENT_NAME" \
             --event-path "$GITHUB_EVENT_PATH"
