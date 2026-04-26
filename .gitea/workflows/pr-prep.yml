@@ -1,0 +1,196 @@
+name: OpenCode PR Prep
+run-name: OpenCode PR Prep pr=${{ inputs.pull_request_number }} head=${{ inputs.head_sha }}
+
+"on":
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Pull request number to prepare for review
+        required: true
+      head_sha:
+        description: Expected pull request head SHA
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      validation_supported: ${{ steps.managed-config.outputs.validation_supported }}
+      playwright_smoke_supported: ${{ steps.managed-config.outputs.playwright_smoke_supported }}
+      visual_validation_supported: ${{ steps.managed-config.outputs.visual_validation_supported }}
+      controller_repository: ${{ steps.managed-config.outputs.controller_repository }}
+      setup_branch: ${{ steps.managed-config.outputs.setup_branch }}
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out default branch workflow definition
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve managed PR-prep stages
+        id: managed-config
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+          assert config["schema_version"] == 1
+          controller = config["controller"]
+          assert controller["repository"]
+          assert controller["setup_branch"]
+          pr_prep = config["pr_prep"]
+          assert pr_prep["workflow"] == ".gitea/workflows/pr-prep.yml"
+          assert pr_prep["authoritative"] is True
+          stages = pr_prep["stages"]
+          assert "validation" in stages
+          validation = config["validation"]
+          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
+          assert validation["command"]
+          playwright_smoke = config["playwright_smoke"]
+          assert playwright_smoke["workflow"] == ".gitea/workflows/playwright-smoke.yml"
+          assert playwright_smoke["command"]
+          smoke_stage = (
+              "playwright-smoke" in stages
+              and playwright_smoke["supported"] is True
+              and playwright_smoke["provider"] == "playwright"
+              and playwright_smoke["platform"] == "web"
+          )
+          preview = config["preview"]
+          visual_validation = config["visual_validation"]
+          assert visual_validation["workflow"] == ".gitea/workflows/visual-validation.yml"
+          visual_stage = (
+              "visual-validation" in stages
+              and preview["supported"] is True
+              and visual_validation["supported"] is True
+              and visual_validation["provider"] == "playwright"
+              and visual_validation["platform"] == "web"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write("validation_supported=true\n")
+              handle.write(f"playwright_smoke_supported={'true' if smoke_stage else 'false'}\n")
+              handle.write(f"visual_validation_supported={'true' if visual_stage else 'false'}\n")
+              handle.write(f"controller_repository={controller['repository']}\n")
+              handle.write(f"setup_branch={controller['setup_branch']}\n")
+          print("managed PR-prep config ok")
+          PY
+
+  validation:
+    needs: preflight
+    runs-on: macos-ultramac
+    timeout-minutes: 10
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+
+      - name: Load managed validation settings
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+          validation = config["validation"]
+          assert validation["command"]
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_VALIDATION_COMMAND={validation['command']}\n")
+          PY
+
+      - name: Run repository validation command
+        run: /bin/bash -lc "$OPENCODE_VALIDATION_COMMAND"
+
+  playwright-smoke:
+    needs:
+      - preflight
+      - validation
+    if: ${{ needs.preflight.outputs.playwright_smoke_supported == 'true' }}
+    uses: ./.gitea/workflows/playwright-smoke.yml
+    with:
+      head_sha: ${{ inputs.head_sha }}
+    secrets: inherit
+
+  visual-validation:
+    needs:
+      - preflight
+      - validation
+      - playwright-smoke
+    if: ${{ always() && needs.preflight.result == 'success' && needs.validation.result == 'success' && (needs['playwright-smoke'].result == 'success' || needs['playwright-smoke'].result == 'skipped') && needs.preflight.outputs.visual_validation_supported == 'true' }}
+    uses: ./.gitea/workflows/visual-validation.yml
+    with:
+      pull_request_number: ${{ inputs.pull_request_number }}
+      head_sha: ${{ inputs.head_sha }}
+    secrets: inherit
+
+  handoff:
+    needs:
+      - preflight
+      - validation
+      - playwright-smoke
+      - visual-validation
+    if: ${{ always() && needs.preflight.result == 'success' && needs.validation.result == 'success' && (needs['playwright-smoke'].result == 'success' || needs['playwright-smoke'].result == 'skipped') && (needs['visual-validation'].result == 'success' || needs['visual-validation'].result == 'skipped') }}
+    runs-on: macos-ultramac
+    timeout-minutes: 10
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_REVIEW_PERSONA: "review-bot"
+      OPENCODE_REVIEW_PERSONA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out controller repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.preflight.outputs.controller_repository }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Explicit review handoff
+        run: |
+          python3 controller/scripts/pr_prep_worker.py \
+            --repo-root "$PWD" \
+            --automation-config "$PWD/controller/automation.json" \
+            --managed-config "$PWD/project/opencode-managed.json" \
+            --pull-request-number "${{ inputs.pull_request_number }}" \
+            --head-sha "${{ inputs.head_sha }}" \
+            --handoff-review

@@ -1,0 +1,192 @@
+name: OpenCode Preview-Backed Visual Validation Capture
+
+"on":
+  workflow_call:
+    inputs:
+      pull_request_number:
+        description: Pull request number to generate visual validation for
+        required: true
+        type: string
+      head_sha:
+        description: Expected pull request head SHA to validate
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Pull request number to generate visual validation for
+        required: true
+      head_sha:
+        description: Expected pull request head SHA to validate
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  visual-validation:
+    runs-on: macos-ultramac
+    timeout-minutes: 15
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          validate_python_bin() {
+            local candidate="$1"
+            local probe_dir=""
+
+            probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/visual-validation-venv.XXXXXX")"
+            if "$candidate" -m venv "$probe_dir" >/dev/null 2>&1; then
+              rm -rf "$probe_dir"
+              return 0
+            fi
+            rm -rf "$probe_dir"
+            return 1
+          }
+          resolve_python_bin() {
+            local resolved=""
+            local candidate
+
+            if [[ -n "${OPENCODE_PYTHON_BIN:-}" ]]; then
+              if [[ ! -x "${OPENCODE_PYTHON_BIN}" ]]; then
+                echo "Configured OPENCODE_PYTHON_BIN is not executable: ${OPENCODE_PYTHON_BIN}" >&2
+                exit 1
+              fi
+              if ! validate_python_bin "${OPENCODE_PYTHON_BIN}"; then
+                echo "Configured OPENCODE_PYTHON_BIN cannot create virtual environments: ${OPENCODE_PYTHON_BIN}" >&2
+                exit 1
+              fi
+              printf '%s\n' "${OPENCODE_PYTHON_BIN}"
+              return 0
+            fi
+
+            for candidate in python3.14 python3.13 python3.12 python3; do
+              resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+              if [[ -n "${resolved}" ]] && validate_python_bin "${resolved}"; then
+                printf '%s\n' "${resolved}"
+                return 0
+              fi
+            done
+
+            echo "No supported Python interpreter with a working venv module found in PATH." >&2
+            exit 1
+          }
+          PYTHON_BIN="$(resolve_python_bin)"
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Load managed visual validation settings
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+          assert config["schema_version"] == 1
+          controller = config["controller"]
+          assert controller["repository"]
+          assert controller["setup_branch"]
+          review = config["review"]
+          assert review["persona"]
+          assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
+          validation = config["validation"]
+          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
+          preview = config["preview"]
+          assert isinstance(preview["supported"], bool)
+          visual_validation = config["visual_validation"]
+          assert visual_validation["workflow"] == ".gitea/workflows/visual-validation.yml"
+          assert isinstance(visual_validation["supported"], bool)
+          assert visual_validation["provider"]
+          assert visual_validation["platform"]
+          assert visual_validation["full_page"] is True
+          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
+          repo = os.environ["OPENCODE_REPO_NAME"].strip()
+          raw = f"{owner}-{repo}".lower()
+          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+          project_key = re.sub(r"-{2,}", "-", project_key)
+          if not project_key:
+              raise SystemExit("Unable to derive project key from repository owner/name")
+          github_env = os.environ["GITHUB_ENV"]
+          with open(github_env, "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
+              handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
+              handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
+              handle.write(f"OPENCODE_PREVIEW_SUPPORTED={'true' if preview['supported'] else 'false'}\n")
+              handle.write(f"OPENCODE_VISUAL_VALIDATION_SUPPORTED={'true' if visual_validation['supported'] else 'false'}\n")
+              handle.write(f"OPENCODE_VISUAL_VALIDATION_PROVIDER={visual_validation['provider']}\n")
+              handle.write(f"OPENCODE_VISUAL_VALIDATION_PLATFORM={visual_validation['platform']}\n")
+          print("managed visual validation config ok")
+          PY
+
+      - name: Skip bootstrap setup PR visual validation workflow
+        if: ${{ github.event_name == 'pull_request' && github.head_ref == env.OPENCODE_SETUP_BRANCH }}
+        run: echo "Bootstrap setup PR detected; skipping visual validation workflow."
+
+      - name: Skip repositories without preview-backed visual validation capture support
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && (env.OPENCODE_PREVIEW_SUPPORTED != 'true' || env.OPENCODE_VISUAL_VALIDATION_SUPPORTED != 'true' || env.OPENCODE_VISUAL_VALIDATION_PROVIDER != 'playwright' || env.OPENCODE_VISUAL_VALIDATION_PLATFORM != 'web') }}
+        run: echo "Managed repository does not declare supported preview-backed web Playwright visual validation capture; skipping."
+
+      - name: Authenticate shared Playwright evidence runner image pull access
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PROVIDER == 'playwright' && env.OPENCODE_VISUAL_VALIDATION_PLATFORM == 'web' }}
+        run: echo "${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}" | docker login git.ultramac.work -u "review-bot" --password-stdin
+
+      - name: Check out controller repository
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PROVIDER == 'playwright' && env.OPENCODE_VISUAL_VALIDATION_PLATFORM == 'web' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure live preview state access on host runners
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PROVIDER == 'playwright' && env.OPENCODE_VISUAL_VALIDATION_PLATFORM == 'web' }}
+        run: |
+          if [[ -z "${OPENCODE_STATE_ROOT:-}" ]]; then
+            DEFAULT_PREVIEW_STATE_ROOT="${HOME}/www/10-opencode-gitea-automation-state/preview"
+            if [[ -d "${DEFAULT_PREVIEW_STATE_ROOT}" ]]; then
+              echo "OPENCODE_STATE_ROOT=${DEFAULT_PREVIEW_STATE_ROOT}" >> "$GITHUB_ENV"
+            fi
+          fi
+
+          LIVE_CONTROLLER_ROOT="${HOME}/www/10-opencode-gitea-automation"
+          if [[ -d "${LIVE_CONTROLLER_ROOT}" ]]; then
+            printf '%s\n' "OPENCODE_PREVIEW_ROUTER_RELOAD_COMMAND=/bin/zsh -lc 'cd ${LIVE_CONTROLLER_ROOT} && docker compose exec -T preview-router caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'" >> "$GITHUB_ENV"
+          fi
+      - name: Run preview-backed visual validation capture worker
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PROVIDER == 'playwright' && env.OPENCODE_VISUAL_VALIDATION_PLATFORM == 'web' }}
+        run: |
+          cat > .opencode-visual-validation-project.json <<EOF
+          {
+            "project_key": "$OPENCODE_PROJECT_KEY",
+            "repo_owner": "$OPENCODE_REPO_OWNER",
+            "repo_name": "$OPENCODE_REPO_NAME"
+          }
+          EOF
+          "$PYTHON_BIN" controller/scripts/visual_validation_worker.py \
+            --repo-root "$PWD" \
+            --config "$PWD/.opencode-visual-validation-project.json" \
+            --automation-config "$PWD/controller/automation.json" \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --event-path "$GITHUB_EVENT_PATH"
