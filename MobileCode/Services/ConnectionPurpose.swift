@@ -10,6 +10,7 @@ import Foundation
 /// Defines the purpose of an SSH connection to enable connection pooling
 enum ConnectionPurpose: String, CaseIterable {
     case claude = "claude"
+    case opencode = "opencode"
     case terminal = "terminal"
     case fileOperations = "files"
     case cloudInit = "cloudInit"
@@ -19,6 +20,8 @@ enum ConnectionPurpose: String, CaseIterable {
         switch self {
         case .claude:
             return "Claude Code"
+        case .opencode:
+            return "OpenCode"
         case .terminal:
             return "Terminal"
         case .fileOperations:
