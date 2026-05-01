@@ -19,15 +19,16 @@ final class OpenCodeProviderService: ObservableObject {
     static let shared = OpenCodeProviderService()
 
     private let sshService: SSHService
-    private let client: OpenCodeClient
+    private let clientOverride: OpenCodeClient?
 
-    init(sshService: SSHService? = nil, client: OpenCodeClient = OpenCodeClient()) {
+    init(sshService: SSHService? = nil, client: OpenCodeClient? = nil) {
         self.sshService = sshService ?? ServiceManager.shared.sshService
-        self.client = client
+        self.clientOverride = client
     }
 
     func status(for project: RemoteProject) async throws -> OpenCodeProviderStatus {
         let session = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
         let resolvedProviders = try await client.providerList(sshSession: session, directory: project.path)
         let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session, directory: project.path)
 
@@ -49,6 +50,7 @@ final class OpenCodeProviderService: ObservableObject {
         try KeychainManager.shared.storeOpenCodeAPIKey(trimmedKey, providerID: trimmedProviderID)
 
         let session = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
         _ = try await client.setProviderAPIKey(
             sshSession: session,
             providerID: trimmedProviderID,
@@ -66,5 +68,11 @@ enum OpenCodeProviderServiceError: LocalizedError {
         case .invalidInput:
             return "Provider ID and API key are required."
         }
+    }
+}
+
+private extension OpenCodeProviderService {
+    func client(for project: RemoteProject) -> OpenCodeClient {
+        clientOverride ?? OpenCodeClientFactory.client(for: project.serverId)
     }
 }

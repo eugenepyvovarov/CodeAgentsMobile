@@ -52,9 +52,10 @@ struct CreateCloudServerView: View {
     @State private var showGenerateKey = false
     @State private var showSizeSelector = false
     @State private var serverCreationTask: Task<Void, Never>?
-    @State private var proxyInstallLogs: [String] = []
-    @State private var proxyInstallError: String?
-    @State private var proxyInstallTask: Task<Void, Never>?
+    @State private var runtimeSetupLogs: [String] = []
+    @State private var runtimeSetupError: String?
+    @State private var runtimeVerificationTask: Task<Void, Never>?
+    @State private var pendingLocalServerID: UUID?
     
     // Server provisioning status tracking
     @State private var provisioningStatus = ServerProvisioningStatus()
@@ -65,7 +66,7 @@ struct CreateCloudServerView: View {
         var lastChecked: Date = Date()
         var sshAccessible: Bool = false
         var cloudInitCheckAttempts: Int = 0
-        var proxyInstallStatus: String = "waiting" // "waiting", "running", "done", "error", "skipped"
+        var runtimeSetupStatus: String = "waiting" // "waiting", "running", "done", "error", "skipped"
     }
     
     enum CreationStatus: Equatable {
@@ -73,7 +74,7 @@ struct CreateCloudServerView: View {
         case creating
         case polling(serverId: String)
         case checkingCloudInit(serverId: String)
-        case installingProxy(serverId: String)
+        case verifyingRuntime(serverId: String)
         case success
         case failed(error: String)
     }
@@ -84,7 +85,7 @@ struct CreateCloudServerView: View {
                 if isLoadingOptions {
                     ProgressView("Loading options...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if creationStatus == .creating || creationStatus.isPolling || creationStatus.isCheckingCloudInit || creationStatus.isInstallingProxy || creationStatus == .success {
+                } else if creationStatus == .creating || creationStatus.isPolling || creationStatus.isCheckingCloudInit || creationStatus.isVerifyingRuntime || creationStatus == .success {
                     creationProgressView
                 } else {
                     createServerForm
@@ -124,10 +125,13 @@ struct CreateCloudServerView: View {
                     serverCreationTask = nil
                     print("⚠️ Cancelled inline monitoring task on view disappear")
                 }
-                if proxyInstallTask != nil {
-                    proxyInstallTask?.cancel()
-                    proxyInstallTask = nil
-                    print("Cancelled proxy install task on view disappear")
+                if runtimeVerificationTask != nil {
+                    runtimeVerificationTask?.cancel()
+                    runtimeVerificationTask = nil
+                    print("Cancelled OpenCode runtime verification task on view disappear")
+                }
+                if savedServer == nil, let pendingLocalServerID {
+                    try? KeychainManager.shared.deleteOpenCodeServerPassword(for: pendingLocalServerID)
                 }
             }
             .sheet(isPresented: $showGenerateKey) {
@@ -330,7 +334,7 @@ struct CreateCloudServerView: View {
             .animation(.easeInOut(duration: 0.3), value: creationStatus)
             
             VStack(spacing: 8) {
-                Text(creationStatus == .success ? "Server ready!" : creationStatus.isInstallingProxy ? "Installing Claude Proxy..." : "Creating your server")
+                Text(creationStatus == .success ? "Server ready!" : creationStatus.isVerifyingRuntime ? "Verifying OpenCode..." : "Creating your server")
                     .font(.title2)
                     .fontWeight(.semibold)
                     .animation(.easeInOut(duration: 0.3), value: creationStatus)
@@ -341,8 +345,8 @@ struct CreateCloudServerView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .transition(.opacity)
-                } else if creationStatus.isInstallingProxy {
-                    Text("Setting up the Claude proxy daemon on your server")
+                } else if creationStatus.isVerifyingRuntime {
+                    Text("Checking the OpenCode runtime on your server")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -350,7 +354,7 @@ struct CreateCloudServerView: View {
                         .font(.caption)
                         .foregroundColor(.secondary.opacity(0.7))
                 } else if case .checkingCloudInit = creationStatus {
-                    Text("Installing packages and configuring Claude Code...")
+                    Text("Installing packages and configuring OpenCode...")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -480,25 +484,25 @@ struct CreateCloudServerView: View {
 
                         Divider()
 
-                        // Claude Proxy Install
+                        // OpenCode Runtime
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Image(systemName: "bolt.circle")
                                     .foregroundColor(.blue)
-                                Text("Claude Proxy Install")
+                                Text("OpenCode Runtime")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
                                 Spacer()
-                                if provisioningStatus.proxyInstallStatus == "done" {
+                                if provisioningStatus.runtimeSetupStatus == "done" {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(.green)
-                                } else if provisioningStatus.proxyInstallStatus == "error" {
+                                } else if provisioningStatus.runtimeSetupStatus == "error" {
                                     Image(systemName: "exclamationmark.circle.fill")
                                         .foregroundColor(.red)
-                                } else if provisioningStatus.proxyInstallStatus == "skipped" {
+                                } else if provisioningStatus.runtimeSetupStatus == "skipped" {
                                     Image(systemName: "minus.circle.fill")
                                         .foregroundColor(.orange)
-                                } else if provisioningStatus.proxyInstallStatus != "waiting" {
+                                } else if provisioningStatus.runtimeSetupStatus != "waiting" {
                                     ProgressView()
                                         .scaleEffect(0.7)
                                 }
@@ -506,11 +510,11 @@ struct CreateCloudServerView: View {
                             
                             HStack(spacing: 8) {
                                 ProgressStep(
-                                    title: provisioningStatus.proxyInstallStatus == "waiting" ? "Waiting" :
-                                           provisioningStatus.proxyInstallStatus == "running" ? "Installing" :
-                                           provisioningStatus.proxyInstallStatus == "done" ? "Complete" :
-                                           provisioningStatus.proxyInstallStatus == "skipped" ? "Skipped" : "Error",
-                                    isComplete: provisioningStatus.proxyInstallStatus == "done"
+                                    title: provisioningStatus.runtimeSetupStatus == "waiting" ? "Waiting" :
+                                           provisioningStatus.runtimeSetupStatus == "running" ? "Verifying" :
+                                           provisioningStatus.runtimeSetupStatus == "done" ? "Ready" :
+                                           provisioningStatus.runtimeSetupStatus == "skipped" ? "Skipped" : "Error",
+                                    isComplete: provisioningStatus.runtimeSetupStatus == "done"
                                 )
                             }
                             .padding(.leading, 28)
@@ -524,14 +528,14 @@ struct CreateCloudServerView: View {
                 .animation(.easeInOut, value: createdServer)
             }
 
-            if !proxyInstallLogs.isEmpty {
+            if !runtimeSetupLogs.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Installer Output")
+                    Text("Runtime Check Output")
                         .font(.subheadline)
                         .fontWeight(.medium)
                     
                     ScrollView {
-                        Text(proxyInstallLogs.joined(separator: "\n"))
+                        Text(runtimeSetupLogs.joined(separator: "\n"))
                             .font(.system(.caption, design: .monospaced))
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -543,8 +547,8 @@ struct CreateCloudServerView: View {
                 }
             }
 
-            if let proxyInstallError = proxyInstallError {
-                Text(proxyInstallError)
+            if let runtimeSetupError = runtimeSetupError {
+                Text(runtimeSetupError)
                     .font(.footnote)
                     .foregroundColor(.red)
                     .multilineTextAlignment(.center)
@@ -553,21 +557,21 @@ struct CreateCloudServerView: View {
             Spacer()
             
             // Action buttons based on status
-            if provisioningStatus.proxyInstallStatus == "error" {
+            if provisioningStatus.runtimeSetupStatus == "error" {
                 VStack(spacing: 12) {
-                    Button("Retry Install") {
-                        retryProxyInstall()
+                    Button("Retry Check") {
+                        retryRuntimeVerification()
                     }
                     .buttonStyle(.borderedProminent)
                     
                     Button("Skip for Now") {
-                        skipProxyInstall()
+                        skipRuntimeVerification()
                     }
                     .font(.footnote)
                     .foregroundColor(.secondary)
                 }
                 .transition(.opacity)
-                .animation(.easeInOut(duration: 0.3), value: provisioningStatus.proxyInstallStatus)
+                .animation(.easeInOut(duration: 0.3), value: provisioningStatus.runtimeSetupStatus)
             } else if creationStatus == .success {
                 // Server is fully ready - show Add Agent button
                 VStack(spacing: 12) {
@@ -873,10 +877,24 @@ struct CreateCloudServerView: View {
         isProvisioning = true  // Start provisioning
         print("🚀 Starting server provisioning - isProvisioning set to true")
         provisioningStatus = ServerProvisioningStatus()
-        proxyInstallLogs = []
-        proxyInstallError = nil
-        proxyInstallTask?.cancel()
-        proxyInstallTask = nil
+        runtimeSetupLogs = []
+        runtimeSetupError = nil
+        runtimeVerificationTask?.cancel()
+        runtimeVerificationTask = nil
+        let localServerID = UUID()
+        pendingLocalServerID = localServerID
+
+        let openCodeServerPassword: String
+        do {
+            openCodeServerPassword = try OpenCodeServerPasswordGenerator.generate()
+            try KeychainManager.shared.storeOpenCodeServerPassword(openCodeServerPassword, for: localServerID)
+        } catch {
+            creationStatus = .failed(error: error.localizedDescription)
+            errorMessage = error.localizedDescription
+            showError = true
+            isProvisioning = false
+            return
+        }
         
         // Cancel any existing task
         serverCreationTask?.cancel()
@@ -927,7 +945,10 @@ struct CreateCloudServerView: View {
                 }
                 
                 // Generate cloud-init script with SSH keys
-                let cloudInitScript = generateCloudInit(with: selectedSSHKeys)
+                let cloudInitScript = generateCloudInit(
+                    with: selectedSSHKeys,
+                    openCodeServerPassword: openCodeServerPassword
+                )
                 
                 // Create the server
                 let server = try await service.createServer(
@@ -948,6 +969,7 @@ struct CreateCloudServerView: View {
                 await pollServerStatus(serverId: server.id, service: service)
                 
             } catch {
+                try? KeychainManager.shared.deleteOpenCodeServerPassword(for: localServerID)
                 await MainActor.run {
                     creationStatus = .failed(error: error.localizedDescription)
                     errorMessage = error.localizedDescription
@@ -967,6 +989,9 @@ struct CreateCloudServerView: View {
             username: "codeagent",  // Use codeagent user created by cloud-init
             authMethodType: "key"
         )
+        if let pendingLocalServerID {
+            server.id = pendingLocalServerID
+        }
         
         // Set provider information
         server.providerId = provider.id
@@ -993,7 +1018,7 @@ struct CreateCloudServerView: View {
         return server
     }
     
-    private func generateCloudInit(with sshKeyIds: Set<String>) -> String {
+    private func generateCloudInit(with sshKeyIds: Set<String>, openCodeServerPassword: String) -> String {
         // Get the selected SSH keys
         let validKeys = sshKeys.filter { !$0.publicKey.isEmpty }
         let selectedKeys = sshKeyIds.compactMap { keyId in
@@ -1004,7 +1029,10 @@ struct CreateCloudServerView: View {
         let publicKeys = selectedKeys.map { $0.publicKey }
         
         // Use the template to generate cloud-init configuration
-        return CloudInitTemplate.generate(with: publicKeys) ?? ""
+        return CloudInitTemplate.generate(
+            with: publicKeys,
+            openCodeServerPassword: openCodeServerPassword
+        ) ?? ""
     }
     
     private func selectLatestUbuntuImage() -> String {
@@ -1172,7 +1200,7 @@ struct CreateCloudServerView: View {
                 }
                 
                 if status == "done" {
-                    // Cloud-init is complete, start proxy installation
+                    // Cloud-init is complete, verify OpenCode runtime health
                     if let savedServer = savedServer {
                         await MainActor.run {
                             savedServer.cloudInitComplete = true
@@ -1180,10 +1208,10 @@ struct CreateCloudServerView: View {
                             savedServer.cloudInitLastChecked = Date()
                             print("✅ Updated in-memory server cloud-init status to done (not saved to DB yet)")
                         }
-                        await startProxyInstall(for: savedServer)
+                        await startRuntimeVerification(for: savedServer)
                     } else {
                         await MainActor.run {
-                            creationStatus = .failed(error: "Missing server record for proxy install")
+                            creationStatus = .failed(error: "Missing server record for OpenCode runtime check")
                             isProvisioning = false
                         }
                     }
@@ -1207,10 +1235,10 @@ struct CreateCloudServerView: View {
             return
         }
         
-        // Timeout - but server is still usable, just might not have Claude Code
+        // Timeout - but server is still usable, just might not have OpenCode ready yet
         await MainActor.run {
             provisioningStatus.cloudInitStatus = "timeout"
-            provisioningStatus.proxyInstallStatus = "skipped"
+            provisioningStatus.runtimeSetupStatus = "skipped"
             creationStatus = .success // Allow proceeding anyway
             isProvisioning = false  // End provisioning on timeout
         }
@@ -1266,55 +1294,55 @@ struct CreateCloudServerView: View {
     }
 
     @MainActor
-    private func startProxyInstall(for server: Server) async {
-        proxyInstallTask?.cancel()
-        proxyInstallLogs = []
-        proxyInstallError = nil
-        provisioningStatus.proxyInstallStatus = "running"
-        creationStatus = .installingProxy(serverId: server.providerServerId ?? server.id.uuidString)
+    private func startRuntimeVerification(for server: Server) async {
+        runtimeVerificationTask?.cancel()
+        runtimeSetupLogs = []
+        runtimeSetupError = nil
+        provisioningStatus.runtimeSetupStatus = "running"
+        creationStatus = .verifyingRuntime(serverId: server.providerServerId ?? server.id.uuidString)
 
-        proxyInstallTask = Task {
+        runtimeVerificationTask = Task {
             do {
-                try await ProxyInstallerService.shared.installProxy(on: server) { line in
+                try await OpenCodeInstallerService.shared.verifyRuntime(on: server) { line in
                     Task { @MainActor in
-                        appendProxyInstallLog(line)
+                        appendRuntimeSetupLog(line)
                     }
                 }
                 await MainActor.run {
-                    provisioningStatus.proxyInstallStatus = "done"
+                    provisioningStatus.runtimeSetupStatus = "done"
                     creationStatus = .success
                     isProvisioning = false
-                    print("Proxy install complete - isProvisioning set to false")
+                    print("OpenCode runtime verified - isProvisioning set to false")
                 }
             } catch {
                 await MainActor.run {
-                    provisioningStatus.proxyInstallStatus = "error"
-                    proxyInstallError = error.localizedDescription
+                    provisioningStatus.runtimeSetupStatus = "error"
+                    runtimeSetupError = error.localizedDescription
                 }
             }
         }
     }
 
-    private func retryProxyInstall() {
+    private func retryRuntimeVerification() {
         guard let server = savedServer else { return }
         Task { @MainActor in
-            await startProxyInstall(for: server)
+            await startRuntimeVerification(for: server)
         }
     }
 
-    private func skipProxyInstall() {
-        provisioningStatus.proxyInstallStatus = "skipped"
-        proxyInstallError = nil
+    private func skipRuntimeVerification() {
+        provisioningStatus.runtimeSetupStatus = "skipped"
+        runtimeSetupError = nil
         creationStatus = .success
         isProvisioning = false
     }
 
     @MainActor
-    private func appendProxyInstallLog(_ line: String) {
-        proxyInstallLogs.append(line)
+    private func appendRuntimeSetupLog(_ line: String) {
+        runtimeSetupLogs.append(line)
         let maxLines = 200
-        if proxyInstallLogs.count > maxLines {
-            proxyInstallLogs.removeFirst(proxyInstallLogs.count - maxLines)
+        if runtimeSetupLogs.count > maxLines {
+            runtimeSetupLogs.removeFirst(runtimeSetupLogs.count - maxLines)
         }
     }
 }
@@ -1334,8 +1362,8 @@ private extension CreateCloudServerView.CreationStatus {
         return false
     }
 
-    var isInstallingProxy: Bool {
-        if case .installingProxy = self {
+    var isVerifyingRuntime: Bool {
+        if case .verifyingRuntime = self {
             return true
         }
         return false

@@ -35,7 +35,7 @@ struct CloudInitStatusBadge: View {
         case "done":
             return "Ready"
         case "running":
-            return "Installing Claude Code..."
+            return "Installing OpenCode..."
         case "error":
             return "Error"
         case "checking":
@@ -70,7 +70,7 @@ extension View {
         case "done":
             return "Ready"
         case "running":
-            return "Installing Claude Code..."
+            return "Installing OpenCode..."
         case "checking":
             return "Checking status..."
         case "error":

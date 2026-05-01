@@ -168,6 +168,36 @@ class KeychainManager {
             return false
         }
     }
+
+    /// Store a generated OpenCode server password for a managed server.
+    func storeOpenCodeServerPassword(_ password: String, for serverId: UUID) throws {
+        let data = password.data(using: .utf8)!
+        try store(data: data, for: Self.openCodeServerPasswordAccount(for: serverId))
+    }
+
+    /// Retrieve the generated OpenCode server password for a managed server.
+    func retrieveOpenCodeServerPassword(for serverId: UUID) throws -> String {
+        let data = try retrieve(for: Self.openCodeServerPasswordAccount(for: serverId))
+        guard let password = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        return password
+    }
+
+    /// Delete the generated OpenCode server password for a managed server.
+    func deleteOpenCodeServerPassword(for serverId: UUID) throws {
+        try delete(for: Self.openCodeServerPasswordAccount(for: serverId))
+    }
+
+    /// Check if an OpenCode server password exists for a managed server.
+    func hasOpenCodeServerPassword(for serverId: UUID) -> Bool {
+        do {
+            _ = try retrieveOpenCodeServerPassword(for: serverId)
+            return true
+        } catch {
+            return false
+        }
+    }
     
     /// Store authentication token (for Claude Code OAuth)
     /// - Parameter token: The authentication token to store
@@ -354,6 +384,10 @@ class KeychainManager {
                 character.isLetter || character.isNumber || character == "_" || character == "-" ? character : "_"
             }
         return "opencode_provider_api_key_\(String(sanitized))"
+    }
+
+    static func openCodeServerPasswordAccount(for serverId: UUID) -> String {
+        "opencode_server_password_\(serverId.uuidString)"
     }
 
     static func legacyClaudeProvider(forOpenCodeProviderID providerID: String) -> ClaudeModelProvider? {

@@ -390,7 +390,7 @@ struct AddProjectSheet: View {
                                         .font(.headline)
                                         .foregroundColor(.primary)
                                     
-                                    Text("This server is still installing Claude Code. Creating an agent now may fail.")
+                                    Text("This server is still installing OpenCode. Creating an agent now may fail.")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)

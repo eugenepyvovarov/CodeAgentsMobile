@@ -235,16 +235,17 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
     let kind = CodingAgentRuntimeKind.openCode
 
     private let sshService: SSHService
-    private let client: OpenCodeClient
+    private let clientOverride: OpenCodeClient?
 
-    init(sshService: SSHService? = nil, client: OpenCodeClient = OpenCodeClient()) {
+    init(sshService: SSHService? = nil, client: OpenCodeClient? = nil) {
         self.sshService = sshService ?? .shared
-        self.client = client
+        self.clientOverride = client
     }
 
     func health(for project: RemoteProject) async -> CodingAgentRuntimeHealth {
         do {
             let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+            let client = client(for: project)
             let health = try await client.health(session: sshSession)
             return health.healthy
                 ? .available(runtime: kind, version: health.version)
@@ -264,6 +265,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             Task {
                 do {
                     let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+                    let client = client(for: project)
                     let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
                     var accumulator = OpenCodeChatEventAccumulator(sessionID: sessionID)
                     let events = client.streamEvents(session: sshSession)
@@ -305,6 +307,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         }
 
         let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
         let messages = try await client.sessionMessages(
             sshSession: sshSession,
             sessionID: sessionID,
@@ -320,6 +323,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         }
 
         let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
         let statuses = try await client.sessionStatus(sshSession: sshSession, directory: project.path)
         return .openCode(runtime: kind, rawStatus: statuses[sessionID]?.type)
     }
@@ -330,6 +334,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         }
 
         let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
         _ = try await client.abortSession(sshSession: sshSession, sessionID: sessionID, directory: project.path)
     }
 
@@ -345,6 +350,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         }
 
         let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
         try await client.replyPermission(
             sshSession: sshSession,
             sessionID: sessionID,
@@ -363,6 +369,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             return existing
         }
 
+        let client = client(for: project)
         let created = try await client.createSession(
             sshSession: sshSession,
             title: project.displayTitle,
@@ -382,6 +389,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         sshSession: SSHSession,
         sessionID: String
     ) async throws {
+        let client = client(for: project)
         let messages = try await client.sessionMessages(
             sshSession: sshSession,
             sessionID: sessionID,
@@ -404,6 +412,10 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         case .agent, .global:
             return "always"
         }
+    }
+
+    private func client(for project: RemoteProject) -> OpenCodeClient {
+        clientOverride ?? OpenCodeClientFactory.client(for: project.serverId)
     }
 }
 

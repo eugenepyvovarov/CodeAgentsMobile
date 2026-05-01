@@ -12,11 +12,11 @@ final class OpenCodeMCPService: ObservableObject {
     static let shared = OpenCodeMCPService()
 
     private let sshService: SSHService
-    private let client: OpenCodeClient
+    private let clientOverride: OpenCodeClient?
 
-    init(sshService: SSHService? = nil, client: OpenCodeClient = OpenCodeClient()) {
+    init(sshService: SSHService? = nil, client: OpenCodeClient? = nil) {
         self.sshService = sshService ?? ServiceManager.shared.sshService
-        self.client = client
+        self.clientOverride = client
     }
 
     func fetchServers(for project: RemoteProject, scope: MCPServer.MCPScope? = nil) async throws -> [MCPServer] {
@@ -152,6 +152,7 @@ final class OpenCodeMCPService: ObservableObject {
     private func liveStatuses(for project: RemoteProject) async -> [String: OpenCodeMCPStatus] {
         do {
             let session = try await sshService.getConnection(for: project, purpose: .opencode)
+            let client = client(for: project)
             return try await client.mcpStatus(sshSession: session, directory: project.path)
         } catch {
             SSHLogger.log("OpenCode MCP status unavailable: \(error.localizedDescription)", level: .warning)
@@ -166,6 +167,7 @@ final class OpenCodeMCPService: ObservableObject {
     ) async {
         do {
             let session = try await sshService.getConnection(for: project, purpose: .opencode)
+            let client = client(for: project)
             _ = try await client.addMCPServer(
                 sshSession: session,
                 name: name,
@@ -180,10 +182,15 @@ final class OpenCodeMCPService: ObservableObject {
     private func disconnectLiveServer(name: String, for project: RemoteProject) async {
         do {
             let session = try await sshService.getConnection(for: project, purpose: .opencode)
+            let client = client(for: project)
             _ = try await client.disconnectMCPServer(sshSession: session, name: name, directory: project.path)
         } catch {
             SSHLogger.log("OpenCode MCP disconnect failed: \(error.localizedDescription)", level: .warning)
         }
+    }
+
+    private func client(for project: RemoteProject) -> OpenCodeClient {
+        clientOverride ?? OpenCodeClientFactory.client(for: project.serverId)
     }
 
     private func loadConfiguration(

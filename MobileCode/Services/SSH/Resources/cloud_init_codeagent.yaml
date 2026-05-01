@@ -14,8 +14,23 @@ packages:
   - nodejs
   - npm
   - curl
+  - ca-certificates
+  - tar
   - build-essential
   - git
 
+write_files:
+  - path: /etc/systemd/system/opencode.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+{{OPENCODE_SERVICE_FILE_PLACEHOLDER}}
+  - path: /etc/opencode-server.env
+    owner: root:root
+    permissions: '0600'
+    content: |
+{{OPENCODE_ENV_FILE_PLACEHOLDER}}
+
 runcmd:
-  - npm install -g @anthropic-ai/claude-code
+  - |
+{{OPENCODE_RUNCMD_PLACEHOLDER}}
