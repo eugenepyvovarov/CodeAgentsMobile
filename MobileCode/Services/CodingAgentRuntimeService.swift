@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum CodingAgentRuntimeKind: String, CaseIterable, Codable, Identifiable {
+enum CodingAgentRuntimeKind: String, CaseIterable, Codable, Identifiable, Hashable {
     case claudeProxy = "claudeProxy"
     case openCode = "openCode"
 

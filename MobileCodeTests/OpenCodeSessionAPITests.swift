@@ -248,6 +248,69 @@ final class OpenCodeSessionAPITests: XCTestCase {
         ))
     }
 
+    func testProviderListAndAuthMethodsDecodeResponses() async throws {
+        let providerBody = """
+        {
+          "all": [
+            {
+              "id": "anthropic",
+              "name": "Anthropic",
+              "source": "api",
+              "env": ["ANTHROPIC_API_KEY"],
+              "models": {
+                "claude-sonnet-4-5": {
+                  "id": "claude-sonnet-4-5",
+                  "name": "Claude Sonnet 4.5"
+                }
+              }
+            }
+          ],
+          "default": {
+            "anthropic": "claude-sonnet-4-5"
+          },
+          "connected": ["anthropic"]
+        }
+        """
+        let providerResponse = try httpResponse(status: "200 OK", body: providerBody)
+        let providerSession = SessionAPIFakeSSHSession(responseChunks: [providerResponse])
+        let client = OpenCodeClient()
+
+        let providers = try await client.providerList(sshSession: providerSession, directory: "/workspace/MobileCode")
+
+        XCTAssertEqual(providers.all.first?.id, "anthropic")
+        XCTAssertEqual(providers.defaultModels["anthropic"], "claude-sonnet-4-5")
+        XCTAssertEqual(providers.connected, ["anthropic"])
+        XCTAssertTrue(providerSession.sentInput.contains("GET /provider?directory=/workspace/MobileCode HTTP/1.1"))
+
+        let authResponse = try httpResponse(status: "200 OK", body: "{\"anthropic\":[{\"type\":\"api\",\"label\":\"API Key\"}]}")
+        let authSession = SessionAPIFakeSSHSession(responseChunks: [authResponse])
+
+        let authMethods = try await client.providerAuthMethods(sshSession: authSession, directory: "/workspace/MobileCode")
+
+        XCTAssertEqual(authMethods["anthropic"]?.first, OpenCodeProviderAuthMethod(type: "api", label: "API Key"))
+        XCTAssertTrue(authSession.sentInput.contains("GET /provider/auth?directory=/workspace/MobileCode HTTP/1.1"))
+    }
+
+    func testSetProviderAPIKeyUsesAuthEndpoint() async throws {
+        let response = try httpResponse(status: "200 OK", body: "true")
+        let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        let result = try await client.setProviderAPIKey(
+            sshSession: sshSession,
+            providerID: "anthropic",
+            apiKey: "sk-test",
+            directory: "/workspace/MobileCode"
+        )
+
+        XCTAssertTrue(result)
+        XCTAssertTrue(sshSession.sentInput.contains("PUT /auth/anthropic?directory=/workspace/MobileCode HTTP/1.1"))
+
+        let body = try sshSession.sentJSONObject()
+        XCTAssertEqual(body["type"] as? String, "api")
+        XCTAssertEqual(body["key"] as? String, "sk-test")
+    }
+
     func testHydrationDiffComparesMessageAndPartIDs() throws {
         let remote = try JSONDecoder().decode(
             [OpenCodeSessionMessage].self,

@@ -131,6 +131,43 @@ class KeychainManager {
             return false
         }
     }
+
+    /// Store an OpenCode provider API key under the runtime-specific namespace.
+    func storeOpenCodeAPIKey(_ apiKey: String, providerID: String) throws {
+        let data = apiKey.data(using: .utf8)!
+        try store(data: data, for: Self.openCodeAPIKeyAccount(for: providerID))
+    }
+
+    /// Retrieve an OpenCode provider API key, falling back to matching legacy Claude provider keys.
+    func retrieveOpenCodeAPIKey(providerID: String) throws -> String {
+        do {
+            let data = try retrieve(for: Self.openCodeAPIKeyAccount(for: providerID))
+            guard let apiKey = String(data: data, encoding: .utf8) else {
+                throw KeychainError.invalidData
+            }
+            return apiKey
+        } catch KeychainError.itemNotFound {
+            if let legacyProvider = Self.legacyClaudeProvider(forOpenCodeProviderID: providerID) {
+                return try retrieveAPIKey(provider: legacyProvider)
+            }
+            throw KeychainError.itemNotFound
+        }
+    }
+
+    /// Delete an OpenCode provider API key from the runtime-specific namespace.
+    func deleteOpenCodeAPIKey(providerID: String) throws {
+        try delete(for: Self.openCodeAPIKeyAccount(for: providerID))
+    }
+
+    /// Check if an OpenCode provider API key exists in the new namespace or a compatible legacy key.
+    func hasOpenCodeAPIKey(providerID: String) -> Bool {
+        do {
+            _ = try retrieveOpenCodeAPIKey(providerID: providerID)
+            return true
+        } catch {
+            return false
+        }
+    }
     
     /// Store authentication token (for Claude Code OAuth)
     /// - Parameter token: The authentication token to store
@@ -306,6 +343,31 @@ class KeychainManager {
             return "anthropic_api_key"
         default:
             return "claude_provider_api_key_\(provider.rawValue)"
+        }
+    }
+
+    static func openCodeAPIKeyAccount(for providerID: String) -> String {
+        let sanitized = providerID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .map { character -> Character in
+                character.isLetter || character.isNumber || character == "_" || character == "-" ? character : "_"
+            }
+        return "opencode_provider_api_key_\(String(sanitized))"
+    }
+
+    static func legacyClaudeProvider(forOpenCodeProviderID providerID: String) -> ClaudeModelProvider? {
+        switch providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "anthropic":
+            return .anthropic
+        case "zai", "z.ai", "z-ai":
+            return .zAI
+        case "minimax", "mini-max":
+            return .miniMax
+        case "moonshot":
+            return .moonshot
+        default:
+            return nil
         }
     }
 
