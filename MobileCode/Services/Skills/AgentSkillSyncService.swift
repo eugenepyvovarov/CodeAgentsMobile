@@ -24,7 +24,10 @@ final class AgentSkillSyncService {
         }
 
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        let remoteRoot = "\(project.path)/.claude/skills"
+        let remoteRoot = AgentProjectFileLayout.remotePath(
+            projectPath: project.path,
+            relativePath: AgentProjectFileLayout.skillsInstallRelativePath
+        )
         let remoteSkillPath = "\(remoteRoot)/\(skill.slug)"
 
         try await ensureRemoteDirectory(remoteRoot, session: session)
@@ -35,9 +38,18 @@ final class AgentSkillSyncService {
 
     func removeSkill(_ skill: AgentSkill, from project: RemoteProject) async throws {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        let remoteSkillPath = "\(project.path)/.claude/skills/\(skill.slug)"
+        let remoteSkillPath = AgentProjectFileLayout.remotePath(
+            projectPath: project.path,
+            relativePath: "\(AgentProjectFileLayout.skillsInstallRelativePath)/\(skill.slug)"
+        )
         let escaped = shellEscaped(remoteSkillPath)
         _ = try await session.execute("rm -rf \(escaped)")
+    }
+
+    func remoteSkillLookupRoots(for project: RemoteProject) -> [String] {
+        AgentProjectFileLayout.skillLookupRelativePaths.map {
+            AgentProjectFileLayout.remotePath(projectPath: project.path, relativePath: $0)
+        }
     }
 
     // MARK: - Private

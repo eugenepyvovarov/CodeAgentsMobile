@@ -2,7 +2,7 @@
 //  AgentRulesView.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Edit behavioral rules stored in .claude/CLAUDE.md
+//  Purpose: Edit behavioral rules stored in AGENTS.md with legacy fallbacks.
 //
 
 import SwiftUI
@@ -58,9 +58,18 @@ struct AgentRulesView: View {
                                 }
 
                             if rulesViewModel.isMissingFile {
-                                Label("No rules file yet. It will be created when you save.", systemImage: "doc.badge.plus")
+                                Label("No rules file yet. AGENTS.md will be created when you save.", systemImage: "doc.badge.plus")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
+                            }
+
+                            if rulesViewModel.shouldOfferMigration {
+                                Label(
+                                    "Loaded \(rulesViewModel.loadedRulesRelativePath). Saving writes AGENTS.md and leaves the old file unchanged.",
+                                    systemImage: "arrow.triangle.2.circlepath"
+                                )
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                             }
 
                             if let loadError = rulesViewModel.loadErrorMessage {
@@ -83,7 +92,7 @@ struct AgentRulesView: View {
 
                                 Spacer()
 
-                                Button(rulesViewModel.isSaving ? "Saving..." : "Save") {
+                                Button(saveButtonTitle) {
                                     saveRules()
                                 }
                                 .disabled(rulesViewModel.isLoading || rulesViewModel.isSaving || !rulesViewModel.hasUnsavedChanges)
@@ -118,9 +127,19 @@ struct AgentRulesView: View {
 
     private var rulesSubtitle: String {
         if let agentLabel {
-            return "Behavioral rules for \(agentLabel). These are things the agent should care about and not forget. Stored at .claude/CLAUDE.md."
+            return "Behavioral rules for \(agentLabel). These are things the agent should care about and not forget. Stored at AGENTS.md."
         }
-        return "Behavioral rules for the active agent. These are things the agent should care about and not forget. Stored at .claude/CLAUDE.md."
+        return "Behavioral rules for the active agent. These are things the agent should care about and not forget. Stored at AGENTS.md."
+    }
+
+    private var saveButtonTitle: String {
+        if rulesViewModel.isSaving {
+            return "Saving..."
+        }
+        if rulesViewModel.shouldOfferMigration {
+            return "Save to AGENTS.md"
+        }
+        return "Save"
     }
 
     private var agentLabel: String? {

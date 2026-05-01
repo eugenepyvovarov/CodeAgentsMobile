@@ -48,7 +48,7 @@ final class RemoteProject {
     // Proxy conversation group identifier
     var proxyConversationGroupId: String?
 
-    // Proxy agent identifier (stable across app reinstalls, stored in <agent>/.claude/codeagents.json)
+    // Proxy agent identifier (stable across app reinstalls, stored in <agent>/.codeagents/codeagents.json)
     var proxyAgentId: String?
 
     // Agent env vars sync status (proxy-only)

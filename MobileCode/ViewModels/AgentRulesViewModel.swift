@@ -2,7 +2,7 @@
 //  AgentRulesViewModel.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Load and save agent rules stored in .claude/CLAUDE.md
+//  Purpose: Load and save agent rules stored in AGENTS.md with legacy fallbacks.
 //
 
 import Foundation
@@ -14,6 +14,9 @@ final class AgentRulesViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var isSaving = false
     @Published var isMissingFile = false
+    @Published var loadedRulesRelativePath = AgentProjectFileLayout.rulesPrimaryRelativePath
+    @Published var targetRulesRelativePath = AgentProjectFileLayout.rulesPrimaryRelativePath
+    @Published var shouldOfferMigration = false
     @Published var loadErrorMessage: String?
     @Published var saveErrorMessage: String?
 
@@ -31,6 +34,9 @@ final class AgentRulesViewModel: ObservableObject {
         isLoading = false
         isSaving = false
         isMissingFile = false
+        loadedRulesRelativePath = AgentProjectFileLayout.rulesPrimaryRelativePath
+        targetRulesRelativePath = AgentProjectFileLayout.rulesPrimaryRelativePath
+        shouldOfferMigration = false
         loadErrorMessage = nil
         saveErrorMessage = nil
     }
@@ -51,20 +57,32 @@ final class AgentRulesViewModel: ObservableObject {
 
         do {
             let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-            let rulesPath = rulesFilePath(for: project)
             let markerToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
             let markerStart = "__RULES_START_\(markerToken)__"
             let markerEnd = "__RULES_END_\(markerToken)__"
-            let payloadPrefix = "EXISTS:"
+            let payloadPrefix = "EXISTS"
+            let agentsPath = shellEscaped(rulesFilePath(for: project, relativePath: AgentProjectFileLayout.rulesPrimaryRelativePath))
+            let legacyClaudeDirectoryPath = shellEscaped(
+                rulesFilePath(for: project, relativePath: AgentProjectFileLayout.legacyClaudeDirectoryRulesRelativePath)
+            )
+            let legacyClaudeRootPath = shellEscaped(
+                rulesFilePath(for: project, relativePath: AgentProjectFileLayout.legacyClaudeRootRulesRelativePath)
+            )
             let command = [
-                "printf '\(markerStart)';",
-                "if [ -f '\(rulesPath)' ]; then",
-                "printf '\(payloadPrefix)';",
-                "(base64 -w 0 '\(rulesPath)' 2>/dev/null || base64 '\(rulesPath)');",
+                "printf \(shellEscaped(markerStart));",
+                "if [ -f \(agentsPath) ]; then",
+                "printf \(shellEscaped("\(payloadPrefix):\(AgentRulesFileKind.agents.rawValue):"));",
+                "(base64 -w 0 \(agentsPath) 2>/dev/null || base64 \(agentsPath));",
+                "elif [ -f \(legacyClaudeDirectoryPath) ]; then",
+                "printf \(shellEscaped("\(payloadPrefix):\(AgentRulesFileKind.legacyClaudeDirectory.rawValue):"));",
+                "(base64 -w 0 \(legacyClaudeDirectoryPath) 2>/dev/null || base64 \(legacyClaudeDirectoryPath));",
+                "elif [ -f \(legacyClaudeRootPath) ]; then",
+                "printf \(shellEscaped("\(payloadPrefix):\(AgentRulesFileKind.legacyClaudeRoot.rawValue):"));",
+                "(base64 -w 0 \(legacyClaudeRootPath) 2>/dev/null || base64 \(legacyClaudeRootPath));",
                 "else",
-                "printf 'MISSING';",
+                "printf \(shellEscaped("MISSING"));",
                 "fi;",
-                "printf '\(markerEnd)'",
+                "printf \(shellEscaped(markerEnd))",
             ].joined(separator: " ")
             let output = try await session.execute(command)
 
@@ -82,15 +100,16 @@ final class AgentRulesViewModel: ObservableObject {
                 content = ""
                 originalContent = ""
                 isMissingFile = true
+                applyRulesSelection(.missing)
                 return
             }
 
-            guard payload.hasPrefix(payloadPrefix) else {
+            guard let parsed = parseFoundRulesPayload(payload, payloadPrefix: payloadPrefix) else {
                 loadErrorMessage = "Unexpected rules output format."
                 return
             }
 
-            let base64Payload = String(payload.dropFirst(payloadPrefix.count))
+            let (kind, base64Payload) = parsed
             let cleanedBase64 = base64Payload
                 .components(separatedBy: .whitespacesAndNewlines)
                 .joined()
@@ -99,6 +118,7 @@ final class AgentRulesViewModel: ObservableObject {
                 content = ""
                 originalContent = ""
                 isMissingFile = false
+                applyRulesSelection(kind)
                 return
             }
 
@@ -111,6 +131,7 @@ final class AgentRulesViewModel: ObservableObject {
             content = decoded
             originalContent = decoded
             isMissingFile = false
+            applyRulesSelection(kind)
         } catch {
             guard loadToken == token else { return }
             loadErrorMessage = error.localizedDescription
@@ -129,9 +150,9 @@ final class AgentRulesViewModel: ObservableObject {
 
         do {
             let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-            let rulesPath = rulesFilePath(for: project)
+            let rulesPath = rulesFilePath(for: project, relativePath: targetRulesRelativePath)
             let rulesDirectory = (rulesPath as NSString).deletingLastPathComponent
-            _ = try await session.execute("mkdir -p '\(rulesDirectory)'")
+            _ = try await session.execute("mkdir -p \(shellEscaped(rulesDirectory))")
 
             let updatedContent = CodeAgentsUIRules.ensuringToolCallGuard(in: content)
             if updatedContent != content {
@@ -143,7 +164,7 @@ final class AgentRulesViewModel: ObservableObject {
             }
 
             let base64Content = data.base64EncodedString()
-            let writeCommand = "printf '%s' '\(base64Content)' | base64 -d > '\(rulesPath)'"
+            let writeCommand = "printf '%s' \(shellEscaped(base64Content)) | base64 -d > \(shellEscaped(rulesPath))"
             _ = try await session.execute(writeCommand)
 
             do {
@@ -159,12 +180,46 @@ final class AgentRulesViewModel: ObservableObject {
 
             originalContent = content
             isMissingFile = false
+            applyRulesSelection(.agents)
         } catch {
             saveErrorMessage = error.localizedDescription
         }
     }
 
-    private func rulesFilePath(for project: RemoteProject) -> String {
-        (project.path as NSString).appendingPathComponent(".claude/CLAUDE.md")
+    private func parseFoundRulesPayload(
+        _ payload: String,
+        payloadPrefix: String
+    ) -> (AgentRulesFileKind, String)? {
+        let prefix = "\(payloadPrefix):"
+        guard payload.hasPrefix(prefix) else { return nil }
+
+        let remainder = String(payload.dropFirst(prefix.count))
+        guard let separator = remainder.firstIndex(of: ":") else { return nil }
+
+        let kindRaw = String(remainder[..<separator])
+        guard let kind = AgentRulesFileKind(rawValue: kindRaw) else { return nil }
+
+        let base64Start = remainder.index(after: separator)
+        return (kind, String(remainder[base64Start...]))
+    }
+
+    private func applyRulesSelection(_ kind: AgentRulesFileKind) {
+        let selection = AgentProjectFileLayout.selectRulesFile(
+            hasAgents: kind == .agents,
+            hasLegacyClaudeDirectory: kind == .legacyClaudeDirectory,
+            hasLegacyClaudeRoot: kind == .legacyClaudeRoot
+        )
+        loadedRulesRelativePath = selection.readRelativePath
+        targetRulesRelativePath = selection.writeRelativePath
+        shouldOfferMigration = selection.shouldOfferMigration
+    }
+
+    private func rulesFilePath(for project: RemoteProject, relativePath: String) -> String {
+        AgentProjectFileLayout.remotePath(projectPath: project.path, relativePath: relativePath)
+    }
+
+    private func shellEscaped(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\"'\"'")
+        return "'\(escaped)'"
     }
 }

@@ -861,24 +861,7 @@ struct RegularTaskEditorView: View {
     }
 
     private static func attachmentDisplayName(for reference: String) -> String {
-        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "File" }
-
-        let lastComponent = (trimmed as NSString).lastPathComponent
-        if trimmed.hasPrefix(".claude/attachments/") {
-            if let dashIndex = lastComponent.firstIndex(of: "-") {
-                let prefixLength = lastComponent.distance(from: lastComponent.startIndex, to: dashIndex)
-                if prefixLength == 8 {
-                    let nameStart = lastComponent.index(after: dashIndex)
-                    let withoutPrefix = String(lastComponent[nameStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !withoutPrefix.isEmpty {
-                        return withoutPrefix
-                    }
-                }
-            }
-        }
-
-        return lastComponent.isEmpty ? trimmed : lastComponent
+        AgentProjectFileLayout.attachmentDisplayName(for: reference)
     }
 }
 

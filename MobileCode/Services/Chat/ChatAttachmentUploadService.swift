@@ -32,7 +32,10 @@ final class ChatAttachmentUploadService {
     ) async throws -> [String] {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
 
-        let remoteAttachmentsDir = "\(project.path)/.claude/attachments"
+        let remoteAttachmentsDir = AgentProjectFileLayout.remotePath(
+            projectPath: project.path,
+            relativePath: AgentProjectFileLayout.attachmentsRelativePath
+        )
         try await ensureRemoteDirectory(remoteAttachmentsDir, session: session)
 
         var references: [String] = []
@@ -54,7 +57,7 @@ final class ChatAttachmentUploadService {
                 let remotePath = "\(remoteAttachmentsDir)/\(remoteFileName)"
 
                 try await uploadFileChunked(localURL: localURL, remotePath: remotePath, session: session)
-                references.append(".claude/attachments/\(remoteFileName)")
+                references.append(AgentProjectFileLayout.attachmentReference(fileName: remoteFileName))
             }
         }
 
