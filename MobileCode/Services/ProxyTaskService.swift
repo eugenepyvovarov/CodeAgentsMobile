@@ -2,7 +2,7 @@
 //  ProxyTaskService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Sync scheduled tasks with the Claude proxy scheduler
+//  Purpose: Sync scheduled tasks with the CodeAgents daemon scheduler
 //
 
 import Foundation
@@ -100,7 +100,13 @@ final class ProxyTaskService {
     private func createTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
         let session = try await sshService.getConnection(for: project, purpose: .claude)
         let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
-        let body = try buildPayload(for: task, project: project, conversationId: conversationId)
+        let openCodeSessionId = try await resolveOpenCodeSessionIdIfNeeded(for: project)
+        let body = try buildPayload(
+            for: task,
+            project: project,
+            conversationId: conversationId,
+            openCodeSessionId: openCodeSessionId
+        )
         let response = try await client.request(session: session,
                                                 method: "POST",
                                                 path: "/v1/agent/tasks",
@@ -113,7 +119,13 @@ final class ProxyTaskService {
                             project: RemoteProject) async throws -> ProxyTaskRecord {
         let session = try await sshService.getConnection(for: project, purpose: .claude)
         let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
-        let body = try buildPayload(for: task, project: project, conversationId: conversationId)
+        let openCodeSessionId = try await resolveOpenCodeSessionIdIfNeeded(for: project)
+        let body = try buildPayload(
+            for: task,
+            project: project,
+            conversationId: conversationId,
+            openCodeSessionId: openCodeSessionId
+        )
         let path = "/v1/agent/tasks/\(remoteId)"
         let response = try await client.request(session: session,
                                                 method: "PATCH",
@@ -122,10 +134,11 @@ final class ProxyTaskService {
         return try parseTask(from: response.body)
     }
 
-    private func buildPayload(
+    func buildPayload(
         for task: AgentScheduledTask,
         project: RemoteProject,
-        conversationId: String
+        conversationId: String,
+        openCodeSessionId: String? = nil
     ) throws -> String {
         let agentId = project.proxyAgentId ?? project.id.uuidString
         var payload: [String: Any] = [
@@ -141,6 +154,10 @@ final class ProxyTaskService {
         let trimmedTitle = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedTitle.isEmpty {
             payload["title"] = trimmedTitle
+        }
+
+        if let openCodeSessionId = sanitizedOpenCodeSessionId(openCodeSessionId) {
+            payload["open_code_session_id"] = openCodeSessionId
         }
 
         let data = try JSONSerialization.data(withJSONObject: payload, options: [])
@@ -189,6 +206,34 @@ final class ProxyTaskService {
             project.updateLastModified()
         }
         return canonicalId
+    }
+
+    private func resolveOpenCodeSessionIdIfNeeded(for project: RemoteProject) async throws -> String? {
+        guard CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode else { return nil }
+        if let existing = sanitizedOpenCodeSessionId(project.openCodeSessionId) {
+            return existing
+        }
+
+        let session = try await sshService.getConnection(for: project, purpose: .opencode)
+        let created = try await OpenCodeClientFactory.client(for: project.serverId).createSession(
+            sshSession: session,
+            title: project.displayTitle,
+            directory: project.path
+        )
+        guard let sessionId = sanitizedOpenCodeSessionId(created.id) else {
+            throw OpenCodeClientError.invalidResponse("OpenCode did not return a session id.")
+        }
+
+        project.openCodeSessionId = sessionId
+        project.selectedAgentRuntime = .openCode
+        project.updateLastModified()
+        return sessionId
+    }
+
+    private func sanitizedOpenCodeSessionId(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        return trimmed
     }
 
     private func buildQuery(_ items: [String: String]) -> String {
