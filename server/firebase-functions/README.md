@@ -5,7 +5,7 @@ This directory contains the Firebase backend used for push notifications (FCM).
 ## What’s included
 
 - `registerSubscription` HTTPS function (called by the iOS app)
-- `triggerReplyFinished` HTTPS function (called by `server/claude-proxy` on run completion)
+- `triggerReplyFinished` HTTPS function (called by the CodeAgents daemon on run completion)
 - Firestore layout: `servers/{serverKey}/agents/{agentKey}/devices/{installationId}`
 
 ## Local setup
@@ -38,4 +38,17 @@ Both functions require:
 
 - `Authorization: Bearer <CODEAGENTS_PUSH_SECRET>`
 
-The secret is stored on each proxy server in `/etc/claude-proxy.env` and managed by the iOS app.
+The secret is stored on each CodeAgents server environment and managed by the iOS app. Legacy installs
+currently keep it in `/etc/claude-proxy.env`; the OpenCode scheduler daemon reads the same
+`CODEAGENTS_PUSH_SECRET` / `CODEAGENTS_PUSH_GATEWAY_BASE_URL` values.
+
+## Completion sources
+
+`triggerReplyFinished` accepts completion notifications from both supported server-side sources:
+
+- Legacy foreground Claude proxy runs after `ConversationManager` emits the final result.
+- OpenCode scheduled-task runs after the daemon sends `prompt_async`, observes the OpenCode session idle,
+  hydrates `/session/:id/message`, and computes the assistant preview/count.
+
+For OpenCode scheduled tasks, `conversation_id` should be the OpenCode session id so iOS unread tracking
+and chat hydration refer to the same session.

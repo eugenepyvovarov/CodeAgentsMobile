@@ -6,7 +6,7 @@
 
 ### Overview
 
-Add push notifications to the **official App Store** build using **Firebase Cloud Messaging (FCM)**. Notifications are triggered **only when a proxy chat run finishes** (`type == "result"` emitted by `server/claude-proxy`) and deep-link to the **exact agent (project) chat**.
+Add push notifications to the **official App Store** build using **Firebase Cloud Messaging (FCM)**. Notifications are triggered when a server-side agent reply finishes: legacy proxy chat runs after `server/claude-proxy` emits its final result, and OpenCode scheduled-task runs after the CodeAgents daemon observes the OpenCode session idle. Pushes deep-link to the **exact agent (project) chat**.
 
 This integrates three parts:
 1) iOS app (Firebase Messaging + deep linking)
@@ -228,9 +228,11 @@ When a notification is tapped:
 
 ### Trigger on run finished
 
-After emitting the final `result` event in `ConversationManager._run_agent`, call `triggerReplyFinished` Cloud Function:
+After emitting the final `result` event in `ConversationManager._run_agent`, call `triggerReplyFinished` Cloud Function. For OpenCode scheduled tasks, the daemon calls the same function after it sends `prompt_async`, waits for `/session/status` to become idle, and hydrates `/session/:id/message` for the preview and absolute unread cursor.
+
 - HTTPS POST with `Authorization: Bearer <secret>`
 - JSON body includes `cwd` and `conversation_id`
+- OpenCode scheduled tasks should send the OpenCode session id as `conversation_id`
 
 Requirements:
 - Must be non-blocking and non-fatal (short timeout; failures logged but do not affect the run).
