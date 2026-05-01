@@ -121,6 +121,33 @@ enum OpenCodeEvent {
     case todoUpdated(OpenCodeRawEvent)
     case commandExecuted(OpenCodeRawEvent)
     case unknown(OpenCodeRawEvent)
+
+    var rawEvent: OpenCodeRawEvent {
+        switch self {
+        case .serverConnected(let raw),
+             .serverHeartbeat(let raw),
+             .fileEdited(let raw),
+             .todoUpdated(let raw),
+             .commandExecuted(let raw),
+             .unknown(let raw):
+            return raw
+        case .messageUpdated(_, let raw),
+             .messagePartUpdated(_, let raw),
+             .messagePartRemoved(_, let raw),
+             .messageRemoved(_, let raw),
+             .sessionStatus(_, let raw),
+             .sessionIdle(_, let raw),
+             .sessionError(_, let raw),
+             .sessionDiff(_, let raw),
+             .sessionCompacted(_, let raw),
+             .sessionCreated(_, let raw),
+             .sessionUpdated(_, let raw),
+             .sessionDeleted(_, let raw),
+             .permissionUpdated(_, let raw),
+             .permissionReplied(_, let raw):
+            return raw
+        }
+    }
 }
 
 struct OpenCodeRawEvent: Decodable {

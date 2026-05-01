@@ -45,6 +45,18 @@ struct CodingAgentRuntimeSelectionStore {
     }
 }
 
+enum CodingAgentRuntimeResolver {
+    static func runtimeKind(
+        for project: RemoteProject,
+        selectionStore: CodingAgentRuntimeSelectionStore = CodingAgentRuntimeSelectionStore()
+    ) -> CodingAgentRuntimeKind {
+        if project.agentRuntimeRawValue != nil {
+            return project.selectedAgentRuntime
+        }
+        return selectionStore.selectedRuntime()
+    }
+}
+
 struct CodingAgentRuntimeHealth: Equatable {
     enum Status: Equatable {
         case available
@@ -211,16 +223,66 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         mcpServers: [MCPServer] = []
     ) -> AsyncThrowingStream<MessageChunk, Error> {
         AsyncThrowingStream { continuation in
-            continuation.finish(throwing: CodingAgentRuntimeError.unsupported("OpenCode chat is not wired yet."))
+            Task {
+                do {
+                    let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+                    let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
+                    var accumulator = OpenCodeChatEventAccumulator(sessionID: sessionID)
+                    let events = client.streamEvents(session: sshSession)
+
+                    try await client.promptAsync(
+                        sshSession: sshSession,
+                        sessionID: sessionID,
+                        payload: OpenCodePromptPayload(
+                            messageID: messageId?.uuidString,
+                            parts: [.text(text)]
+                        ),
+                        directory: project.path
+                    )
+
+                    for try await event in events {
+                        let chunks = accumulator.consume(event)
+                        for chunk in chunks {
+                            continuation.yield(chunk)
+                            if chunk.isComplete {
+                                try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
+                                continuation.finish()
+                                return
+                            }
+                        }
+                    }
+
+                    try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
         }
     }
 
     func hydrateMessages(for project: RemoteProject) async throws -> [CodingAgentRuntimeHydratedMessage] {
-        throw CodingAgentRuntimeError.missingSession
+        guard let sessionID = sanitizedSessionID(project.openCodeSessionId) else {
+            return []
+        }
+
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let messages = try await client.sessionMessages(
+            sshSession: sshSession,
+            sessionID: sessionID,
+            directory: project.path
+        )
+        project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
+        return OpenCodeChatMapper.hydratedMessages(from: messages)
     }
 
     func abort(project: RemoteProject) async throws {
-        throw CodingAgentRuntimeError.missingSession
+        guard let sessionID = sanitizedSessionID(project.openCodeSessionId) else {
+            throw CodingAgentRuntimeError.missingSession
+        }
+
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        _ = try await client.abortSession(sshSession: sshSession, sessionID: sessionID, directory: project.path)
     }
 
     func replyToPermission(
@@ -232,7 +294,47 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         throw CodingAgentRuntimeError.missingSession
     }
 
-    func reset(project: RemoteProject) async throws {}
+    func reset(project: RemoteProject) async throws {
+        project.resetOpenCodeRuntimeState()
+    }
+
+    private func resolveSessionID(for project: RemoteProject, sshSession: SSHSession) async throws -> String {
+        if let existing = sanitizedSessionID(project.openCodeSessionId) {
+            return existing
+        }
+
+        let created = try await client.createSession(
+            sshSession: sshSession,
+            title: project.displayTitle,
+            directory: project.path
+        )
+        guard let sessionID = sanitizedSessionID(created.id) else {
+            throw OpenCodeClientError.invalidResponse("OpenCode did not return a session id.")
+        }
+        project.openCodeSessionId = sessionID
+        project.selectedAgentRuntime = .openCode
+        project.updateLastModified()
+        return sessionID
+    }
+
+    private func hydrateOpenCodeState(
+        project: RemoteProject,
+        sshSession: SSHSession,
+        sessionID: String
+    ) async throws {
+        let messages = try await client.sessionMessages(
+            sshSession: sshSession,
+            sessionID: sessionID,
+            directory: project.path
+        )
+        project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
+    }
+
+    private func sanitizedSessionID(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
 }
 
 @MainActor

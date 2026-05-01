@@ -27,6 +27,18 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         XCTAssertEqual(store.selectedRuntime(), .claudeProxy)
     }
 
+    func testRuntimeResolverUsesProjectRuntimeBeforeGlobalDefault() throws {
+        let defaults = try makeDefaults()
+        let store = CodingAgentRuntimeSelectionStore(userDefaults: defaults)
+        store.setSelectedRuntime(.openCode)
+        let project = RemoteProject(name: "Test", serverId: UUID())
+
+        XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .openCode)
+
+        project.selectedAgentRuntime = .claudeProxy
+        XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .claudeProxy)
+    }
+
     func testRuntimeDisplayNames() {
         XCTAssertEqual(CodingAgentRuntimeKind.claudeProxy.displayName, "Claude Proxy")
         XCTAssertEqual(CodingAgentRuntimeKind.openCode.displayName, "OpenCode")

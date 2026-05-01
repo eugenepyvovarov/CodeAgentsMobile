@@ -121,6 +121,47 @@ final class OpenCodeClientTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func testEventStreamDecodesChunkedSSE() async throws {
+        let body = """
+        data: {"type":"server.connected","properties":{}}
+
+        data: {"type":"session.status","properties":{"sessionID":"ses_fixture","status":{"type":"idle"}}}
+
+        """
+        let response = [
+            "HTTP/1.1 200 OK",
+            "Content-Type: text/event-stream",
+            "Transfer-Encoding: chunked",
+            "",
+            chunkedBody(body)
+        ].joined(separator: "\r\n")
+        let session = FakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        var events: [OpenCodeEvent] = []
+        for try await event in client.streamEvents(session: session) {
+            events.append(event)
+        }
+
+        XCTAssertEqual(events.count, 2)
+        guard case .serverConnected = events[0] else {
+            return XCTFail("Expected server.connected")
+        }
+        guard case .sessionStatus(let properties, _) = events[1] else {
+            return XCTFail("Expected session.status")
+        }
+        XCTAssertEqual(properties.sessionID, "ses_fixture")
+        XCTAssertEqual(properties.status.type, "idle")
+        XCTAssertTrue(session.sentInput.contains("GET /event HTTP/1.1"))
+        XCTAssertTrue(session.sentInput.contains("Accept: text/event-stream"))
+        XCTAssertFalse(session.sentInput.contains("Accept: application/json"))
+    }
+
+    private func chunkedBody(_ body: String) -> String {
+        let size = String(body.utf8.count, radix: 16)
+        return "\(size)\r\n\(body)\r\n0\r\n\r\n"
+    }
 }
 
 private final class FakeSSHSession: SSHSession {

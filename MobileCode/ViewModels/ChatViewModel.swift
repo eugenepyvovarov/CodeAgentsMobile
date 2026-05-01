@@ -64,6 +64,9 @@ class ChatViewModel {
     /// MCP service reference
     private let mcpService = MCPService.shared
 
+    private let runtimeSelectionStore: CodingAgentRuntimeSelectionStore
+    private let runtimeRegistry: CodingAgentRuntimeRegistry
+
     private var mediaPrefetchTasks: [String: Task<Void, Never>] = [:]
     
     /// Loading state for previous session
@@ -134,7 +137,13 @@ class ChatViewModel {
     
     // MARK: - Lifecycle
     
-    init() {
+    init(
+        runtimeSelectionStore: CodingAgentRuntimeSelectionStore = CodingAgentRuntimeSelectionStore(),
+        runtimeRegistry: CodingAgentRuntimeRegistry? = nil
+    ) {
+        self.runtimeSelectionStore = runtimeSelectionStore
+        self.runtimeRegistry = runtimeRegistry ?? CodingAgentRuntimeRegistry()
+
         // Listen for MCP configuration changes
         NotificationCenter.default.addObserver(
             self,
@@ -198,12 +207,20 @@ class ChatViewModel {
         self.modelContext = modelContext
         self.projectId = projectId
         loadMessages()
-        refreshProviderMismatch(for: ProjectContext.shared.activeProject)
+        let configuredProject = ProjectContext.shared.activeProject
+        let runtimeKind = configuredProject.map { activeRuntimeKind(for: $0) } ?? .claudeProxy
+        if runtimeKind == .openCode {
+            providerMismatch = nil
+        } else {
+            refreshProviderMismatch(for: configuredProject)
+        }
 
         toolApprovalStore.ensureDefaults(for: projectId)
         
         // Check Claude installation and fetch MCP servers when configuring
         Task {
+            guard runtimeKind == .claudeProxy else { return }
+
             if let server = ProjectContext.shared.activeServer {
                 _ = await claudeService.checkClaudeInstallation(for: server)
             }
@@ -226,7 +243,11 @@ class ChatViewModel {
 
             // Create new check task
             sessionCheckTask = Task {
-                await checkForPreviousSession()
+                if runtimeKind == .openCode, let project = configuredProject {
+                    await hydrateOpenCodeMessagesIfNeeded(project: project)
+                } else {
+                    await checkForPreviousSession()
+                }
             }
         }
     }
@@ -240,6 +261,10 @@ class ChatViewModel {
             guard let self else { return }
             while !Task.isCancelled {
                 guard let project = ProjectContext.shared.activeProject else {
+                    try? await Task.sleep(nanoseconds: UInt64(self.proxyPollingInterval * 1_000_000_000))
+                    continue
+                }
+                guard self.activeRuntimeKind(for: project) == .claudeProxy else {
                     try? await Task.sleep(nanoseconds: UInt64(self.proxyPollingInterval * 1_000_000_000))
                     continue
                 }
@@ -264,6 +289,7 @@ class ChatViewModel {
     func refreshProxyEvents() async {
         guard claudeService.isProxyChatEnabled else { return }
         guard let project = ProjectContext.shared.activeProject else { return }
+        guard activeRuntimeKind(for: project) == .claudeProxy else { return }
         await syncProxyHistoryIfNeeded(project: project)
     }
     
@@ -272,6 +298,11 @@ class ChatViewModel {
     func sendMessage(_ text: String) async {
         guard let project = ProjectContext.shared.activeProject else {
             addErrorMessage("No active agent. Please select an agent first.")
+            return
+        }
+
+        if activeRuntimeKind(for: project) == .openCode {
+            await sendOpenCodeMessage(text, project: project)
             return
         }
 
@@ -541,13 +572,125 @@ class ChatViewModel {
         isProcessing = false
     }
 
+    private func sendOpenCodeMessage(_ text: String, project: RemoteProject) async {
+        if let existingId = project.activeStreamingMessageId {
+            let staleCutoff = Date().addingTimeInterval(-staleStreamingTimeout)
+            let existingMessage = messages.first(where: { $0.id == existingId })
+            let isStale = (existingMessage?.timestamp ?? project.lastModified) < staleCutoff
+
+            if let existingMessage = existingMessage {
+                if existingMessage.isComplete || !existingMessage.isStreaming || isStale {
+                    existingMessage.isStreaming = false
+                    existingMessage.isComplete = true
+                    project.activeStreamingMessageId = nil
+                    project.updateLastModified()
+                    saveChanges()
+                } else {
+                    addErrorMessage("Previous message is still processing. Please wait for it to complete or clear the chat.")
+                    return
+                }
+            } else if project.lastModified < staleCutoff {
+                project.activeStreamingMessageId = nil
+                project.updateLastModified()
+                saveChanges()
+            } else {
+                addErrorMessage("Previous message is still processing. Please wait for it to complete or clear the chat.")
+                return
+            }
+        }
+
+        if let previousStreaming = messages.last(where: { $0.isStreaming }) {
+            previousStreaming.isStreaming = false
+            previousStreaming.isComplete = true
+            if previousStreaming.content.isEmpty && previousStreaming.originalJSON == nil {
+                updateMessage(previousStreaming, with: "[Response was interrupted by new message]")
+            }
+            saveChanges()
+        }
+
+        streamingMessage = nil
+        streamingBlocks = []
+        isProcessing = false
+        saveChanges()
+
+        _ = createMessage(content: text, role: .user)
+        let assistantMessage = createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
+        streamingMessage = assistantMessage
+        streamingRedrawToken = UUID()
+        isProcessing = true
+
+        project.selectedAgentRuntime = .openCode
+        project.activeStreamingMessageId = assistantMessage.id
+        project.updateLastModified()
+        saveChanges()
+
+        do {
+            let runtime = runtimeRegistry.runtime(for: .openCode)
+            let stream = runtime.sendMessage(text, in: project, messageId: assistantMessage.id, mcpServers: cachedMCPServers)
+            var didReceiveContent = false
+
+            for try await chunk in stream {
+                if chunk.isError {
+                    let errorText = chunk.content.isEmpty ? "OpenCode failed to respond." : chunk.content
+                    updateMessage(assistantMessage, with: errorText)
+                    assistantMessage.isStreaming = false
+                    assistantMessage.isComplete = true
+                    didReceiveContent = true
+                    break
+                }
+
+                if !chunk.content.isEmpty {
+                    updateOpenCodeMessage(assistantMessage, with: chunk)
+                    didReceiveContent = true
+                }
+
+                if let provider = chunk.metadata?["runtimeProvider"] as? String {
+                    project.lastSuccessfulRuntimeProviderRawValue = provider
+                }
+
+                if chunk.isComplete {
+                    assistantMessage.isStreaming = false
+                    assistantMessage.isComplete = true
+                    break
+                }
+            }
+
+            if !didReceiveContent {
+                updateMessage(assistantMessage, with: "OpenCode finished without returning text.")
+            }
+
+            assistantMessage.isStreaming = false
+            assistantMessage.isComplete = true
+            project.activeStreamingMessageId = nil
+            project.updateLastModified()
+            saveChanges()
+        } catch {
+            let errorText = "Failed to get OpenCode response: \(error.localizedDescription)"
+            updateMessage(assistantMessage, with: errorText)
+            assistantMessage.isStreaming = false
+            assistantMessage.isComplete = true
+            project.activeStreamingMessageId = nil
+            project.updateLastModified()
+            saveChanges()
+        }
+
+        streamingMessage = nil
+        streamingBlocks = []
+        isProcessing = false
+    }
+
     func refreshProviderMismatch(for project: RemoteProject?) {
         providerMismatch = ClaudeProviderMismatchGuard.mismatch(for: project)
     }
 
     func reloadMessages() {
         loadMessages()
-        refreshProviderMismatch(for: ProjectContext.shared.activeProject)
+        if let project = ProjectContext.shared.activeProject,
+           activeRuntimeKind(for: project) == .openCode {
+            providerMismatch = nil
+        } else {
+            refreshProviderMismatch(for: ProjectContext.shared.activeProject)
+        }
     }
     
     /// Clear all messages and start fresh
@@ -601,7 +744,9 @@ class ChatViewModel {
             let previousProxyLastEventId = project.proxyLastEventId
 
             project.activeStreamingMessageId = nil
-            if claudeService.isProxyChatEnabled {
+            if activeRuntimeKind(for: project) == .openCode {
+                project.resetOpenCodeRuntimeState()
+            } else if claudeService.isProxyChatEnabled {
                 Task { @MainActor in
                     let previousSuffix = previousProxyConversationId.map { String($0.suffix(6)) } ?? "nil"
                     ProxyStreamDiagnostics.log("clearChat: proxy reset start prev=...\(previousSuffix) lastEvent=\(String(describing: previousProxyLastEventId))")
@@ -765,6 +910,10 @@ class ChatViewModel {
     }
     
     // MARK: - Private Methods
+
+    private func activeRuntimeKind(for project: RemoteProject) -> CodingAgentRuntimeKind {
+        CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: runtimeSelectionStore)
+    }
 
     private func isMessageBefore(_ lhs: Message, _ rhs: Message) -> Bool {
         switch (lhs.proxyEventId, rhs.proxyEventId) {
@@ -972,6 +1121,47 @@ class ChatViewModel {
                 saveChanges()
             }
             messagesRevision += 1
+        }
+    }
+
+    private func updateOpenCodeMessage(_ message: Message, with chunk: MessageChunk) {
+        let originalJSON = (chunk.metadata?["originalJSON"] as? String)?.data(using: .utf8)
+        let content = chunk.content.isEmpty ? message.content : chunk.content
+        updateMessageWithJSON(message, content: content, originalJSON: originalJSON)
+        message.isStreaming = !chunk.isComplete
+        message.isComplete = chunk.isComplete
+
+        if chunk.isComplete, let project = ProjectContext.shared.activeProject {
+            prefetchCodeAgentsUIMedia(in: project, messages: [message])
+        }
+    }
+
+    private func hydrateOpenCodeMessagesIfNeeded(project: RemoteProject) async {
+        guard activeRuntimeKind(for: project) == .openCode else { return }
+        guard messages.isEmpty else { return }
+        guard project.openCodeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
+
+        isLoadingPreviousSession = true
+        defer {
+            isLoadingPreviousSession = false
+            showActiveSessionIndicator = false
+        }
+
+        do {
+            let runtime = runtimeRegistry.runtime(for: .openCode)
+            let hydratedMessages = try await runtime.hydrateMessages(for: project)
+            for hydrated in hydratedMessages {
+                let message = createMessage(content: hydrated.text, role: hydrated.role)
+                if let originalPayload = hydrated.originalPayload {
+                    updateMessageWithJSON(message, content: hydrated.text, originalJSON: originalPayload)
+                }
+            }
+            prefetchCodeAgentsUIMedia(in: project, messages: messages)
+            project.activeStreamingMessageId = nil
+            project.updateLastModified()
+            saveChanges()
+        } catch {
+            print("📝 OpenCode hydration failed: \(error)")
         }
     }
 

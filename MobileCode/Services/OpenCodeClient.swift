@@ -119,6 +119,131 @@ final class OpenCodeClient {
         return response
     }
 
+    func streamEvents(
+        session: SSHSession,
+        path: String = "/event"
+    ) -> AsyncThrowingStream<OpenCodeEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let lifetime = OpenCodeStreamLifetime()
+            lifetime.task = Task {
+                do {
+                    let handle = try await session.openDirectTCPIP(
+                        targetHost: configuration.host,
+                        targetPort: configuration.port
+                    )
+                    lifetime.handle = handle
+                    defer {
+                        handle.terminate()
+                    }
+
+                    let requestText = try buildHTTPRequest(
+                        method: .get,
+                        path: path,
+                        body: nil,
+                        headers: ["Accept": "text/event-stream"]
+                    )
+                    try await handle.sendInput(requestText)
+
+                    let chunkedDecoder = OpenCodeChunkedBodyStreamDecoder()
+                    let sseParser = OpenCodeSSEStreamParser()
+                    var state = OpenCodeHTTPStreamState.headers
+                    var rawHeaderBuffer = ""
+                    var statusCode: Int?
+                    var errorBody = ""
+                    var isChunked = false
+
+                    func splitHeader(from buffer: String) -> (header: String, body: String)? {
+                        if let range = buffer.range(of: "\r\n\r\n") {
+                            return (String(buffer[..<range.lowerBound]), String(buffer[range.upperBound...]))
+                        }
+                        if let range = buffer.range(of: "\n\n") {
+                            return (String(buffer[..<range.lowerBound]), String(buffer[range.upperBound...]))
+                        }
+                        return nil
+                    }
+
+                    func parseStatusCode(from line: String) -> Int? {
+                        guard line.starts(with: "HTTP/") else { return nil }
+                        let parts = line.split(separator: " ")
+                        guard parts.count >= 2 else { return nil }
+                        return Int(parts[1])
+                    }
+
+                    func applyHeaders(from headerText: String) throws {
+                        let lines = headerText.split(whereSeparator: \.isNewline).map(String.init)
+                        guard let statusLine = lines.first,
+                              let parsedStatusCode = parseStatusCode(from: statusLine) else {
+                            throw OpenCodeClientError.invalidResponse("Missing HTTP status")
+                        }
+                        statusCode = parsedStatusCode
+
+                        for line in lines.dropFirst() {
+                            let lowercased = line.lowercased()
+                            if lowercased.hasPrefix("transfer-encoding:") && lowercased.contains("chunked") {
+                                isChunked = true
+                            }
+                        }
+                    }
+
+                    func yieldEvents(from bodyChunk: String) throws {
+                        let decodedChunks = isChunked ? chunkedDecoder.addData(bodyChunk) : [bodyChunk]
+                        for decoded in decodedChunks {
+                            let serverSentEvents = sseParser.consume(decoded)
+                            for serverSentEvent in serverSentEvents {
+                                continuation.yield(try OpenCodeEventMapper.decode(serverSentEvent))
+                            }
+                        }
+                    }
+
+                    for try await chunk in handle.outputStream() {
+                        if Task.isCancelled {
+                            continuation.finish()
+                            return
+                        }
+
+                        switch state {
+                        case .headers:
+                            rawHeaderBuffer += chunk
+                            guard let parts = splitHeader(from: rawHeaderBuffer) else { continue }
+                            rawHeaderBuffer = ""
+                            try applyHeaders(from: parts.header)
+                            state = statusCode == 200 ? .sse : .error
+                            if !parts.body.isEmpty {
+                                if state == .sse {
+                                    try yieldEvents(from: parts.body)
+                                } else {
+                                    errorBody += parts.body
+                                }
+                            }
+                        case .sse:
+                            try yieldEvents(from: chunk)
+                        case .error:
+                            errorBody += chunk
+                        }
+                    }
+
+                    if let statusCode, statusCode != 200 {
+                        throw OpenCodeClientError.httpError(status: statusCode, body: errorBody)
+                    }
+                    if state == .headers {
+                        throw OpenCodeClientError.invalidResponse("No HTTP event stream received")
+                    }
+
+                    for serverSentEvent in sseParser.finish() {
+                        continuation.yield(try OpenCodeEventMapper.decode(serverSentEvent))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                lifetime.cancel()
+            }
+        }
+    }
+
     private func buildHTTPRequest(
         method: OpenCodeHTTPMethod,
         path: String,
@@ -137,9 +262,12 @@ final class OpenCodeClient {
         var requestHeaders: [String] = [
             "\(method.rawValue) \(path) HTTP/1.1",
             "Host: \(configuration.host):\(configuration.port)",
-            "Accept: application/json",
             "Connection: close"
         ]
+
+        if headers.keys.contains(where: { $0.lowercased() == "accept" }) == false {
+            requestHeaders.append("Accept: application/json")
+        }
 
         if let password = configuration.password {
             let credentials = "\(configuration.username):\(password)"
@@ -157,6 +285,22 @@ final class OpenCodeClient {
         }
 
         return requestHeaders.joined(separator: "\r\n") + "\r\n\r\n" + (body ?? "")
+    }
+}
+
+private enum OpenCodeHTTPStreamState {
+    case headers
+    case sse
+    case error
+}
+
+private final class OpenCodeStreamLifetime: @unchecked Sendable {
+    var handle: ProcessHandle?
+    var task: Task<Void, Never>?
+
+    func cancel() {
+        task?.cancel()
+        handle?.terminate()
     }
 }
 
@@ -271,5 +415,46 @@ private enum OpenCodeHTTPResponseParser {
         }
 
         return nil
+    }
+}
+
+private final class OpenCodeChunkedBodyStreamDecoder {
+    private var buffer = Data()
+    private var expectedSize: Int?
+    private var finished = false
+
+    func addData(_ data: String) -> [String] {
+        guard !finished, let newData = data.data(using: .utf8) else { return [] }
+        buffer.append(newData)
+        var output: [String] = []
+
+        while true {
+            if expectedSize == nil {
+                guard let range = buffer.range(of: Data([0x0d, 0x0a])) else { break }
+                let lineData = buffer.subdata(in: buffer.startIndex..<range.lowerBound)
+                buffer.removeSubrange(buffer.startIndex..<range.upperBound)
+                guard let line = String(data: lineData, encoding: .utf8) else { continue }
+                let sizeToken = line.split(separator: ";").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard let size = Int(sizeToken, radix: 16) else { continue }
+                if size == 0 {
+                    finished = true
+                    break
+                }
+                expectedSize = size
+            }
+
+            guard let size = expectedSize else { break }
+            guard buffer.count >= size + 2 else { break }
+
+            let chunkData = buffer.subdata(in: buffer.startIndex..<(buffer.startIndex + size))
+            buffer.removeSubrange(buffer.startIndex..<(buffer.startIndex + size + 2))
+            expectedSize = nil
+
+            if let chunkString = String(data: chunkData, encoding: .utf8) {
+                output.append(chunkString)
+            }
+        }
+
+        return output
     }
 }

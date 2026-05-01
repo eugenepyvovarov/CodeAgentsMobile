@@ -23,6 +23,7 @@ struct ChatView: View {
             Group {
                 // Check if Claude is installed
                 if let server = projectContext.activeServer,
+                   activeRuntimeKind == .claudeProxy,
                    let isInstalled = claudeService.claudeInstallationStatus[server.id],
                    !isInstalled {
                     // Replace entire chat UI with installation view
@@ -88,10 +89,12 @@ struct ChatView: View {
         }
         .task(id: projectContext.activeProject?.id) {
             guard let project = projectContext.activeProject else { return }
-            do {
-                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
-            } catch {
-                SSHLogger.log("Failed to ensure proxy agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
+            if activeRuntimeKind(for: project) == .claudeProxy {
+                do {
+                    _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+                } catch {
+                    SSHLogger.log("Failed to ensure proxy agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
+                }
             }
             viewModel.configure(modelContext: modelContext, projectId: project.id)
         }
@@ -109,7 +112,9 @@ struct ChatView: View {
             }
             // Re-check Claude installation when view appears
             Task {
-                if let server = projectContext.activeServer {
+                if let project = projectContext.activeProject,
+                   activeRuntimeKind(for: project) == .claudeProxy,
+                   let server = projectContext.activeServer {
                     // Only check if we don't have a cached status or if it was not installed
                     if claudeService.claudeInstallationStatus[server.id] == nil || 
                        claudeService.claudeInstallationStatus[server.id] == false {
@@ -180,6 +185,15 @@ struct ChatView: View {
 
     private var chatTitle: String {
         assistantLabel
+    }
+
+    private var activeRuntimeKind: CodingAgentRuntimeKind {
+        guard let project = projectContext.activeProject else { return .claudeProxy }
+        return activeRuntimeKind(for: project)
+    }
+
+    private func activeRuntimeKind(for project: RemoteProject) -> CodingAgentRuntimeKind {
+        CodingAgentRuntimeResolver.runtimeKind(for: project)
     }
 }
 
