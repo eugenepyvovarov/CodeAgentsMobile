@@ -111,6 +111,7 @@ enum OpenCodeEvent {
     case sessionIdle(OpenCodeSessionIDProperties, raw: OpenCodeRawEvent)
     case sessionError(OpenCodeSessionErrorProperties, raw: OpenCodeRawEvent)
     case sessionDiff(OpenCodeSessionDiffProperties, raw: OpenCodeRawEvent)
+    case sessionCompacted(OpenCodeSessionIDProperties, raw: OpenCodeRawEvent)
     case sessionCreated(OpenCodeSessionInfoProperties, raw: OpenCodeRawEvent)
     case sessionUpdated(OpenCodeSessionInfoProperties, raw: OpenCodeRawEvent)
     case sessionDeleted(OpenCodeSessionIDProperties, raw: OpenCodeRawEvent)
@@ -211,6 +212,8 @@ enum OpenCodeEventMapper {
             return .sessionError(try decodeProperties(rawEvent, as: OpenCodeSessionErrorProperties.self), raw: rawEvent)
         case "session.diff":
             return .sessionDiff(try decodeProperties(rawEvent, as: OpenCodeSessionDiffProperties.self), raw: rawEvent)
+        case "session.compacted":
+            return .sessionCompacted(try decodeProperties(rawEvent, as: OpenCodeSessionIDProperties.self), raw: rawEvent)
         case "session.created":
             return .sessionCreated(try decodeProperties(rawEvent, as: OpenCodeSessionInfoProperties.self), raw: rawEvent)
         case "session.updated":
@@ -487,6 +490,7 @@ struct OpenCodeToolState: Decodable {
 struct OpenCodeSessionIDProperties: Decodable {
     let sessionID: String?
     let id: String?
+    let info: OpenCodeSessionInfo?
 }
 
 struct OpenCodeSessionStatusProperties: Decodable {
@@ -537,14 +541,38 @@ struct OpenCodeSessionInfo: Decodable {
 struct OpenCodePermissionProperties: Decodable {
     let id: String?
     let type: String?
-    let pattern: String?
+    let pattern: OpenCodePermissionPattern?
     let sessionID: String?
     let messageID: String?
     let callID: String?
+    let permissionID: String?
     let title: String?
     let metadata: [String: AnyCodable]?
     let response: String?
     let time: OpenCodeTimeInfo?
+}
+
+enum OpenCodePermissionPattern: Decodable {
+    case string(String)
+    case strings([String])
+
+    var values: [String] {
+        switch self {
+        case .string(let value):
+            return [value]
+        case .strings(let values):
+            return values
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else {
+            self = .strings(try container.decode([String].self))
+        }
+    }
 }
 
 struct OpenCodeErrorInfo: Decodable {

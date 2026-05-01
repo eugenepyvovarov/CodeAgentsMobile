@@ -149,7 +149,27 @@ final class OpenCodeEventParserTests: XCTestCase {
         }
         XCTAssertEqual(properties.id, "perm_fixture")
         XCTAssertEqual(properties.sessionID, "ses_fixture")
+        XCTAssertEqual(properties.pattern?.values, ["*"])
         XCTAssertEqual(properties.metadata?["command"]?.value as? String, "ls")
+    }
+
+    func testPermissionPatternArrayAndReplyDecode() throws {
+        let updated = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"permission.updated","properties":{"id":"perm_fixture","type":"edit","pattern":["*.swift","*.md"],"sessionID":"ses_fixture","messageID":"msg_fixture","title":"Edit files","metadata":{},"time":{"created":1}}}
+        """)
+        guard case .permissionUpdated(let updatedProperties, _) = updated else {
+            return XCTFail("Expected permission.updated")
+        }
+        XCTAssertEqual(updatedProperties.pattern?.values, ["*.swift", "*.md"])
+
+        let replied = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"permission.replied","properties":{"sessionID":"ses_fixture","permissionID":"perm_fixture","response":"once"}}
+        """)
+        guard case .permissionReplied(let repliedProperties, _) = replied else {
+            return XCTFail("Expected permission.replied")
+        }
+        XCTAssertEqual(repliedProperties.permissionID, "perm_fixture")
+        XCTAssertEqual(repliedProperties.response, "once")
     }
 
     private func parseFixtureEvents(named name: String) throws -> [OpenCodeEvent] {
