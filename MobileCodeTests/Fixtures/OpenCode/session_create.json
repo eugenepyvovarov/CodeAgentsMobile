@@ -1,0 +1,13 @@
+{
+  "id": "ses_fixture",
+  "slug": "swift-harbor",
+  "version": "1.14.21",
+  "projectID": "project_fixture",
+  "directory": "/workspace/MobileCode",
+  "title": "MobileCode OpenCode fixture",
+  "time": {
+    "created": 1777647749851,
+    "updated": 1777647749851
+  }
+}
+

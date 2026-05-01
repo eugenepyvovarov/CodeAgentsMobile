@@ -1,0 +1,4 @@
+data: {"type":"server.connected","properties":{}}
+
+data: {"type":"server.heartbeat","properties":{}}
+

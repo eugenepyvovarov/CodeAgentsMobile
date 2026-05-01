@@ -1,0 +1,4 @@
+data: {"payload":{"type":"server.connected","properties":{}}}
+
+data: {"payload":{"type":"server.heartbeat","properties":{}}}
+

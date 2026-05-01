@@ -1,0 +1,8 @@
+data: {"type":"server.connected","properties":{}}
+
+data: {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_stream_fixture","role":"user","sessionID":"ses_fixture","time":{"created":1777647789562},"agent":"build","model":{"providerID":"lmstudio","modelID":"qwen/qwen3-coder-next"}}}}
+
+data: {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","text":"MobileCode fixture streamed event","messageID":"msg_stream_fixture","sessionID":"ses_fixture","id":"prt_stream_fixture"},"time":1777647789566}}
+
+data: {"type":"session.updated","properties":{"sessionID":"ses_fixture","info":{"id":"ses_fixture","slug":"swift-harbor","projectID":"project_fixture","directory":"/workspace/MobileCode","title":"MobileCode OpenCode fixture","version":"1.14.21","time":{"created":1777647749851,"updated":1777647789567}}}}
+

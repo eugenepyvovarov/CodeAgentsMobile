@@ -1,0 +1,22 @@
+data: {"type":"server.connected","properties":{}}
+
+data: {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_prompt_fixture","role":"user","sessionID":"ses_fixture","time":{"created":1777647804980},"agent":"build","model":{"providerID":"lmstudio","modelID":"qwen/qwen3-coder-next"}}}}
+
+data: {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","text":"Reply with exactly: fixture-ok","messageID":"msg_prompt_fixture","sessionID":"ses_fixture","id":"prt_prompt_fixture"},"time":1777647804981}}
+
+data: {"type":"session.updated","properties":{"sessionID":"ses_fixture","info":{"id":"ses_fixture","slug":"swift-harbor","projectID":"project_fixture","directory":"/workspace/MobileCode","title":"MobileCode OpenCode fixture","version":"1.14.21","time":{"created":1777647749851,"updated":1777647804982}}}}
+
+data: {"type":"session.status","properties":{"sessionID":"ses_fixture","status":{"type":"busy"}}}
+
+data: {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant_fixture","parentID":"msg_prompt_fixture","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/workspace/MobileCode","root":"/workspace/MobileCode"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"qwen/qwen3-coder-next","providerID":"lmstudio","time":{"created":1777647804989},"sessionID":"ses_fixture"}}}
+
+data: {"type":"session.diff","properties":{"sessionID":"ses_fixture","diff":[]}}
+
+data: {"type":"session.error","properties":{"sessionID":"ses_fixture","error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}}}
+
+data: {"type":"session.status","properties":{"sessionID":"ses_fixture","status":{"type":"idle"}}}
+
+data: {"type":"session.idle","properties":{"sessionID":"ses_fixture"}}
+
+data: {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant_fixture","parentID":"msg_prompt_fixture","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/workspace/MobileCode","root":"/workspace/MobileCode"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"qwen/qwen3-coder-next","providerID":"lmstudio","time":{"created":1777647804989,"completed":1777647825424},"sessionID":"ses_fixture","error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}}}}
+

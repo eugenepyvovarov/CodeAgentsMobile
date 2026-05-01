@@ -1,0 +1,27 @@
+[
+  {
+    "info": {
+      "role": "user",
+      "time": {
+        "created": 1777647761114
+      },
+      "agent": "build",
+      "model": {
+        "providerID": "lmstudio",
+        "modelID": "qwen/qwen3-coder-next"
+      },
+      "id": "msg_text_fixture",
+      "sessionID": "ses_fixture"
+    },
+    "parts": [
+      {
+        "type": "text",
+        "text": "MobileCode fixture user message",
+        "id": "prt_text_fixture",
+        "sessionID": "ses_fixture",
+        "messageID": "msg_text_fixture"
+      }
+    ]
+  }
+]
+
