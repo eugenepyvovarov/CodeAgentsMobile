@@ -74,6 +74,18 @@ struct ChatView: View {
                             Label("Environment Variables", systemImage: "terminal")
                         }
 
+                        if viewModel.isProcessing && activeRuntimeKind == .openCode {
+                            Divider()
+
+                            Button(role: .destructive) {
+                                Task {
+                                    await viewModel.abortCurrentResponse()
+                                }
+                            } label: {
+                                Label("Stop Response", systemImage: "stop.circle")
+                            }
+                        }
+
                         Divider()
                         
                         Button {

@@ -287,10 +287,42 @@ class ChatViewModel {
     }
 
     func refreshProxyEvents() async {
-        guard claudeService.isProxyChatEnabled else { return }
         guard let project = ProjectContext.shared.activeProject else { return }
+        if activeRuntimeKind(for: project) == .openCode {
+            await hydrateOpenCodeMessagesIfNeeded(project: project)
+            return
+        }
+        guard claudeService.isProxyChatEnabled else { return }
         guard activeRuntimeKind(for: project) == .claudeProxy else { return }
         await syncProxyHistoryIfNeeded(project: project)
+    }
+
+    func abortCurrentResponse() async {
+        guard let project = ProjectContext.shared.activeProject else { return }
+        guard activeRuntimeKind(for: project) == .openCode else { return }
+
+        do {
+            try await runtimeRegistry.runtime(for: .openCode).abort(project: project)
+        } catch {
+            addErrorMessage("Failed to stop OpenCode response: \(error.localizedDescription)")
+        }
+
+        if let activeMessageId = project.activeStreamingMessageId,
+           let message = messages.first(where: { $0.id == activeMessageId }) {
+            if message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                updateMessage(message, with: "[Response stopped]")
+            }
+            message.isStreaming = false
+            message.isComplete = true
+        }
+
+        project.activeStreamingMessageId = nil
+        project.updateLastModified()
+        streamingMessage = nil
+        streamingBlocks = []
+        isProcessing = false
+        showActiveSessionIndicator = false
+        saveChanges()
     }
     
     /// Send a message to Claude
@@ -680,6 +712,10 @@ class ChatViewModel {
     }
 
     func refreshProviderMismatch(for project: RemoteProject?) {
+        if let project, activeRuntimeKind(for: project) == .openCode {
+            providerMismatch = nil
+            return
+        }
         providerMismatch = ClaudeProviderMismatchGuard.mismatch(for: project)
     }
 
@@ -1138,30 +1174,98 @@ class ChatViewModel {
 
     private func hydrateOpenCodeMessagesIfNeeded(project: RemoteProject) async {
         guard activeRuntimeKind(for: project) == .openCode else { return }
-        guard messages.isEmpty else { return }
         guard project.openCodeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
 
         isLoadingPreviousSession = true
         defer {
             isLoadingPreviousSession = false
-            showActiveSessionIndicator = false
         }
 
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
+            let sessionState = try await runtime.sessionState(for: project)
             let hydratedMessages = try await runtime.hydrateMessages(for: project)
+            var existingRuntimeMessageIDs = openCodeRuntimeMessageIDs(in: messages)
             for hydrated in hydratedMessages {
+                if existingRuntimeMessageIDs.contains(hydrated.runtimeMessageID) {
+                    continue
+                }
+                if hydrated.role == .user, hasLocalUserMessage(matching: hydrated.text) {
+                    continue
+                }
+
                 let message = createMessage(content: hydrated.text, role: hydrated.role)
                 if let originalPayload = hydrated.originalPayload {
                     updateMessageWithJSON(message, content: hydrated.text, originalJSON: originalPayload)
                 }
+                existingRuntimeMessageIDs.insert(hydrated.runtimeMessageID)
             }
+
+            reconcileOpenCodeSessionState(sessionState, project: project)
             prefetchCodeAgentsUIMedia(in: project, messages: messages)
-            project.activeStreamingMessageId = nil
             project.updateLastModified()
             saveChanges()
         } catch {
             print("📝 OpenCode hydration failed: \(error)")
+            showActiveSessionIndicator = false
+        }
+    }
+
+    private func reconcileOpenCodeSessionState(_ state: CodingAgentRuntimeSessionState, project: RemoteProject) {
+        switch state.status {
+        case .busy, .retrying:
+            showActiveSessionIndicator = true
+            isProcessing = true
+            if let assistant = messages.last(where: { $0.role == .assistant }) {
+                assistant.isStreaming = true
+                assistant.isComplete = false
+                streamingMessage = assistant
+                streamingRedrawToken = UUID()
+                project.activeStreamingMessageId = assistant.id
+            }
+        case .idle, .unknown:
+            showActiveSessionIndicator = false
+            isProcessing = false
+            streamingMessage = nil
+            streamingBlocks = []
+            for message in messages where message.isStreaming {
+                message.isStreaming = false
+                message.isComplete = true
+            }
+            project.activeStreamingMessageId = nil
+        }
+    }
+
+    private func openCodeRuntimeMessageIDs(in messages: [Message]) -> Set<String> {
+        Set(messages.compactMap(openCodeRuntimeMessageID(from:)))
+    }
+
+    private func openCodeRuntimeMessageID(from message: Message) -> String? {
+        guard let originalJSON = message.originalJSON,
+              let raw = String(data: originalJSON, encoding: .utf8) else {
+            return nil
+        }
+
+        for line in raw.split(whereSeparator: \.isNewline) {
+            guard let data = String(line).data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                  let opencode = json["opencode"] as? [String: Any],
+                  let messageID = opencode["messageID"] as? String,
+                  !messageID.isEmpty else {
+                continue
+            }
+            return messageID
+        }
+
+        return nil
+    }
+
+    private func hasLocalUserMessage(matching text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return false }
+        return messages.contains { message in
+            message.role == .user &&
+                message.content.trimmingCharacters(in: .whitespacesAndNewlines) == normalized
         }
     }
 

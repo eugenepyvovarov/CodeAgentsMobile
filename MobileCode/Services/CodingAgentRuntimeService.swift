@@ -82,6 +82,37 @@ struct CodingAgentRuntimeHealth: Equatable {
     }
 }
 
+struct CodingAgentRuntimeSessionState: Equatable {
+    enum Status: Equatable {
+        case idle
+        case busy
+        case retrying
+        case unknown(String?)
+    }
+
+    let runtime: CodingAgentRuntimeKind
+    let status: Status
+
+    static func idle(runtime: CodingAgentRuntimeKind) -> Self {
+        CodingAgentRuntimeSessionState(runtime: runtime, status: .idle)
+    }
+
+    static func openCode(runtime: CodingAgentRuntimeKind, rawStatus: String?) -> Self {
+        switch rawStatus?.lowercased() {
+        case nil:
+            return CodingAgentRuntimeSessionState(runtime: runtime, status: .idle)
+        case "idle":
+            return CodingAgentRuntimeSessionState(runtime: runtime, status: .idle)
+        case "busy":
+            return CodingAgentRuntimeSessionState(runtime: runtime, status: .busy)
+        case "retry", "retrying":
+            return CodingAgentRuntimeSessionState(runtime: runtime, status: .retrying)
+        case let value:
+            return CodingAgentRuntimeSessionState(runtime: runtime, status: .unknown(value))
+        }
+    }
+}
+
 struct CodingAgentRuntimeHydratedMessage: Equatable {
     let runtimeMessageID: String
     let runtimePartIDs: [String]
@@ -110,6 +141,7 @@ protocol CodingAgentRuntimeService: AnyObject {
     var displayName: String { get }
 
     func health(for project: RemoteProject) async -> CodingAgentRuntimeHealth
+    func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState
     func sendMessage(
         _ text: String,
         in project: RemoteProject,
@@ -129,6 +161,10 @@ protocol CodingAgentRuntimeService: AnyObject {
 
 extension CodingAgentRuntimeService {
     var displayName: String { kind.displayName }
+
+    func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState {
+        .idle(runtime: kind)
+    }
 }
 
 @MainActor
@@ -274,6 +310,16 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         )
         project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
         return OpenCodeChatMapper.hydratedMessages(from: messages)
+    }
+
+    func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState {
+        guard let sessionID = sanitizedSessionID(project.openCodeSessionId) else {
+            return .idle(runtime: kind)
+        }
+
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let statuses = try await client.sessionStatus(sshSession: sshSession, directory: project.path)
+        return .openCode(runtime: kind, rawStatus: statuses[sessionID]?.type)
     }
 
     func abort(project: RemoteProject) async throws {

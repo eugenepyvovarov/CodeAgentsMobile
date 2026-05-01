@@ -45,6 +45,15 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         XCTAssertEqual(ConnectionPurpose.opencode.description, "OpenCode")
     }
 
+    func testOpenCodeSessionStateMapping() {
+        XCTAssertEqual(CodingAgentRuntimeSessionState.openCode(runtime: .openCode, rawStatus: nil).status, .idle)
+        XCTAssertEqual(CodingAgentRuntimeSessionState.openCode(runtime: .openCode, rawStatus: "idle").status, .idle)
+        XCTAssertEqual(CodingAgentRuntimeSessionState.openCode(runtime: .openCode, rawStatus: "busy").status, .busy)
+        XCTAssertEqual(CodingAgentRuntimeSessionState.openCode(runtime: .openCode, rawStatus: "retrying").status, .retrying)
+        XCTAssertEqual(CodingAgentRuntimeSessionState.openCode(runtime: .openCode, rawStatus: "retry").status, .retrying)
+        XCTAssertEqual(CodingAgentRuntimeSessionState.openCode(runtime: .openCode, rawStatus: "future").status, .unknown("future"))
+    }
+
     @MainActor
     func testRuntimeRegistryReturnsRuntimeForKind() {
         let claude = StubRuntime(kind: .claudeProxy)
