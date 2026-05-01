@@ -11,7 +11,7 @@ import SwiftData
 struct RunCodeAgentsTaskIntent: AppIntent {
     static var title: LocalizedStringResource = "Run CodeAgents Task"
     static var description = IntentDescription(
-        "Run a CodeAgents agent remotely and return Claude's final response."
+        "Run a CodeAgents agent remotely and return the final response."
     )
     
     @Parameter(title: "Agent", requestValueDialog: IntentDialog("Which agent should CodeAgents run?"))
@@ -35,7 +35,7 @@ struct RunCodeAgentsTaskIntent: AppIntent {
         let modelContext = ShortcutPersistenceController.shared.makeContext()
         
         do {
-            let response = try await ShortcutClaudeRunner.shared.run(
+            let response = try await ShortcutAgentRunner.shared.run(
                 metadata: metadata,
                 promptInput: prompt,
                 timeout: 60,
@@ -54,13 +54,13 @@ struct RunCodeAgentsTaskIntent: AppIntent {
         case .emptyPrompt:
             return "ERROR: Provide a prompt in the Shortcut before running."
         case .emptyResponse:
-            return "ERROR: Claude returned an empty response."
+            return "ERROR: Agent returned an empty response."
         case .timeout(let seconds):
-            return "ERROR: Claude run exceeded \(seconds) seconds."
-        case .claudeFailure(let message):
+            return "ERROR: Agent run exceeded \(seconds) seconds."
+        case .agentFailure(let message):
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
-                return "ERROR: Claude service failed."
+                return "ERROR: Agent service failed."
             }
             if trimmed.hasPrefix("ERROR:") {
                 return trimmed

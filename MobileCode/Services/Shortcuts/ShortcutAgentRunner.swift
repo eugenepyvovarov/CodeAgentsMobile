@@ -1,5 +1,5 @@
 //
-//  ShortcutClaudeRunner.swift
+//  ShortcutAgentRunner.swift
 //  CodeAgentsMobile
 //
 //  Created by Codex on 2025-07-06.
@@ -12,7 +12,7 @@ enum ShortcutExecutionError: Error {
     case emptyPrompt
     case emptyResponse
     case timeout(seconds: Int)
-    case claudeFailure(String)
+    case agentFailure(String)
 }
 
 /// Builds the effective prompt for a shortcut run.
@@ -22,12 +22,27 @@ enum ShortcutPromptBuilder {
     }
 }
 
-/// Executes Claude runs for App Shortcuts.
+enum ShortcutRuntimePolicy {
+    static func requiresClaudeProviderConsistencyCheck(for runtime: CodingAgentRuntimeKind) -> Bool {
+        runtime == .claudeProxy
+    }
+}
+
+enum ShortcutAssistantTextExtractor {
+    static func latestAssistantText(from messages: [Message]) -> String? {
+        guard let message = messages.last(where: { $0.role == .assistant }) else {
+            return nil
+        }
+        let text = message.displayText().trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+}
+
+/// Executes runtime-neutral agent runs for App Shortcuts.
 @MainActor
-final class ShortcutClaudeRunner {
-    static let shared = ShortcutClaudeRunner()
+final class ShortcutAgentRunner {
+    static let shared = ShortcutAgentRunner()
     
-    private let claudeService = ClaudeCodeService.shared
     private let projectContext = ProjectContext.shared
     private let serverManager = ServerManager.shared
     private let sshService = ServiceManager.shared.sshService
@@ -54,10 +69,15 @@ final class ShortcutClaudeRunner {
         _ = ensureServer(metadata: metadata, modelContext: modelContext)
         let previousProject = projectContext.activeProject
         projectContext.setActiveProject(project)
+        let runtime = CodingAgentRuntimeResolver.runtimeKind(for: project)
 
-        if let mismatch = ClaudeProviderMismatchGuard.mismatch(for: project) {
-            throw ShortcutExecutionError.claudeFailure(
-                "Provider changed from \(mismatch.previous.displayName) to \(mismatch.current.displayName). Open the app and clear chat to continue, or switch back to \(mismatch.previous.displayName)."
+        if ShortcutRuntimePolicy.requiresClaudeProviderConsistencyCheck(for: runtime),
+           let mismatch = ClaudeProviderMismatchGuard.mismatch(for: project) {
+            throw ShortcutExecutionError.agentFailure(
+                """
+                Provider changed from \(mismatch.previous.displayName) to \(mismatch.current.displayName). \
+                Open the app and clear chat to continue, or switch back to \(mismatch.previous.displayName).
+                """
             )
         }
         
@@ -82,14 +102,14 @@ final class ShortcutClaudeRunner {
             }
         } catch let error as ShortcutExecutionError {
             if case .timeout = error,
-               let fallback = latestAssistantText(from: chatViewModel),
+               let fallback = ShortcutAssistantTextExtractor.latestAssistantText(from: chatViewModel.messages),
                !fallback.isEmpty {
                 return fallback
             }
             throw error
         }
         
-        guard let responseText = latestAssistantText(from: chatViewModel),
+        guard let responseText = ShortcutAssistantTextExtractor.latestAssistantText(from: chatViewModel.messages),
               !responseText.isEmpty else {
             throw ShortcutExecutionError.emptyResponse
         }
@@ -136,7 +156,7 @@ final class ShortcutClaudeRunner {
         }
         
         // If agent is missing from persistent store, surface an explicit error
-        throw ShortcutExecutionError.claudeFailure("Agent metadata is unavailable. Open the app to refresh shortcuts.")
+        throw ShortcutExecutionError.agentFailure("Agent metadata is unavailable. Open the app to refresh shortcuts.")
     }
     
     private func fetchProject(id: UUID, modelContext: ModelContext) throws -> RemoteProject? {
@@ -161,13 +181,6 @@ final class ShortcutClaudeRunner {
         } catch {
             print("⚠️ Failed to save shortcut persistence changes: \(error)")
         }
-    }
-    
-    private func latestAssistantText(from viewModel: ChatViewModel) -> String? {
-        guard let message = viewModel.messages.last(where: { $0.role == .assistant }) else {
-            return nil
-        }
-        return message.displayText().trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func extractAssistantText(from metadata: [String: Any]) -> String? {
@@ -249,3 +262,5 @@ final class ShortcutClaudeRunner {
         }
     }
 }
+
+typealias ShortcutClaudeRunner = ShortcutAgentRunner

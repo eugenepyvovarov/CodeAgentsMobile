@@ -11,6 +11,30 @@ final class ShortcutPromptBuilderTests: XCTestCase {
         let result = ShortcutPromptBuilder.build(promptInput: "   ")
         XCTAssertTrue(result.isEmpty)
     }
+
+    func testRuntimePolicyOnlyChecksClaudeProviderForClaudeRuntime() {
+        XCTAssertTrue(ShortcutRuntimePolicy.requiresClaudeProviderConsistencyCheck(for: .claudeProxy))
+        XCTAssertFalse(ShortcutRuntimePolicy.requiresClaudeProviderConsistencyCheck(for: .openCode))
+    }
+
+    func testAssistantTextExtractorReturnsLatestAssistantText() {
+        let messages = [
+            Message(content: "first", role: .assistant),
+            Message(content: "user", role: .user),
+            Message(content: "  final answer  ", role: .assistant)
+        ]
+
+        XCTAssertEqual(ShortcutAssistantTextExtractor.latestAssistantText(from: messages), "final answer")
+    }
+
+    func testAssistantTextExtractorIgnoresEmptyAssistantText() {
+        let messages = [
+            Message(content: "user", role: .user),
+            Message(content: "   ", role: .assistant)
+        ]
+
+        XCTAssertNil(ShortcutAssistantTextExtractor.latestAssistantText(from: messages))
+    }
 }
 
 final class SSHCommandResultEvaluatorTests: XCTestCase {
