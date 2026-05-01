@@ -60,6 +60,22 @@ final class RemoteProject {
     var proxyVersion: String?
     var proxyStartedAt: String?
 
+    // MARK: - Agent Runtime Tracking
+
+    /// Raw runtime value (`CodingAgentRuntimeKind.rawValue`) selected for this project.
+    /// Missing or unknown values intentionally fall back to Claude proxy for existing projects.
+    var agentRuntimeRawValue: String?
+
+    /// Runtime/provider marker recorded after the last successful chat result.
+    /// This is separate from `lastSuccessfulClaudeProviderRawValue` so OpenCode can track its own provider/model.
+    var lastSuccessfulRuntimeProviderRawValue: String?
+
+    // MARK: - OpenCode Tracking
+
+    var openCodeSessionId: String?
+    var openCodeLastMessageIds: [String] = []
+    var openCodeLastPartIds: [String] = []
+
     // MARK: - Claude Provider Tracking
 
     /// Raw provider value (`ClaudeModelProvider.rawValue`) recorded after the last successful chat result.
@@ -92,6 +108,55 @@ final class RemoteProject {
         lastModified = Date()
     }
 
+    var selectedAgentRuntime: CodingAgentRuntimeKind {
+        get {
+            guard let agentRuntimeRawValue,
+                  let runtime = CodingAgentRuntimeKind(rawValue: agentRuntimeRawValue) else {
+                return .claudeProxy
+            }
+            return runtime
+        }
+        set {
+            agentRuntimeRawValue = newValue.rawValue
+        }
+    }
+
+    var openCodeHydrationState: OpenCodeHydrationState {
+        OpenCodeHydrationState(
+            messageIDs: Set(openCodeLastMessageIds),
+            partIDs: Set(openCodeLastPartIds)
+        )
+    }
+
+    func updateOpenCodeHydrationState(_ state: OpenCodeHydrationState) {
+        openCodeLastMessageIds = state.messageIDs.sorted()
+        openCodeLastPartIds = state.partIDs.sorted()
+        updateLastModified()
+    }
+
+    func resetOpenCodeRuntimeState() {
+        openCodeSessionId = nil
+        openCodeLastMessageIds = []
+        openCodeLastPartIds = []
+        lastSuccessfulRuntimeProviderRawValue = nil
+        updateLastModified()
+    }
+
+    var legacyClaudeRuntimeState: LegacyClaudeRuntimeState {
+        LegacyClaudeRuntimeState(
+            claudeSessionId: claudeSessionId,
+            hasActiveClaudeStream: hasActiveClaudeStream,
+            activeStreamingMessageId: activeStreamingMessageId,
+            proxyLastEventId: proxyLastEventId,
+            proxyConversationId: proxyConversationId,
+            proxyConversationGroupId: proxyConversationGroupId,
+            proxyAgentId: proxyAgentId,
+            nohupProcessId: nohupProcessId,
+            outputFilePath: outputFilePath,
+            lastOutputFilePosition: lastOutputFilePosition
+        )
+    }
+
     var displayTitle: String {
         let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmed, !trimmed.isEmpty {
@@ -112,4 +177,17 @@ final class RemoteProject {
         }
         return "\(count)"
     }
+}
+
+struct LegacyClaudeRuntimeState: Equatable {
+    let claudeSessionId: String?
+    let hasActiveClaudeStream: Bool
+    let activeStreamingMessageId: UUID?
+    let proxyLastEventId: Int?
+    let proxyConversationId: String?
+    let proxyConversationGroupId: String?
+    let proxyAgentId: String?
+    let nohupProcessId: String?
+    let outputFilePath: String?
+    let lastOutputFilePosition: Int?
 }
