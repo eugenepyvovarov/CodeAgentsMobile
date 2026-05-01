@@ -9,7 +9,7 @@ import SwiftUI
 
 struct EditMCPServerSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var mcpService = MCPService.shared
+    @StateObject private var mcpService = CodingAgentMCPService.shared
     
     let project: RemoteProject
     let server: MCPServer
@@ -174,7 +174,7 @@ struct EditMCPServerSheet: View {
             )
         }
         
-        return editedServer.generateAddJsonCommand(scope: scope) ?? "Invalid configuration"
+        return mcpService.configurationPreview(for: editedServer, scope: scope, in: project)
     }
     
     var body: some View {
@@ -350,7 +350,7 @@ struct EditMCPServerSheet: View {
                 if isValid && hasChanges {
                     Section("Preview") {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("The server will be removed and re-added with new configuration:")
+                            Text("The server will be saved with this configuration:")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             

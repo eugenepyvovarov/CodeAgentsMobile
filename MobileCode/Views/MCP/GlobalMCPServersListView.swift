@@ -9,7 +9,7 @@ import SwiftUI
 
 struct GlobalMCPServersListView: View {
     @StateObject private var projectContext = ProjectContext.shared
-    @StateObject private var mcpService = MCPService.shared
+    @StateObject private var mcpService = CodingAgentMCPService.shared
 
     @State private var servers: [MCPServer] = []
     @State private var isLoading = false
@@ -162,7 +162,7 @@ struct GlobalMCPServersListView: View {
         isLoading = true
 
         do {
-            try await MCPTaskSchedulerProvisionService.shared.ensureManagedSchedulerServer(for: project)
+            try await mcpService.ensureManagedSchedulerServerIfNeeded(for: project)
             let newServers = try await mcpService.fetchServers(for: project, scope: .global)
             servers = newServers
         } catch MCPServiceError.claudeNotInstalled {

@@ -175,6 +175,79 @@ final class OpenCodeSessionAPITests: XCTestCase {
         XCTAssertEqual(body["response"] as? String, "always")
     }
 
+    func testMCPStatusDecodesStatusMap() async throws {
+        let body = """
+        {"filesystem":{"status":"connected"},"remote":{"status":"needs_auth"}}
+        """
+        let response = try httpResponse(status: "200 OK", body: body)
+        let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        let statuses = try await client.mcpStatus(sshSession: sshSession, directory: "/workspace/MobileCode")
+
+        XCTAssertEqual(statuses["filesystem"]?.status, "connected")
+        XCTAssertEqual(statuses["remote"]?.mcpStatus, .disconnected)
+        XCTAssertTrue(sshSession.sentInput.contains("GET /mcp?directory=/workspace/MobileCode HTTP/1.1"))
+    }
+
+    func testAddMCPServerPostsOpenCodePayload() async throws {
+        let response = try httpResponse(status: "200 OK", body: "{\"added\":{\"status\":\"disabled\"}}")
+        let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        let statuses = try await client.addMCPServer(
+            sshSession: sshSession,
+            name: "added",
+            config: OpenCodeMCPServerConfiguration(
+                type: .local,
+                command: ["echo", "added"],
+                enabled: false
+            ),
+            directory: "/workspace/MobileCode"
+        )
+
+        XCTAssertEqual(statuses["added"]?.status, "disabled")
+        XCTAssertTrue(sshSession.sentInput.contains("POST /mcp?directory=/workspace/MobileCode HTTP/1.1"))
+
+        let body = try sshSession.sentJSONObject()
+        XCTAssertEqual(body["name"] as? String, "added")
+        let config = try XCTUnwrap(body["config"] as? [String: Any])
+        XCTAssertEqual(config["type"] as? String, "local")
+        XCTAssertEqual(config["command"] as? [String], ["echo", "added"])
+        XCTAssertEqual(config["enabled"] as? Bool, false)
+    }
+
+    func testMCPConnectAndDisconnectUseNamedRoutes() async throws {
+        let connectResponse = try httpResponse(status: "200 OK", body: "true")
+        let connectSession = SessionAPIFakeSSHSession(responseChunks: [connectResponse])
+        let client = OpenCodeClient()
+
+        let connected = try await client.connectMCPServer(
+            sshSession: connectSession,
+            name: "mcp/server",
+            directory: "/workspace/MobileCode"
+        )
+
+        XCTAssertTrue(connected)
+        XCTAssertTrue(connectSession.sentInput.contains(
+            "POST /mcp/mcp%2Fserver/connect?directory=/workspace/MobileCode HTTP/1.1"
+        ))
+
+        let disconnectResponse = try httpResponse(status: "200 OK", body: "true")
+        let disconnectSession = SessionAPIFakeSSHSession(responseChunks: [disconnectResponse])
+
+        let disconnected = try await client.disconnectMCPServer(
+            sshSession: disconnectSession,
+            name: "mcp/server",
+            directory: "/workspace/MobileCode"
+        )
+
+        XCTAssertTrue(disconnected)
+        XCTAssertTrue(disconnectSession.sentInput.contains(
+            "POST /mcp/mcp%2Fserver/disconnect?directory=/workspace/MobileCode HTTP/1.1"
+        ))
+    }
+
     func testHydrationDiffComparesMessageAndPartIDs() throws {
         let remote = try JSONDecoder().decode(
             [OpenCodeSessionMessage].self,

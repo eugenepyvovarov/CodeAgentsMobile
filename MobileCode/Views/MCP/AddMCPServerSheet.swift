@@ -9,7 +9,7 @@ import SwiftUI
 
 struct AddMCPServerSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var mcpService = MCPService.shared
+    @StateObject private var mcpService = CodingAgentMCPService.shared
     
     let project: RemoteProject
     let onAdd: () -> Void
@@ -109,7 +109,7 @@ struct AddMCPServerSheet: View {
             )
         }
         
-        return server.generateAddJsonCommand(scope: scope) ?? "Invalid configuration"
+        return mcpService.configurationPreview(for: server, scope: scope, in: project)
     }
     
     init(project: RemoteProject, initialScope: MCPServer.MCPScope = .local, onAdd: @escaping () -> Void) {
@@ -304,7 +304,7 @@ struct AddMCPServerSheet: View {
                 }
                 
                 if isValid {
-                    Section("Generated Command") {
+                    Section("Configuration Preview") {
                         Text(generatedCommand)
                             .font(.system(.caption, design: .monospaced))
                             .foregroundColor(.secondary)

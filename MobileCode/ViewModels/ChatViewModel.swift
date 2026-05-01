@@ -61,8 +61,8 @@ class ChatViewModel {
     /// Claude Code service reference
     private let claudeService = ClaudeCodeService.shared
     
-    /// MCP service reference
-    private let mcpService = MCPService.shared
+    /// Runtime-aware MCP service reference
+    private let mcpService = CodingAgentMCPService.shared
 
     private let runtimeSelectionStore: CodingAgentRuntimeSelectionStore
     private let runtimeRegistry: CodingAgentRuntimeRegistry

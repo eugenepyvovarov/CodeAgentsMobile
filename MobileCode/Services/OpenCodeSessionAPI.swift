@@ -335,7 +335,7 @@ enum OpenCodeHydrationDiffer {
     }
 }
 
-private enum OpenCodeSessionJSON {
+enum OpenCodeSessionJSON {
     static func encode<T: Encodable>(_ payload: T) throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -347,7 +347,7 @@ private enum OpenCodeSessionJSON {
     }
 }
 
-private enum OpenCodeSessionPath {
+enum OpenCodeSessionPath {
     static func path(_ path: String, directory: String?) -> String {
         guard let directory else { return path }
         return self.path(path, query: ["directory": directory])

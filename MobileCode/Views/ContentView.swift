@@ -78,7 +78,7 @@ struct ContentView: View {
         if let project = projectContext.activeProject {
             Task {
                 do {
-                    try await MCPTaskSchedulerProvisionService.shared.ensureManagedSchedulerServer(for: project)
+                    try await CodingAgentMCPService.shared.ensureManagedSchedulerServerIfNeeded(for: project)
                 } catch {
                     SSHLogger.log("Failed to ensure managed scheduler MCP server: \(error)", level: .warning)
                 }
