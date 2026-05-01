@@ -54,6 +54,35 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(chunks[0].metadata?["opencodePartIds"] as? [String], ["prt_reasoning", "prt_text"])
     }
 
+    func testAccumulatorYieldsToolPatchAndFilePlaceholders() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let toolChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"tool","id":"prt_tool","messageID":"msg_assistant","sessionID":"ses_fixture","tool":"bash","state":{"status":"running","input":{"command":"ls"}}},"time":2}}
+        """))
+        XCTAssertEqual(toolChunks.last?.content, "Tool: bash (running)\nInput: {\"command\":\"ls\"}")
+
+        let patchChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"patch","id":"prt_patch","messageID":"msg_assistant","sessionID":"ses_fixture","path":"Sources/App.swift","text":"+ let value = true"},"time":3}}
+        """))
+        XCTAssertEqual(
+            patchChunks.last?.content,
+            "Tool: bash (running)\nInput: {\"command\":\"ls\"}\nPatch: Sources/App.swift\n+ let value = true"
+        )
+
+        let fileChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"file","id":"prt_file","messageID":"msg_assistant","sessionID":"ses_fixture","path":"README.md"},"time":4}}
+        """))
+        XCTAssertEqual(
+            fileChunks.last?.content,
+            "Tool: bash (running)\nInput: {\"command\":\"ls\"}\nPatch: Sources/App.swift\n+ let value = true\nFile: README.md"
+        )
+    }
+
     func testHydratedMessagesMapTextPartsToRuntimeMessages() throws {
         let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
         [
@@ -78,5 +107,25 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(hydrated[1].role, .assistant)
         XCTAssertEqual(hydrated[1].text, "reply")
         XCTAssertNotNil(hydrated[1].originalPayload)
+    }
+
+    func testHydratedMessagesIncludeNonTextParts() throws {
+        let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [
+          {
+            "info": {"role":"assistant","id":"msg_assistant","sessionID":"ses_fixture","time":{"created":1}},
+            "parts": [
+              {"type":"tool","id":"prt_tool","messageID":"msg_assistant","sessionID":"ses_fixture","tool":"write","state":{"status":"completed","output":"ok"}},
+              {"type":"file","id":"prt_file","messageID":"msg_assistant","sessionID":"ses_fixture","path":"README.md"}
+            ]
+          }
+        ]
+        """.utf8))
+
+        let hydrated = OpenCodeChatMapper.hydratedMessages(from: messages)
+
+        XCTAssertEqual(hydrated.count, 1)
+        XCTAssertEqual(hydrated[0].text, "Tool: write (completed)\nOutput: ok\nFile: README.md")
+        XCTAssertEqual(hydrated[0].runtimePartIDs, ["prt_tool", "prt_file"])
     }
 }

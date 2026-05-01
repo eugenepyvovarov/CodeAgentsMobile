@@ -10,7 +10,7 @@ import Foundation
 enum OpenCodeChatMapper {
     static func hydratedMessages(from messages: [OpenCodeSessionMessage]) -> [CodingAgentRuntimeHydratedMessage] {
         messages.compactMap { message in
-            let text = textContent(from: message.parts)
+            let text = renderedText(from: message.parts)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
             return CodingAgentRuntimeHydratedMessage(
@@ -35,16 +35,64 @@ enum OpenCodeChatMapper {
         rawRole == "user" ? .user : .assistant
     }
 
-    static func textContent(from parts: [OpenCodeMessagePart]) -> String {
-        let texts = parts.compactMap { part -> String? in
-            switch part {
-            case .text(let payload), .reasoning(let payload):
-                return payload.text
-            default:
-                return nil
+    static func renderedText(from parts: [OpenCodeMessagePart]) -> String {
+        parts.compactMap { renderedText(from: $0) }.joined(separator: "\n")
+    }
+
+    static func renderedText(from part: OpenCodeMessagePart, delta: String? = nil, previous: String? = nil) -> String? {
+        let payload = part.payload
+
+        switch part {
+        case .text, .reasoning:
+            if let text = payload.text {
+                return text
             }
+            if let delta {
+                return (previous ?? "") + delta
+            }
+            return previous
+
+        case .tool:
+            return toolText(from: payload)
+
+        case .file:
+            return titledText(
+                title: "File",
+                primary: payload.path ?? payload.url ?? payload.title ?? payload.source,
+                body: payload.text
+            )
+
+        case .patch:
+            return titledText(
+                title: "Patch",
+                primary: payload.path ?? payload.title,
+                body: payload.text ?? payload.source
+            )
+
+        case .snapshot:
+            return titledText(title: "Snapshot", primary: payload.title ?? payload.path, body: payload.text)
+
+        case .stepStart:
+            return titledText(title: "Step started", primary: payload.title, body: payload.text)
+
+        case .stepFinish:
+            return titledText(title: "Step finished", primary: payload.title, body: payload.text)
+
+        case .agent:
+            return titledText(title: "Agent", primary: payload.title ?? payload.tool, body: payload.text)
+
+        case .subtask:
+            return titledText(title: "Subtask", primary: payload.title ?? payload.tool, body: payload.text)
+
+        case .retry:
+            return titledText(title: "Retry", primary: payload.title, body: payload.text)
+
+        case .compaction:
+            return titledText(title: "Compaction", primary: payload.title, body: payload.text)
+
+        case .unknown:
+            return titledText(title: "OpenCode \(payload.type)", primary: payload.title, body: payload.text)
         }
-        return texts.joined(separator: "\n")
     }
 
     static func normalizedPayloadData(
@@ -121,6 +169,66 @@ enum OpenCodeChatMapper {
             return nil
         }
     }
+
+    private static func toolText(from payload: OpenCodeMessagePartPayload) -> String {
+        let name = payload.tool ?? payload.title ?? payload.callID ?? "tool"
+        let status = payload.state?.status ?? "updated"
+        var lines = ["Tool: \(name) (\(status))"]
+
+        if let input = payload.input, let formatted = formatJSONObject(input.mapValues(\.value)) {
+            lines.append("Input: \(formatted)")
+        } else if let stateInput = payload.state?.input, let formatted = formatJSONObject(stateInput.mapValues(\.value)) {
+            lines.append("Input: \(formatted)")
+        }
+
+        if let output = payload.output, let formatted = formatValue(output.value) {
+            lines.append("Output: \(formatted)")
+        } else if let stateOutput = payload.state?.output, let formatted = formatValue(stateOutput.value) {
+            lines.append("Output: \(formatted)")
+        }
+
+        if let error = payload.error ?? payload.state?.error {
+            lines.append("Error: \(error.message ?? error.name ?? "Tool failed")")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func titledText(title: String, primary: String?, body: String?) -> String {
+        var lines = [title]
+        if let primary, !primary.isEmpty {
+            lines[0] += ": \(primary)"
+        }
+        if let body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append(body)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func formatJSONObject(_ object: [String: Any]) -> String? {
+        formatValue(object)
+    }
+
+    private static func formatValue(_ value: Any) -> String? {
+        if value is NSNull {
+            return nil
+        }
+        if let string = value as? String {
+            return string
+        }
+        if let bool = value as? Bool {
+            return bool ? "true" : "false"
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8) else {
+            return String(describing: value)
+        }
+        return string
+    }
 }
 
 struct OpenCodeChatEventAccumulator {
@@ -181,7 +289,6 @@ struct OpenCodeChatEventAccumulator {
     ) -> [MessageChunk] {
         let payload = properties.part.payload
         guard matches(properties.sessionID ?? payload.sessionID),
-              payload.type == "text" || payload.type == "reasoning",
               let messageID = payload.messageID else {
             return []
         }
@@ -195,10 +302,12 @@ struct OpenCodeChatEventAccumulator {
             partOrderByMessageID[messageID, default: []].append(partID)
         }
 
-        if let text = payload.text {
-            textByPartID[partID] = text
-        } else if let delta = properties.delta {
-            textByPartID[partID, default: ""] += delta
+        if let rendered = OpenCodeChatMapper.renderedText(
+            from: properties.part,
+            delta: properties.delta,
+            previous: textByPartID[partID]
+        ) {
+            textByPartID[partID] = rendered
         }
 
         let content = content(for: messageID)
