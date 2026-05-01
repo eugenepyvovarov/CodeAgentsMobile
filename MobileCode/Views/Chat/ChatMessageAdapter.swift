@@ -17,7 +17,7 @@ struct ChatMessageAdapter {
         streamingMessageId: UUID?,
         streamingRedrawToken: UUID? = nil,
         currentUserName: String = "You",
-        assistantName: String = "Claude"
+        assistantName: String = "Agent"
     ) {
         let currentUser = User(id: "user", name: currentUserName, avatarURL: nil, type: .current)
         let assistantUser = User(id: "assistant", name: assistantName, avatarURL: nil, type: .other)

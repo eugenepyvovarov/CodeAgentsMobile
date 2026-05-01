@@ -175,8 +175,8 @@ struct AgentEnvironmentVariablesView: View {
         defer { isRefreshing = false }
 
         do {
-            let agentId = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
-            let remote = try await ProxyAgentEnvService.shared.fetchEnv(agentId: agentId, project: project)
+            let agentId = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
+            let remote = try await AgentEnvService.shared.fetchEnv(agentId: agentId, project: project)
             applyRemote(remote, project: project)
             project.envVarsLastSyncError = nil
             project.envVarsLastSyncedAt = Date()
@@ -187,7 +187,7 @@ struct AgentEnvironmentVariablesView: View {
         }
     }
 
-    private func applyRemote(_ remote: [ProxyAgentEnvItem], project: RemoteProject) {
+    private func applyRemote(_ remote: [AgentEnvItem], project: RemoteProject) {
         var localByKey: [String: AgentEnvironmentVariable] = [:]
         for variable in variables {
             localByKey[variable.key] = variable
@@ -229,9 +229,9 @@ struct AgentEnvironmentVariablesView: View {
         try? modelContext.save()
 
         do {
-            let agentId = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
-            let payload = variables.map { ProxyAgentEnvItem(key: $0.key, value: $0.value, enabled: $0.isEnabled) }
-            try await ProxyAgentEnvService.shared.replaceEnv(agentId: agentId, env: payload, project: project)
+            let agentId = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
+            let payload = variables.map { AgentEnvItem(key: $0.key, value: $0.value, enabled: $0.isEnabled) }
+            try await AgentEnvService.shared.replaceEnv(agentId: agentId, env: payload, project: project)
             project.envVarsPendingSync = false
             project.envVarsLastSyncedAt = Date()
             project.envVarsLastSyncError = nil

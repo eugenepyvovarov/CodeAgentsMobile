@@ -56,7 +56,7 @@ struct MCPServersListView: View {
                             .font(.title2)
                             .fontWeight(.semibold)
                         
-                        Text("MCP servers extend Claude's capabilities with tools and data sources")
+                        Text("MCP servers extend the agent with tools and data sources")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)

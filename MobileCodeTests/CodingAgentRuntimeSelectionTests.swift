@@ -2,11 +2,11 @@ import XCTest
 @testable import CodeAgentsMobile
 
 final class CodingAgentRuntimeSelectionTests: XCTestCase {
-    func testRuntimeSelectionDefaultsToClaudeProxy() throws {
+    func testRuntimeSelectionDefaultsToOpenCode() throws {
         let defaults = try makeDefaults()
         let store = CodingAgentRuntimeSelectionStore(userDefaults: defaults)
 
-        XCTAssertEqual(store.selectedRuntime(), .claudeProxy)
+        XCTAssertEqual(store.selectedRuntime(), .openCode)
     }
 
     func testRuntimeSelectionPersistsOpenCode() throws {
@@ -24,10 +24,10 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         defaults.set("futureRuntime", forKey: CodingAgentRuntimeSelectionStore.selectedRuntimeKey)
         let store = CodingAgentRuntimeSelectionStore(userDefaults: defaults)
 
-        XCTAssertEqual(store.selectedRuntime(), .claudeProxy)
+        XCTAssertEqual(store.selectedRuntime(), .openCode)
     }
 
-    func testRuntimeResolverUsesProjectRuntimeBeforeGlobalDefault() throws {
+    func testRuntimeResolverUsesProjectRuntimeAndPreservesLegacyNilRuntime() throws {
         let defaults = try makeDefaults()
         let store = CodingAgentRuntimeSelectionStore(userDefaults: defaults)
         store.setSelectedRuntime(.openCode)
@@ -35,14 +35,18 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
 
         XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .openCode)
 
+        project.agentRuntimeRawValue = nil
+        XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .claudeProxy)
+
         project.selectedAgentRuntime = .claudeProxy
         XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .claudeProxy)
     }
 
     func testRuntimeDisplayNames() {
-        XCTAssertEqual(CodingAgentRuntimeKind.claudeProxy.displayName, "Claude Proxy")
+        XCTAssertEqual(CodingAgentRuntimeKind.claudeProxy.displayName, "Claude Proxy (Legacy)")
         XCTAssertEqual(CodingAgentRuntimeKind.openCode.displayName, "OpenCode")
         XCTAssertEqual(ConnectionPurpose.opencode.description, "OpenCode")
+        XCTAssertEqual(ConnectionPurpose.agentDaemon.description, "Agent Daemon")
     }
 
     func testOpenCodeSessionStateMapping() {

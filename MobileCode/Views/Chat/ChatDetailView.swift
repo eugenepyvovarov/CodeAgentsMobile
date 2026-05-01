@@ -312,7 +312,7 @@ struct ChatDetailView: View {
             .sheet(isPresented: $showingProviderSettings) {
                 NavigationStack {
                     ClaudeProviderSettingsView()
-                        .navigationTitle("Claude Provider")
+                        .navigationTitle("Legacy Claude Provider")
                         .navigationBarTitleDisplayMode(.inline)
                 }
             }

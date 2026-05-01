@@ -38,7 +38,7 @@ struct ChatSkillPickerSheet: View {
                         }
                     }
                 } footer: {
-                    Text("Selected skill is sent as a hint; Claude decides whether to invoke it.")
+                    Text("Selected skill is sent as a hint; the coding agent decides whether to invoke it.")
                 }
 
                 Section("Enabled Skills") {

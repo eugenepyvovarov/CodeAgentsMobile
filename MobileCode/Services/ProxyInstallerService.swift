@@ -2,7 +2,7 @@
 //  ProxyInstallerService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Install and manage the Claude proxy on a remote server.
+//  Purpose: Install and manage the CodeAgents daemon on a remote server.
 //
 
 import Foundation
@@ -63,10 +63,10 @@ final class ProxyInstallerService {
         let provider = providerConfiguration.selectedProvider
         let authMethod = await activeAuthMethod(for: provider)
         if hasCredentials(for: provider, authMethod: authMethod) {
-            onOutput("Configuring proxy settings...")
+            onOutput("Configuring daemon settings...")
             do {
                 try await configureProxyConfiguration(on: server, session: session)
-                onOutput("Proxy settings configured.")
+                onOutput("Daemon settings configured.")
             } catch {
                 throw ProxyInstallerError.credentialSyncFailed(error.localizedDescription)
             }
@@ -82,16 +82,16 @@ final class ProxyInstallerService {
         let provider = providerConfiguration.selectedProvider
         let authMethod = await activeAuthMethod(for: provider)
         guard hasCredentials(for: provider, authMethod: authMethod) else {
-            SSHLogger.log("Skipping proxy configuration sync: missing credentials", level: .warning)
+            SSHLogger.log("Skipping daemon configuration sync: missing credentials", level: .warning)
             return
         }
 
         for server in servers {
             do {
                 try await configureProxyConfiguration(on: server, authMethod: authMethod)
-                SSHLogger.log("Proxy configuration synced for \(server.name)", level: .info)
+                SSHLogger.log("Daemon configuration synced for \(server.name)", level: .info)
             } catch {
-                SSHLogger.log("Failed to sync proxy configuration for \(server.name): \(error)", level: .warning)
+                SSHLogger.log("Failed to sync daemon configuration for \(server.name): \(error)", level: .warning)
             }
         }
     }
@@ -457,17 +457,17 @@ enum ProxyInstallerError: LocalizedError {
         case .installFailed(let line):
             return "Installer reported an error: \(line)"
         case .healthCheckFailed(let reason):
-            return "Proxy health check failed: \(reason)"
+            return "CodeAgents daemon health check failed: \(reason)"
         case .processFailed(let reason):
             return "Installer process failed: \(reason)"
         case .credentialSyncFailed(let reason):
-            return "Proxy credential sync failed: \(reason)"
+            return "CodeAgents daemon credential sync failed: \(reason)"
         case .proxyEnvUpdateFailed(let reason):
-            return "Proxy environment update failed: \(reason)"
+            return "CodeAgents daemon environment update failed: \(reason)"
         case .pushConfigFailed(let reason):
-            return "Proxy push configuration failed: \(reason)"
+            return "CodeAgents daemon push configuration failed: \(reason)"
         case .missingCredentials:
-            return "Claude credentials are missing in the app."
+            return "Provider credentials are missing in the app."
         }
     }
 }

@@ -37,16 +37,16 @@ enum ProxyTaskError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse(let message):
-            return "Proxy response invalid: \(message)"
+            return "Agent scheduler response invalid: \(message)"
         case .httpError(let status, let body):
             if status == 404 {
-                return "Proxy scheduler not available (404). Update the proxy to enable tasks."
+                return "Agent scheduler not available (404). Update the CodeAgents daemon to enable tasks."
             }
             let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
-                return "Proxy HTTP \(status)"
+                return "Agent daemon HTTP \(status)"
             }
-            return "Proxy HTTP \(status): \(trimmed)"
+            return "Agent daemon HTTP \(status): \(trimmed)"
         }
     }
 }
@@ -72,7 +72,7 @@ final class ProxyTaskService {
     }
 
     func fetchTasks(for project: RemoteProject) async throws -> [ProxyTaskRecord] {
-        let session = try await sshService.getConnection(for: project, purpose: .claude)
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         _ = try await resolveCanonicalConversationId(for: project, session: session)
         let agentId = project.proxyAgentId ?? project.id.uuidString
         let query = buildQuery([
@@ -92,13 +92,13 @@ final class ProxyTaskService {
 
     func deleteTask(_ task: AgentScheduledTask, project: RemoteProject) async throws {
         guard let remoteId = task.remoteId, !remoteId.isEmpty else { return }
-        let session = try await sshService.getConnection(for: project, purpose: .claude)
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         let path = "/v1/agent/tasks/\(remoteId)"
         _ = try await client.request(session: session, method: "DELETE", path: path, body: nil)
     }
 
     private func createTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
-        let session = try await sshService.getConnection(for: project, purpose: .claude)
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
         let openCodeSessionId = try await resolveOpenCodeSessionIdIfNeeded(for: project)
         let body = try buildPayload(
@@ -117,7 +117,7 @@ final class ProxyTaskService {
     private func updateTask(_ task: AgentScheduledTask,
                             remoteId: String,
                             project: RemoteProject) async throws -> ProxyTaskRecord {
-        let session = try await sshService.getConnection(for: project, purpose: .claude)
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
         let openCodeSessionId = try await resolveOpenCodeSessionIdIfNeeded(for: project)
         let body = try buildPayload(
@@ -488,6 +488,11 @@ final class ProxyTaskService {
     }
 }
 
+typealias AgentTaskSchedule = ProxyTaskSchedule
+typealias AgentTaskRecord = ProxyTaskRecord
+typealias AgentTaskError = ProxyTaskError
+typealias AgentTaskService = ProxyTaskService
+
 private struct ProxyHTTPResponse {
     let statusCode: Int
     let headers: [String: String]
@@ -513,7 +518,7 @@ private final class ProxyTaskClient {
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: 15 * 1_000_000_000)
-                throw ProxyTaskError.invalidResponse("Proxy request timed out")
+                throw ProxyTaskError.invalidResponse("Agent daemon request timed out")
             }
             defer {
                 group.cancelAll()

@@ -9,7 +9,7 @@ import SwiftUI
 
 struct AgentRuntimeSettingsView: View {
     @StateObject private var projectContext = ProjectContext.shared
-    @AppStorage(CodingAgentRuntimeSelectionStore.selectedRuntimeKey) private var selectedRuntimeRawValue = CodingAgentRuntimeKind.claudeProxy.rawValue
+    @AppStorage(CodingAgentRuntimeSelectionStore.selectedRuntimeKey) private var selectedRuntimeRawValue = CodingAgentRuntimeSelectionStore.defaultRuntime.rawValue
 
     @StateObject private var providerService = OpenCodeProviderService.shared
     @State private var runtimeHealth: CodingAgentRuntimeHealth?
@@ -25,7 +25,11 @@ struct AgentRuntimeSettingsView: View {
     private let runtimeSelectionStore = CodingAgentRuntimeSelectionStore()
 
     private var selectedRuntime: CodingAgentRuntimeKind {
-        CodingAgentRuntimeKind(rawValue: selectedRuntimeRawValue) ?? .claudeProxy
+        CodingAgentRuntimeKind(rawValue: selectedRuntimeRawValue) ?? CodingAgentRuntimeSelectionStore.defaultRuntime
+    }
+
+    private var effectiveRuntime: CodingAgentRuntimeKind {
+        activeProject?.selectedAgentRuntime ?? selectedRuntime
     }
 
     private var activeProject: RemoteProject? {
@@ -34,8 +38,8 @@ struct AgentRuntimeSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Runtime") {
-                Picker("Default Runtime", selection: runtimeBinding) {
+            Section {
+                Picker("Runtime", selection: runtimeBinding) {
                     ForEach(CodingAgentRuntimeKind.allCases) { runtime in
                         Text(runtime.displayName).tag(runtime)
                     }
@@ -49,6 +53,10 @@ struct AgentRuntimeSettingsView: View {
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
+            } header: {
+                Text("Runtime")
+            } footer: {
+                Text("New agents use OpenCode by default. Existing legacy agents stay on Claude Proxy until you switch them here.")
             }
 
             if let activeProject {
@@ -80,7 +88,7 @@ struct AgentRuntimeSettingsView: View {
                     }
                 }
 
-                if selectedRuntime == .openCode {
+                if effectiveRuntime == .openCode {
                     openCodeProviderSections(project: activeProject)
                 }
             }
@@ -90,15 +98,6 @@ struct AgentRuntimeSettingsView: View {
         .task {
             if let activeProject {
                 await refreshStatus(for: activeProject)
-            }
-        }
-        .onChange(of: selectedRuntimeRawValue) { _, newValue in
-            guard let runtime = CodingAgentRuntimeKind(rawValue: newValue) else { return }
-            runtimeSelectionStore.setSelectedRuntime(runtime)
-            if let activeProject {
-                activeProject.selectedAgentRuntime = runtime
-                activeProject.updateLastModified()
-                Task { await refreshStatus(for: activeProject) }
             }
         }
         .alert("Error", isPresented: $showError) {
@@ -186,16 +185,26 @@ struct AgentRuntimeSettingsView: View {
 
     private var runtimeBinding: Binding<CodingAgentRuntimeKind> {
         Binding(
-            get: { selectedRuntime },
-            set: { selectedRuntimeRawValue = $0.rawValue }
+            get: { effectiveRuntime },
+            set: { applyRuntimeSelection($0) }
         )
+    }
+
+    private func applyRuntimeSelection(_ runtime: CodingAgentRuntimeKind) {
+        selectedRuntimeRawValue = runtime.rawValue
+        runtimeSelectionStore.setSelectedRuntime(runtime)
+        if let activeProject {
+            activeProject.selectedAgentRuntime = runtime
+            activeProject.updateLastModified()
+            Task { await refreshStatus(for: activeProject) }
+        }
     }
 
     private func refreshStatus(for project: RemoteProject) async {
         isLoadingStatus = true
         defer { isLoadingStatus = false }
 
-        let runtime = selectedRuntime
+        let runtime = CodingAgentRuntimeResolver.runtimeKind(for: project)
         runtimeHealth = await runtimeRegistry.runtime(for: runtime).health(for: project)
 
         guard runtime == .openCode else {

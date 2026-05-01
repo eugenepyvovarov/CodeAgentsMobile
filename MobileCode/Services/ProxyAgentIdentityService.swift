@@ -2,7 +2,7 @@
 //  ProxyAgentIdentityService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Ensure a stable proxy agent_id exists on the server
+//  Purpose: Ensure a stable agent_id exists on the server
 //  - Stored in <agent cwd>/.codeagents/codeagents.json
 //  - Used to keep proxy tasks/env stable across app reinstalls
 //
@@ -147,6 +147,14 @@ final class ProxyAgentIdentityService {
         return "'\(escaped)'"
     }
 }
+
+extension ProxyAgentIdentityService {
+    func ensureAgentId(for project: RemoteProject, modelContext: ModelContext) async throws -> String {
+        try await ensureProxyAgentId(for: project, modelContext: modelContext)
+    }
+}
+
+typealias AgentIdentityService = ProxyAgentIdentityService
 
 private enum IdentitySource: String {
     case primary

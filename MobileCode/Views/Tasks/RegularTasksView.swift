@@ -180,14 +180,14 @@ struct RegularTasksView: View {
 
         do {
             do {
-                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
             } catch {
                 SSHLogger.log(
-                    "Failed to ensure proxy agent id for tasks refresh (projectId=\(project.id)): \(error)",
+                    "Failed to ensure agent id for tasks refresh (projectId=\(project.id)): \(error)",
                     level: .warning
                 )
             }
-            let remoteTasks = try await ProxyTaskService.shared.fetchTasks(for: project)
+            let remoteTasks = try await AgentTaskService.shared.fetchTasks(for: project)
             applyRemoteTasks(remoteTasks, project: project)
             syncReporter.markSuccess()
         } catch {
@@ -195,7 +195,7 @@ struct RegularTasksView: View {
         }
     }
 
-    private func applyRemoteTasks(_ remoteTasks: [ProxyTaskRecord], project: RemoteProject) {
+    private func applyRemoteTasks(_ remoteTasks: [AgentTaskRecord], project: RemoteProject) {
         var localByRemoteId: [String: AgentScheduledTask] = [:]
         for task in tasks {
             if let remoteId = task.remoteId {
@@ -231,7 +231,7 @@ struct RegularTasksView: View {
         }
     }
 
-    private func updateLocalTask(_ task: AgentScheduledTask, from remote: ProxyTaskRecord) {
+    private func updateLocalTask(_ task: AgentScheduledTask, from remote: AgentTaskRecord) {
         if let title = remote.title {
             task.title = title
         }
@@ -268,11 +268,11 @@ struct RegularTasksView: View {
 
         do {
             do {
-                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
             } catch {
-                SSHLogger.log("Failed to ensure proxy agent id for task sync (projectId=\(project.id)): \(error)", level: .warning)
+                SSHLogger.log("Failed to ensure agent id for task sync (projectId=\(project.id)): \(error)", level: .warning)
             }
-            let record = try await ProxyTaskService.shared.upsertTask(task, project: project)
+            let record = try await AgentTaskService.shared.upsertTask(task, project: project)
             applySyncRecord(record, to: task)
             syncReporter.markSuccess()
         } catch {
@@ -288,7 +288,7 @@ struct RegularTasksView: View {
         syncReporter.markSyncing()
 
         do {
-            try await ProxyTaskService.shared.deleteTask(task, project: project)
+            try await AgentTaskService.shared.deleteTask(task, project: project)
             modelContext.delete(task)
             syncReporter.markSuccess()
         } catch {
@@ -296,7 +296,7 @@ struct RegularTasksView: View {
         }
     }
 
-    private func applySyncRecord(_ record: ProxyTaskRecord, to task: AgentScheduledTask) {
+    private func applySyncRecord(_ record: AgentTaskRecord, to task: AgentScheduledTask) {
         task.remoteId = record.id
         if let nextRun = record.nextRunAt {
             task.nextRunAt = nextRun

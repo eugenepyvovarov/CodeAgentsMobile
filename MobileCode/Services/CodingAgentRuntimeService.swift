@@ -16,7 +16,7 @@ enum CodingAgentRuntimeKind: String, CaseIterable, Codable, Identifiable, Hashab
     var displayName: String {
         switch self {
         case .claudeProxy:
-            return "Claude Proxy"
+            return "Claude Proxy (Legacy)"
         case .openCode:
             return "OpenCode"
         }
@@ -25,6 +25,7 @@ enum CodingAgentRuntimeKind: String, CaseIterable, Codable, Identifiable, Hashab
 
 struct CodingAgentRuntimeSelectionStore {
     static let selectedRuntimeKey = "CodingAgentRuntime.SelectedRuntime"
+    static let defaultRuntime = CodingAgentRuntimeKind.openCode
 
     private let userDefaults: UserDefaults
 
@@ -35,7 +36,7 @@ struct CodingAgentRuntimeSelectionStore {
     func selectedRuntime() -> CodingAgentRuntimeKind {
         guard let rawValue = userDefaults.string(forKey: Self.selectedRuntimeKey),
               let runtime = CodingAgentRuntimeKind(rawValue: rawValue) else {
-            return .claudeProxy
+            return Self.defaultRuntime
         }
         return runtime
     }
@@ -50,10 +51,13 @@ enum CodingAgentRuntimeResolver {
         for project: RemoteProject,
         selectionStore: CodingAgentRuntimeSelectionStore = CodingAgentRuntimeSelectionStore()
     ) -> CodingAgentRuntimeKind {
-        if project.agentRuntimeRawValue != nil {
-            return project.selectedAgentRuntime
+        // Keep the parameter for call-site compatibility; missing per-project runtime markers are legacy projects.
+        _ = selectionStore
+        guard let rawValue = project.agentRuntimeRawValue,
+              let runtime = CodingAgentRuntimeKind(rawValue: rawValue) else {
+            return .claudeProxy
         }
-        return selectionStore.selectedRuntime()
+        return runtime
     }
 }
 

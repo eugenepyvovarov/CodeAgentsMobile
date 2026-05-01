@@ -102,6 +102,7 @@ final class RemoteProject {
         self.serverId = serverId
         self.lastModified = Date()
         self.createdAt = Date()
+        self.agentRuntimeRawValue = CodingAgentRuntimeKind.openCode.rawValue
     }
     
     func updateLastModified() {

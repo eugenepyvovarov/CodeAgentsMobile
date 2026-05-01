@@ -661,11 +661,11 @@ struct RegularTaskEditorView: View {
 
         do {
             do {
-                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
             } catch {
-                SSHLogger.log("Failed to ensure proxy agent id for task save (projectId=\(project.id)): \(error)", level: .warning)
+                SSHLogger.log("Failed to ensure agent id for task save (projectId=\(project.id)): \(error)", level: .warning)
             }
-            let record = try await ProxyTaskService.shared.upsertTask(localTask, project: project)
+            let record = try await AgentTaskService.shared.upsertTask(localTask, project: project)
             applySyncRecord(record, to: localTask)
             syncReporter?.markSuccess()
             cleanupStagedLocalFiles(in: attachmentsSnapshot)
@@ -695,7 +695,7 @@ struct RegularTaskEditorView: View {
         syncReporter?.markSyncing()
 
         do {
-            try await ProxyTaskService.shared.deleteTask(task, project: project)
+            try await AgentTaskService.shared.deleteTask(task, project: project)
             modelContext.delete(task)
             syncReporter?.markSuccess()
             dismiss()
@@ -706,7 +706,7 @@ struct RegularTaskEditorView: View {
         }
     }
 
-    private func applySyncRecord(_ record: ProxyTaskRecord, to task: AgentScheduledTask) {
+    private func applySyncRecord(_ record: AgentTaskRecord, to task: AgentScheduledTask) {
         task.remoteId = record.id
         if let nextRun = record.nextRunAt {
             task.nextRunAt = nextRun

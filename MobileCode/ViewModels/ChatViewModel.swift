@@ -353,9 +353,9 @@ class ChatViewModel {
 
         if claudeService.isProxyChatEnabled, let context = modelContext {
             do {
-                _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: context)
+                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: context)
             } catch {
-                SSHLogger.log("Failed to ensure proxy agent id for project \(project.id): \(error)", level: .warning)
+                SSHLogger.log("Failed to ensure agent id for project \(project.id): \(error)", level: .warning)
             }
         }
         

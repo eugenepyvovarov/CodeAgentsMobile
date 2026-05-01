@@ -14,7 +14,7 @@ import Crypto
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
-    @AppStorage(CodingAgentRuntimeSelectionStore.selectedRuntimeKey) private var selectedRuntimeRawValue = CodingAgentRuntimeKind.claudeProxy.rawValue
+    @AppStorage(CodingAgentRuntimeSelectionStore.selectedRuntimeKey) private var selectedRuntimeRawValue = CodingAgentRuntimeSelectionStore.defaultRuntime.rawValue
     @Query private var servers: [Server]
     @Query(sort: \SSHKey.createdAt, order: .reverse) private var sshKeys: [SSHKey]
     @Query private var projects: [RemoteProject]
@@ -40,7 +40,7 @@ struct SettingsView: View {
     }
 
     private var runtimeDisplayName: String {
-        (CodingAgentRuntimeKind(rawValue: selectedRuntimeRawValue) ?? .claudeProxy).displayName
+        (CodingAgentRuntimeKind(rawValue: selectedRuntimeRawValue) ?? CodingAgentRuntimeSelectionStore.defaultRuntime).displayName
     }
 
     private var appVersionString: String {
@@ -50,7 +50,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form(content: {
-                Section("Claude Provider") {
+                Section("Legacy Claude Provider") {
                     NavigationLink {
                         ClaudeProviderSettingsView()
                     } label: {

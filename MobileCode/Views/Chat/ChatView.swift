@@ -103,9 +103,9 @@ struct ChatView: View {
             guard let project = projectContext.activeProject else { return }
             if activeRuntimeKind(for: project) == .claudeProxy {
                 do {
-                    _ = try await ProxyAgentIdentityService.shared.ensureProxyAgentId(for: project, modelContext: modelContext)
+                    _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
                 } catch {
-                    SSHLogger.log("Failed to ensure proxy agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
+                    SSHLogger.log("Failed to ensure agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
                 }
             }
             viewModel.configure(modelContext: modelContext, projectId: project.id)

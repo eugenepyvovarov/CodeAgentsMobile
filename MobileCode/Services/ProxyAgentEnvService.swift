@@ -2,7 +2,7 @@
 //  ProxyAgentEnvService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Sync per-agent environment variables with the Claude proxy
+//  Purpose: Sync per-agent environment variables with the CodeAgents daemon
 //
 
 import Foundation
@@ -29,14 +29,14 @@ final class ProxyAgentEnvService {
     private init() {}
 
     func fetchEnv(agentId: String, project: RemoteProject) async throws -> [ProxyAgentEnvItem] {
-        let session = try await sshService.getConnection(for: project, purpose: .claude)
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         let path = "/v1/agent/env?agent_id=\(agentId)"
         let response = try await client.request(session: session, method: "GET", path: path, body: nil)
         return try decodeEnvList(from: response.body)
     }
 
     func replaceEnv(agentId: String, env: [ProxyAgentEnvItem], project: RemoteProject) async throws {
-        let session = try await sshService.getConnection(for: project, purpose: .claude)
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         let payload = ProxyAgentEnvReplaceRequest(agentId: agentId, env: env)
         let data = try JSONEncoder().encode(payload)
         let body = String(data: data, encoding: .utf8) ?? "{}"
@@ -49,6 +49,9 @@ final class ProxyAgentEnvService {
         return decoded.env
     }
 }
+
+typealias AgentEnvItem = ProxyAgentEnvItem
+typealias AgentEnvService = ProxyAgentEnvService
 
 private struct ProxyAgentEnvListResponse: Decodable {
     let env: [ProxyAgentEnvItem]
@@ -89,7 +92,7 @@ private final class ProxyAgentEnvClient {
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: 15 * 1_000_000_000)
-                throw ProxyTaskError.invalidResponse("Proxy request timed out")
+                throw ProxyTaskError.invalidResponse("Agent daemon request timed out")
             }
             defer {
                 group.cancelAll()
@@ -284,4 +287,3 @@ private final class ProxyChunkedBodyDecoder {
         return output
     }
 }
-

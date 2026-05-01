@@ -218,7 +218,7 @@ struct EditServerSheet: View {
                 } header: {
                     Text("Push Notifications")
                 } footer: {
-                    Text("Enables push notifications for replies finished on this server’s proxy. You’ll be auto-subscribed when opening an agent chat.")
+                    Text("Enables push notifications for replies finished by this server’s CodeAgents daemon. You’ll be auto-subscribed when opening an agent chat.")
                         .font(.caption)
                 }
                 

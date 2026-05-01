@@ -60,7 +60,7 @@ struct ClaudeProviderSettingsView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .navigationTitle("Claude Provider")
+        .navigationTitle("Legacy Claude Provider")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -113,12 +113,12 @@ struct ClaudeProviderSettingsView: View {
         if selectedProvider == .anthropic {
             switch selectedAuthMethod {
             case .apiKey:
-                return "Stored securely in the device keychain and synced to all servers running the proxy."
+                return "Stored securely in the device keychain and synced to all servers running the CodeAgents daemon."
             case .token:
                 return "Generate a token on your server with `claude setup-token`. Stored securely in the device keychain."
             }
         }
-        return "Stored securely in the device keychain and synced to all servers running the proxy."
+        return "Stored securely in the device keychain and synced to all servers running the CodeAgents daemon."
     }
 
     private func loadCredential() {

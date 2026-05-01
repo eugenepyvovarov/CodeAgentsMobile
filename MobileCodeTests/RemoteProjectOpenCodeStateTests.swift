@@ -3,15 +3,23 @@ import XCTest
 @testable import CodeAgentsMobile
 
 final class RemoteProjectOpenCodeStateTests: XCTestCase {
-    func testNewProjectDefaultsToClaudeProxyAndEmptyOpenCodeState() {
+    func testNewProjectDefaultsToOpenCodeAndEmptyOpenCodeState() {
         let project = makeProject()
 
-        XCTAssertEqual(project.selectedAgentRuntime, .claudeProxy)
-        XCTAssertNil(project.agentRuntimeRawValue)
+        XCTAssertEqual(project.selectedAgentRuntime, .openCode)
+        XCTAssertEqual(project.agentRuntimeRawValue, CodingAgentRuntimeKind.openCode.rawValue)
         XCTAssertNil(project.openCodeSessionId)
         XCTAssertTrue(project.openCodeHydrationState.messageIDs.isEmpty)
         XCTAssertTrue(project.openCodeHydrationState.partIDs.isEmpty)
         XCTAssertNil(project.lastSuccessfulRuntimeProviderRawValue)
+    }
+
+    func testLegacyProjectWithoutStoredRuntimeDefaultsToClaudeProxy() {
+        let project = makeProject()
+        project.agentRuntimeRawValue = nil
+
+        XCTAssertEqual(project.selectedAgentRuntime, .claudeProxy)
+        XCTAssertNil(project.agentRuntimeRawValue)
     }
 
     func testRuntimeSelectionAndOpenCodeHydrationStateAreStored() {

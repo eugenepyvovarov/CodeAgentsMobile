@@ -100,7 +100,7 @@ class SSHService {
     /// Get or create a connection for a specific project and purpose
     /// - Parameters:
     ///   - project: The project requiring the connection
-    ///   - purpose: The purpose of the connection (claude, terminal, files)
+    ///   - purpose: The purpose of the connection (agent runtime, daemon, terminal, files)
     /// - Returns: Active SSH session
     func getConnection(for project: RemoteProject, purpose: ConnectionPurpose) async throws -> SSHSession {
         let key = ConnectionKey(projectId: project.id, purpose: purpose)

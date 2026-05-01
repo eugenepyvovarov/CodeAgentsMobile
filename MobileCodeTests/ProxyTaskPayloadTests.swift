@@ -18,7 +18,7 @@ final class ProxyTaskPayloadTests: XCTestCase {
             timeOfDayMinutes: 9 * 60
         )
 
-        let body = try ProxyTaskService.shared.buildPayload(
+        let body = try AgentTaskService.shared.buildPayload(
             for: task,
             project: project,
             conversationId: "proxy_conversation",
@@ -43,7 +43,7 @@ final class ProxyTaskPayloadTests: XCTestCase {
         let project = RemoteProject(name: "MobileCode", serverId: UUID(), basePath: "/workspace")
         let task = AgentScheduledTask(projectId: project.id, prompt: "Run checks")
 
-        let body = try ProxyTaskService.shared.buildPayload(
+        let body = try AgentTaskService.shared.buildPayload(
             for: task,
             project: project,
             conversationId: "proxy_conversation",
