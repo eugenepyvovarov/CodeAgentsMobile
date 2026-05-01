@@ -138,11 +138,34 @@ extension OpenCodeClient {
             responseType: Bool.self
         )
     }
+
+    @discardableResult
+    func replyPermission(
+        sshSession: SSHSession,
+        sessionID: String,
+        permissionID: String,
+        response: String,
+        directory: String? = nil
+    ) async throws -> OpenCodeHTTPResponse {
+        try await request(
+            session: sshSession,
+            method: .post,
+            path: OpenCodeSessionPath.path(
+                "/session/\(OpenCodeSessionPath.escape(sessionID))/permissions/\(OpenCodeSessionPath.escape(permissionID))",
+                directory: directory
+            ),
+            body: OpenCodeSessionJSON.encode(OpenCodePermissionReplyPayload(response: response))
+        )
+    }
 }
 
 struct OpenCodeCreateSessionPayload: Encodable {
     let parentID: String?
     let title: String?
+}
+
+struct OpenCodePermissionReplyPayload: Encodable {
+    let response: String
 }
 
 struct OpenCodeSessionMessage: Decodable {

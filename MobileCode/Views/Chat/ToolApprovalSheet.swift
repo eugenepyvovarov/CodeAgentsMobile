@@ -18,7 +18,7 @@ struct ToolApprovalSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Allow \(request.toolName)?")
                             .font(.title3.weight(.semibold))
-                        Text("Claude wants to use this tool during the current task.")
+                        Text("The agent wants to use this tool during the current task.")
                             .foregroundStyle(.secondary)
                     }
 

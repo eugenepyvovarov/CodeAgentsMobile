@@ -258,6 +258,9 @@ struct OpenCodeChatEventAccumulator {
         case .sessionError(let properties, let raw):
             guard matches(properties.sessionID) else { return [] }
             return [errorChunk(message: properties.error.message ?? properties.error.name ?? "OpenCode session error.", raw: raw)]
+        case .permissionUpdated(let properties, let raw):
+            guard matches(properties.sessionID) else { return [] }
+            return permissionChunks(properties, raw: raw)
         default:
             return []
         }
@@ -330,6 +333,44 @@ struct OpenCodeChatEventAccumulator {
 
     private func errorChunk(message: String, raw: OpenCodeRawEvent) -> MessageChunk {
         chunk(content: message, isComplete: true, isError: true, raw: raw, messageID: latestAssistantMessageID())
+    }
+
+    private func permissionChunks(_ properties: OpenCodePermissionProperties, raw: OpenCodeRawEvent) -> [MessageChunk] {
+        let permissionID = properties.id ?? properties.permissionID
+        guard let permissionID, !permissionID.isEmpty else { return [] }
+
+        var input = properties.metadata?.mapValues(\.value) ?? [:]
+        if let pattern = properties.pattern?.values, !pattern.isEmpty {
+            input["pattern"] = pattern.joined(separator: ", ")
+        }
+        if let callID = properties.callID {
+            input["callID"] = callID
+        }
+
+        var metadata: [String: Any] = [
+            "type": "tool_permission",
+            "runtime": CodingAgentRuntimeKind.openCode.rawValue,
+            "permissionId": permissionID,
+            "toolName": properties.title ?? properties.type ?? "OpenCode Tool",
+            "input": input,
+            "suggestions": properties.pattern?.values ?? []
+        ]
+        if let blockedPath = input["path"] as? String ?? input["file"] as? String ?? input["file_path"] as? String {
+            metadata["blockedPath"] = blockedPath
+        }
+        if let original = OpenCodeChatMapper.normalizedPayloadString(
+            type: "tool_permission",
+            role: "assistant",
+            text: properties.title ?? properties.type ?? "OpenCode permission request",
+            sessionID: sessionID,
+            messageID: properties.messageID,
+            partIDs: [],
+            rawEvent: raw
+        ) {
+            metadata["originalJSON"] = original
+        }
+
+        return [MessageChunk(content: "", isComplete: false, isError: false, metadata: metadata)]
     }
 
     private func chunk(

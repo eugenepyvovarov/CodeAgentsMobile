@@ -83,6 +83,26 @@ final class OpenCodeChatMapperTests: XCTestCase {
         )
     }
 
+    func testAccumulatorMapsPermissionUpdatedToToolPermissionChunk() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        let chunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"permission.updated","properties":{"id":"perm_fixture","type":"bash","pattern":["*.swift","*.md"],"sessionID":"ses_fixture","messageID":"msg_fixture","callID":"call_fixture","title":"Run command","metadata":{"command":"ls","path":"Sources/App.swift"},"time":{"created":1}}}
+        """))
+
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks[0].metadata?["type"] as? String, "tool_permission")
+        XCTAssertEqual(chunks[0].metadata?["permissionId"] as? String, "perm_fixture")
+        XCTAssertEqual(chunks[0].metadata?["toolName"] as? String, "Run command")
+        XCTAssertEqual(chunks[0].metadata?["blockedPath"] as? String, "Sources/App.swift")
+        XCTAssertEqual(chunks[0].metadata?["suggestions"] as? [String], ["*.swift", "*.md"])
+
+        let input = try XCTUnwrap(chunks[0].metadata?["input"] as? [String: Any])
+        XCTAssertEqual(input["command"] as? String, "ls")
+        XCTAssertEqual(input["pattern"] as? String, "*.swift, *.md")
+        XCTAssertEqual(input["callID"] as? String, "call_fixture")
+    }
+
     func testHydratedMessagesMapTextPartsToRuntimeMessages() throws {
         let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
         [

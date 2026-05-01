@@ -154,6 +154,7 @@ protocol CodingAgentRuntimeService: AnyObject {
         project: RemoteProject,
         permissionId: String,
         decision: ToolApprovalDecision,
+        scope: ToolApprovalScope,
         message: String?
     ) async throws
     func reset(project: RemoteProject) async throws
@@ -209,6 +210,7 @@ final class ClaudeProxyRuntimeService: CodingAgentRuntimeService {
         project: RemoteProject,
         permissionId: String,
         decision: ToolApprovalDecision,
+        scope: ToolApprovalScope = .once,
         message: String?
     ) async throws {
         try await claudeService.sendProxyToolPermission(
@@ -335,9 +337,21 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         project: RemoteProject,
         permissionId: String,
         decision: ToolApprovalDecision,
+        scope: ToolApprovalScope,
         message: String?
     ) async throws {
-        throw CodingAgentRuntimeError.missingSession
+        guard let sessionID = sanitizedSessionID(project.openCodeSessionId) else {
+            throw CodingAgentRuntimeError.missingSession
+        }
+
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        try await client.replyPermission(
+            sshSession: sshSession,
+            sessionID: sessionID,
+            permissionID: permissionId,
+            response: openCodePermissionResponse(decision: decision, scope: scope),
+            directory: project.path
+        )
     }
 
     func reset(project: RemoteProject) async throws {
@@ -380,6 +394,16 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let trimmed, !trimmed.isEmpty else { return nil }
         return trimmed
+    }
+
+    private func openCodePermissionResponse(decision: ToolApprovalDecision, scope: ToolApprovalScope) -> String {
+        guard decision == .allow else { return "reject" }
+        switch scope {
+        case .once:
+            return "once"
+        case .agent, .global:
+            return "always"
+        }
     }
 }
 

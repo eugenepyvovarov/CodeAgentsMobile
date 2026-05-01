@@ -662,6 +662,11 @@ class ChatViewModel {
             var didReceiveContent = false
 
             for try await chunk in stream {
+                if let type = chunk.metadata?["type"] as? String, type == "tool_permission" {
+                    handleToolPermissionChunk(chunk, project: project)
+                    continue
+                }
+
                 if chunk.isError {
                     let errorText = chunk.content.isEmpty ? "OpenCode failed to respond." : chunk.content
                     updateMessage(assistantMessage, with: errorText)
@@ -1418,7 +1423,7 @@ class ChatViewModel {
         handledToolPermissionIds.insert(request.id)
 
         if let record = toolApprovalStore.decision(for: request.toolName, agentId: project.id) {
-            Task { await sendToolApprovalDecision(request: request, decision: record.decision) }
+            Task { await sendToolApprovalDecision(request: request, decision: record.decision, scope: record.scope) }
             return
         }
 
@@ -1442,7 +1447,7 @@ class ChatViewModel {
         activeToolApproval = nil
         dequeueNextToolApproval()
 
-        Task { await sendToolApprovalDecision(request: request, decision: decision) }
+        Task { await sendToolApprovalDecision(request: request, decision: decision, scope: scope) }
     }
 
     func respondToToolApprovalAll(
@@ -1456,27 +1461,38 @@ class ChatViewModel {
         activeToolApproval = nil
         dequeueNextToolApproval()
 
-        Task { await sendToolApprovalDecision(request: request, decision: decision) }
+        Task { await sendToolApprovalDecision(request: request, decision: decision, scope: .agent) }
         for pendingRequest in pending where pendingRequest.agentId == request.agentId {
-            Task { await sendToolApprovalDecision(request: pendingRequest, decision: decision) }
+            Task { await sendToolApprovalDecision(request: pendingRequest, decision: decision, scope: .agent) }
         }
     }
 
     private func sendToolApprovalDecision(
         request: ToolApprovalRequest,
-        decision: ToolApprovalDecision
+        decision: ToolApprovalDecision,
+        scope: ToolApprovalScope = .once
     ) async {
         guard let project = ProjectContext.shared.activeProject,
               project.id == request.agentId else { return }
 
         let message = decision == .deny ? "Permission denied by user." : nil
         do {
-            try await claudeService.sendProxyToolPermission(
-                project: project,
-                permissionId: request.id,
-                decision: decision,
-                message: message
-            )
+            if activeRuntimeKind(for: project) == .openCode {
+                try await runtimeRegistry.runtime(for: .openCode).replyToPermission(
+                    project: project,
+                    permissionId: request.id,
+                    decision: decision,
+                    scope: scope,
+                    message: message
+                )
+            } else {
+                try await claudeService.sendProxyToolPermission(
+                    project: project,
+                    permissionId: request.id,
+                    decision: decision,
+                    message: message
+                )
+            }
         } catch {
             await MainActor.run {
                 if let proxyError = error as? ProxyStreamError, proxyError.isPermissionNotFound {

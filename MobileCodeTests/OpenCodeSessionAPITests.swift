@@ -154,6 +154,27 @@ final class OpenCodeSessionAPITests: XCTestCase {
         XCTAssertTrue(sshSession.sentInput.contains("POST /session/ses_fixture/abort HTTP/1.1"))
     }
 
+    func testReplyPermissionPostsResponsePayload() async throws {
+        let response = try httpResponse(status: "204 No Content", body: "")
+        let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        let result = try await client.replyPermission(
+            sshSession: sshSession,
+            sessionID: "ses/fixture",
+            permissionID: "perm fixture",
+            response: "always",
+            directory: "/workspace/MobileCode"
+        )
+
+        XCTAssertEqual(result.statusCode, 204)
+        XCTAssertTrue(sshSession.sentInput.contains(
+            "POST /session/ses%2Ffixture/permissions/perm%20fixture?directory=/workspace/MobileCode HTTP/1.1"
+        ))
+        let body = try sshSession.sentJSONObject()
+        XCTAssertEqual(body["response"] as? String, "always")
+    }
+
     func testHydrationDiffComparesMessageAndPartIDs() throws {
         let remote = try JSONDecoder().decode(
             [OpenCodeSessionMessage].self,

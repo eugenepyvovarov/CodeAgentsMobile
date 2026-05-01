@@ -105,6 +105,7 @@ private final class StubRuntime: CodingAgentRuntimeService {
         project: RemoteProject,
         permissionId: String,
         decision: ToolApprovalDecision,
+        scope: ToolApprovalScope,
         message: String?
     ) async throws {}
 
