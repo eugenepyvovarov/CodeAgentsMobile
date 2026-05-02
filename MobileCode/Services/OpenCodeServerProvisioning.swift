@@ -64,18 +64,30 @@ enum OpenCodeServerProvisioning {
         set -a
         . \(environmentFilePath)
         set +a
+        opencode_ready=0
         attempt=1
         while [ "$attempt" -le 30 ]; do
           if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
-            curl -fsS -u "${OPENCODE_SERVER_USERNAME:-opencode}:${OPENCODE_SERVER_PASSWORD}" http://\(host):\(port)/global/health >/tmp/opencode-health.json && exit 0
+            if curl -fsS -u "${OPENCODE_SERVER_USERNAME:-opencode}:${OPENCODE_SERVER_PASSWORD}" http://\(host):\(port)/global/health >/tmp/opencode-health.json; then
+              opencode_ready=1
+              break
+            fi
           else
-            curl -fsS http://\(host):\(port)/global/health >/tmp/opencode-health.json && exit 0
+            if curl -fsS http://\(host):\(port)/global/health >/tmp/opencode-health.json; then
+              opencode_ready=1
+              break
+            fi
           fi
           sleep 2
           attempt=$((attempt + 1))
         done
-        journalctl -u opencode --no-pager -n 80
-        exit 1
+        if [ "$opencode_ready" -ne 1 ]; then
+          journalctl -u opencode --no-pager -n 80
+          exit 1
+        fi
+
+        \(CodeAgentsDaemonProvisioning.installCommand())
+        \(CodeAgentsDaemonProvisioning.waitForHealthScript())
         """
     }
 
@@ -119,19 +131,33 @@ enum OpenCodeServerProvisioning {
         set -a
         . \(environmentFilePath)
         set +a
+        opencode_ready=0
         attempt=1
         while [ "$attempt" -le 30 ]; do
           if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
-            curl -fsS -u "${OPENCODE_SERVER_USERNAME:-opencode}:${OPENCODE_SERVER_PASSWORD}" http://\(host):\(port)/global/health >/tmp/opencode-health.json && exit 0
+            if curl -fsS -u "${OPENCODE_SERVER_USERNAME:-opencode}:${OPENCODE_SERVER_PASSWORD}" http://\(host):\(port)/global/health >/tmp/opencode-health.json; then
+              opencode_ready=1
+              break
+            fi
           else
-            curl -fsS http://\(host):\(port)/global/health >/tmp/opencode-health.json && exit 0
+            if curl -fsS http://\(host):\(port)/global/health >/tmp/opencode-health.json; then
+              opencode_ready=1
+              break
+            fi
           fi
           sleep 2
           attempt=$((attempt + 1))
         done
 
-        journalctl -u opencode --no-pager -n 80
-        exit 1
+        if [ "$opencode_ready" -ne 1 ]; then
+          journalctl -u opencode --no-pager -n 80
+          exit 1
+        fi
+
+        echo "Installing or updating CodeAgents daemon..."
+        \(CodeAgentsDaemonProvisioning.installCommand())
+        echo "Waiting for CodeAgents daemon health..."
+        \(CodeAgentsDaemonProvisioning.waitForHealthScript())
         """
     }
 
@@ -161,6 +187,56 @@ enum OpenCodeServerProvisioning {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
+    }
+}
+
+enum CodeAgentsDaemonProvisioning {
+    static let host = "127.0.0.1"
+    static let port = 8787
+    static let installScriptURL = "https://raw.githubusercontent.com/eugenepyvovarov/codeagents-server-cc-proxy/HEAD/install.sh"
+    static let serviceName = "codeagents-daemon"
+    static let installDirectory = "/opt/codeagents-daemon"
+    static let dataDirectory = "/opt/codeagents-daemon/data"
+    static let logDirectory = "/var/log/codeagents-daemon"
+    static let environmentFilePath = "/etc/codeagents-daemon.env"
+    static let legacyEnvironmentFilePath = "/etc/claude-proxy.env"
+
+    static var healthURL: String {
+        "http://\(host):\(port)/healthz"
+    }
+
+    static func installCommand() -> String {
+        let environment = [
+            "INSTALL_DIR=\(installDirectory)",
+            "DATA_DIR=\(dataDirectory)",
+            "LOG_DIR=\(logDirectory)",
+            "SERVICE_NAME=\(serviceName)",
+            "INSTALL_CLAUDE_CLI=0"
+        ].joined(separator: " ")
+        return "curl -fsSL \(installScriptURL) | \(environment) bash"
+    }
+
+    static func healthCheckCommand() -> String {
+        "curl -fsS \(healthURL)"
+    }
+
+    static func waitForHealthScript(maxAttempts: Int = 30) -> String {
+        """
+        daemon_ready=0
+        attempt=1
+        while [ "$attempt" -le \(maxAttempts) ]; do
+          if \(healthCheckCommand()) >/tmp/codeagents-daemon-health.json; then
+            daemon_ready=1
+            break
+          fi
+          sleep 2
+          attempt=$((attempt + 1))
+        done
+        if [ "$daemon_ready" -ne 1 ]; then
+          echo "CodeAgents daemon did not become healthy" >&2
+          exit 1
+        fi
+        """
     }
 }
 

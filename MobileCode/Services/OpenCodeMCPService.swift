@@ -141,10 +141,13 @@ final class OpenCodeMCPService: ObservableObject {
     }
 
     private func validateManagedServerWrite(_ name: String, server: MCPServer, allowManaged: Bool) throws {
-        if MCPServer.isManagedSchedulerServer(name) && !server.matchesManagedSchedulerDefinition() {
-            throw MCPServiceError.managedServerNotModifiable
-        }
-        guard allowManaged || !MCPServer.isManagedSchedulerServer(name) else {
+        guard !MCPServer.isManagedSchedulerServer(name) else {
+            if allowManaged {
+                return
+            }
+            if !server.matchesManagedSchedulerDefinition() {
+                throw MCPServiceError.managedServerNotModifiable
+            }
             throw MCPServiceError.managedServerNotModifiable
         }
     }

@@ -334,7 +334,7 @@ struct CreateCloudServerView: View {
             .animation(.easeInOut(duration: 0.3), value: creationStatus)
             
             VStack(spacing: 8) {
-                Text(creationStatus == .success ? "Server ready!" : creationStatus.isVerifyingRuntime ? "Verifying OpenCode..." : "Creating your server")
+                Text(creationStatus == .success ? "Server ready!" : creationStatus.isVerifyingRuntime ? "Verifying OpenCode and daemon..." : "Creating your server")
                     .font(.title2)
                     .fontWeight(.semibold)
                     .animation(.easeInOut(duration: 0.3), value: creationStatus)

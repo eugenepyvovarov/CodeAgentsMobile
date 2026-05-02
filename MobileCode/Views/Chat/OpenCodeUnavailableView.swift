@@ -70,6 +70,8 @@ struct OpenCodeUnavailableView: View {
             return "OpenCode Not Installed"
         case .notRunning:
             return "OpenCode Not Running"
+        case .daemonUnavailable:
+            return "CodeAgents Daemon Unavailable"
         case .unreachable:
             return "OpenCode Unreachable"
         case .sshUnavailable:
@@ -89,6 +91,8 @@ struct OpenCodeUnavailableView: View {
             return "arrow.down.circle"
         case .notRunning:
             return "pause.circle"
+        case .daemonUnavailable:
+            return "antenna.radiowaves.left.and.right.slash"
         case .unreachable, .sshUnavailable:
             return "xmark.circle"
         case .unknown:
@@ -102,7 +106,7 @@ struct OpenCodeUnavailableView: View {
         switch status.state {
         case .available:
             return .green
-        case .authRequired, .notInstalled, .notRunning:
+        case .authRequired, .notInstalled, .notRunning, .daemonUnavailable:
             return .orange
         case .unreachable, .sshUnavailable:
             return .red

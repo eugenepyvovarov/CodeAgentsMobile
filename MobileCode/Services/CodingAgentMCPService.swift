@@ -119,7 +119,16 @@ final class CodingAgentMCPService: ObservableObject {
         case .claudeProxy:
             try await schedulerProvisionService.ensureManagedSchedulerServer(for: project)
         case .openCode:
-            return
+            guard await isDaemonHealthy(for: project) else {
+                SSHLogger.log("Skipping OpenCode scheduler MCP provisioning: CodeAgents daemon is not healthy", level: .warning)
+                return
+            }
+            try await openCodeService.addServer(
+                schedulerProvisionService.managedSchedulerServer(for: project),
+                scope: .project,
+                for: project,
+                allowManaged: true
+            )
         }
     }
 
@@ -138,5 +147,16 @@ final class CodingAgentMCPService: ObservableObject {
 
     func runtimeKind(for project: RemoteProject) -> CodingAgentRuntimeKind {
         CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: runtimeSelectionStore)
+    }
+
+    private func isDaemonHealthy(for project: RemoteProject) async -> Bool {
+        do {
+            let session = try await ServiceManager.shared.sshService.getConnection(for: project, purpose: .agentDaemon)
+            _ = try await session.execute(CodeAgentsDaemonProvisioning.healthCheckCommand())
+            return true
+        } catch {
+            SSHLogger.log("CodeAgents daemon health check failed: \(error.localizedDescription)", level: .warning)
+            return false
+        }
     }
 }

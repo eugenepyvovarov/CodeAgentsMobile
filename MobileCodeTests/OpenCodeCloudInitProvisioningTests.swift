@@ -14,6 +14,10 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         XCTAssertTrue(cloudInit.contains("systemctl enable --now opencode"))
         XCTAssertTrue(cloudInit.contains("http://127.0.0.1:4096/global/health"))
         XCTAssertTrue(cloudInit.contains("OPENCODE_SERVER_PASSWORD=\"fixture_password\""))
+        XCTAssertTrue(cloudInit.contains("SERVICE_NAME=codeagents-daemon"))
+        XCTAssertTrue(cloudInit.contains("INSTALL_DIR=/opt/codeagents-daemon"))
+        XCTAssertTrue(cloudInit.contains("INSTALL_CLAUDE_CLI=0"))
+        XCTAssertTrue(cloudInit.contains("http://127.0.0.1:8787/healthz"))
         XCTAssertFalse(cloudInit.contains("@anthropic-ai/claude-code"))
         XCTAssertFalse(cloudInit.contains("{{"))
     }
@@ -39,6 +43,10 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         XCTAssertTrue(script.contains("cat > /etc/systemd/system/opencode.service"))
         XCTAssertTrue(script.contains("systemctl enable --now opencode"))
         XCTAssertTrue(script.contains("http://127.0.0.1:4096/global/health"))
+        XCTAssertTrue(script.contains("SERVICE_NAME=codeagents-daemon"))
+        XCTAssertTrue(script.contains("INSTALL_DIR=/opt/codeagents-daemon"))
+        XCTAssertTrue(script.contains("INSTALL_CLAUDE_CLI=0"))
+        XCTAssertTrue(script.contains("http://127.0.0.1:8787/healthz"))
     }
 
     func testGeneratedOpenCodePasswordIsEnvironmentSafe() throws {
@@ -46,5 +54,16 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(password.count, 40)
         XCTAssertNil(password.range(of: #"[^A-Za-z0-9_-]"#, options: .regularExpression))
+    }
+
+    func testDaemonUnavailableDoesNotBlockForegroundOpenCodeChat() {
+        let status = OpenCodeRuntimeSetupStatus.daemonUnavailable(
+            version: "1.2.3",
+            reason: "connection refused"
+        )
+
+        XCTAssertFalse(status.isReady)
+        XCTAssertFalse(status.blocksForegroundChat)
+        XCTAssertEqual(status.state, .daemonUnavailable)
     }
 }

@@ -13,6 +13,7 @@ struct OpenCodeRuntimeSetupStatus: Equatable {
         case authRequired
         case notInstalled
         case notRunning
+        case daemonUnavailable
         case unreachable
         case sshUnavailable
         case unknown
@@ -24,6 +25,15 @@ struct OpenCodeRuntimeSetupStatus: Equatable {
 
     var isReady: Bool {
         state == .available
+    }
+
+    var blocksForegroundChat: Bool {
+        switch state {
+        case .available, .daemonUnavailable:
+            return false
+        case .authRequired, .notInstalled, .notRunning, .unreachable, .sshUnavailable, .unknown:
+            return true
+        }
     }
 
     static func available(version: String) -> Self {
@@ -67,6 +77,14 @@ struct OpenCodeRuntimeSetupStatus: Equatable {
         )
     }
 
+    static func daemonUnavailable(version: String, reason: String) -> Self {
+        OpenCodeRuntimeSetupStatus(
+            state: .daemonUnavailable,
+            version: version,
+            message: "OpenCode \(version) is healthy, but the CodeAgents daemon is not reachable on 127.0.0.1:8787. Scheduled tasks and push notifications need the daemon. \(reason)"
+        )
+    }
+
     static func sshUnavailable(_ reason: String) -> Self {
         OpenCodeRuntimeSetupStatus(
             state: .sshUnavailable,
@@ -103,6 +121,9 @@ final class OpenCodeInstallerService {
         }
 
         onOutput("OpenCode \(health.version) is healthy.")
+        onOutput("Checking CodeAgents daemon health at \(CodeAgentsDaemonProvisioning.host):\(CodeAgentsDaemonProvisioning.port)...")
+        try await verifyDaemonHealth(using: session)
+        onOutput("CodeAgents daemon is healthy.")
     }
 
     func checkRuntimeStatus(on server: Server) async -> OpenCodeRuntimeSetupStatus {
@@ -200,11 +221,20 @@ final class OpenCodeInstallerService {
             guard health.healthy else {
                 return .unknown("OpenCode server reported unhealthy.")
             }
+            do {
+                try await verifyDaemonHealth(using: session)
+            } catch {
+                return .daemonUnavailable(version: health.version, reason: error.localizedDescription)
+            }
             return .available(version: health.version)
         } catch {
             let diagnostics = (try? await session.execute(Self.diagnosticsCommand)) ?? ""
             return Self.status(from: diagnostics, healthError: error)
         }
+    }
+
+    private func verifyDaemonHealth(using session: SSHSession) async throws {
+        _ = try await session.execute(CodeAgentsDaemonProvisioning.healthCheckCommand())
     }
 
     private static var diagnosticsCommand: String {

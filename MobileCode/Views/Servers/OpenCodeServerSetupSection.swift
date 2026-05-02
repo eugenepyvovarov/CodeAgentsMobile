@@ -104,7 +104,7 @@ struct OpenCodeServerSetupSection: View {
         } header: {
             Text("OpenCode Runtime")
         } footer: {
-            Text("OpenCode runs on the server at 127.0.0.1:4096. Install/repair uses sudo and configures the service with password auth when credentials are available.")
+            Text("OpenCode runs at 127.0.0.1:4096. The CodeAgents daemon runs at 127.0.0.1:8787 for scheduled tasks and push. Install/repair uses sudo and configures password auth when credentials are available.")
                 .font(.caption)
         }
         .task {
@@ -131,6 +131,8 @@ struct OpenCodeServerSetupSection: View {
             return "Not Installed"
         case .notRunning:
             return "Not Running"
+        case .daemonUnavailable:
+            return "Daemon Missing"
         case .unreachable:
             return "Unreachable"
         case .sshUnavailable:
@@ -150,6 +152,8 @@ struct OpenCodeServerSetupSection: View {
             return "arrow.down.circle"
         case .notRunning:
             return "pause.circle"
+        case .daemonUnavailable:
+            return "antenna.radiowaves.left.and.right.slash"
         case .unreachable, .sshUnavailable:
             return "xmark.circle"
         case .unknown, nil:
@@ -161,7 +165,7 @@ struct OpenCodeServerSetupSection: View {
         switch status?.state {
         case .available:
             return .green
-        case .authRequired, .notInstalled, .notRunning:
+        case .authRequired, .notInstalled, .notRunning, .daemonUnavailable:
             return .orange
         case .unreachable, .sshUnavailable:
             return .red

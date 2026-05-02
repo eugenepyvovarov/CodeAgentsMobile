@@ -34,7 +34,7 @@ struct ChatView: View {
                 } else if let server = projectContext.activeServer,
                           activeRuntimeKind == .openCode,
                           let openCodeRuntimeStatus,
-                          !openCodeRuntimeStatus.isReady {
+                          openCodeRuntimeStatus.blocksForegroundChat {
                     OpenCodeUnavailableView(
                         server: server,
                         status: openCodeRuntimeStatus,
@@ -255,7 +255,7 @@ struct ChatView: View {
         }
 
         let status = await OpenCodeInstallerService.shared.checkRuntimeStatus(on: server)
-        openCodeRuntimeStatus = status.isReady ? nil : status
+        openCodeRuntimeStatus = status.blocksForegroundChat ? status : nil
     }
 }
 

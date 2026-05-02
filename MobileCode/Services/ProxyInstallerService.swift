@@ -11,8 +11,9 @@ import Security
 final class ProxyInstallerService {
     static let shared = ProxyInstallerService()
 
-    private let installScriptURL = "https://raw.githubusercontent.com/eugenepyvovarov/codeagents-server-cc-proxy/HEAD/install.sh"
-    private let proxyEnvPath = "/etc/claude-proxy.env"
+    private let installScriptURL = CodeAgentsDaemonProvisioning.installScriptURL
+    private let proxyEnvPath = CodeAgentsDaemonProvisioning.environmentFilePath
+    private let legacyProxyEnvPath = CodeAgentsDaemonProvisioning.legacyEnvironmentFilePath
     private let managedHeader = "# Managed by CodeAgentsMobile"
 
     private init() {}
@@ -23,7 +24,7 @@ final class ProxyInstallerService {
             session.disconnect()
         }
 
-        let command = "set -o pipefail; curl -fsSL \(installScriptURL) | sudo -n bash"
+        let command = "set -o pipefail; curl -fsSL \(installScriptURL) | sudo -n env INSTALL_DIR=\(CodeAgentsDaemonProvisioning.installDirectory) DATA_DIR=\(CodeAgentsDaemonProvisioning.dataDirectory) LOG_DIR=\(CodeAgentsDaemonProvisioning.logDirectory) SERVICE_NAME=\(CodeAgentsDaemonProvisioning.serviceName) INSTALL_CLAUDE_CLI=0 bash"
         let process = try await session.startProcess(command)
         let lineBuffer = LineBuffer()
         var lastErrorLine: String?
@@ -160,6 +161,8 @@ final class ProxyInstallerService {
         let session = try await SSHService.shared.connect(to: server, purpose: .proxyInstall)
         defer { session.disconnect() }
 
+        try await verifyDaemonHealth(using: session)
+
         let existing = try await fetchProxyEnvFile(using: session)
         let parsed = parseEnvValues(from: existing)
 
@@ -181,6 +184,7 @@ final class ProxyInstallerService {
             verifyKeys: ["CODEAGENTS_PUSH_SECRET", "CODEAGENTS_PUSH_GATEWAY_BASE_URL"],
             using: session
         )
+        try await verifyDaemonHealth(using: session)
         return pushSecret
     }
 
@@ -292,6 +296,8 @@ final class ProxyInstallerService {
         }
         if as_root test -f \(proxyEnvPath); then
           as_root cat \(proxyEnvPath)
+        elif as_root test -f \(legacyProxyEnvPath); then
+          as_root cat \(legacyProxyEnvPath)
         fi
         """
         return try await runSensitiveCommandReturningOutput(command, using: session)
@@ -390,20 +396,26 @@ final class ProxyInstallerService {
           fi
         }
         echo '\(payload)' | decode_base64 | as_root tee \(proxyEnvPath) >/dev/null
+        echo '\(payload)' | decode_base64 | as_root tee \(legacyProxyEnvPath) >/dev/null
         as_root chmod 600 \(proxyEnvPath)
+        as_root chmod 600 \(legacyProxyEnvPath)
         as_root test -s \(proxyEnvPath)
         \(verifySnippet)
-        if command -v supervisorctl >/dev/null 2>&1 && as_root supervisorctl status claude-proxy >/dev/null 2>&1; then
+        if command -v supervisorctl >/dev/null 2>&1 && as_root supervisorctl status \(CodeAgentsDaemonProvisioning.serviceName) >/dev/null 2>&1; then
+          as_root supervisorctl restart \(CodeAgentsDaemonProvisioning.serviceName)
+        elif command -v supervisorctl >/dev/null 2>&1 && as_root supervisorctl status claude-proxy >/dev/null 2>&1; then
           as_root supervisorctl restart claude-proxy
+        elif command -v systemctl >/dev/null 2>&1 && as_root systemctl list-unit-files | grep -q '^codeagents-daemon\\.service'; then
+          as_root systemctl restart codeagents-daemon
         elif command -v systemctl >/dev/null 2>&1 && as_root systemctl list-unit-files | grep -q '^claude-agent-proxy\\.service'; then
           as_root systemctl restart claude-agent-proxy
         elif command -v launchctl >/dev/null 2>&1; then
-          as_root launchctl kickstart -k system/com.codeagents.claude-proxy
+          as_root launchctl kickstart -k system/com.codeagents.codeagents-daemon || as_root launchctl kickstart -k system/com.codeagents.claude-proxy
         else
-          echo "No service manager found for claude-proxy" >&2
+          echo "No service manager found for CodeAgents daemon" >&2
           exit 1
         fi
-        curl -fsS http://127.0.0.1:8787/healthz >/dev/null
+        \(CodeAgentsDaemonProvisioning.healthCheckCommand()) >/dev/null
         """
 
         try await runSensitiveCommand(fullCommand, using: session)
@@ -439,6 +451,14 @@ final class ProxyInstallerService {
             return try await session.execute(command)
         } catch {
             throw ProxyInstallerError.proxyEnvUpdateFailed(error.localizedDescription)
+        }
+    }
+
+    private func verifyDaemonHealth(using session: SSHSession) async throws {
+        do {
+            _ = try await session.execute(CodeAgentsDaemonProvisioning.healthCheckCommand())
+        } catch {
+            throw ProxyInstallerError.healthCheckFailed(error.localizedDescription)
         }
     }
 }

@@ -33,6 +33,18 @@ final class MCPTaskSchedulerProvisionService {
         
         try await writeProjectMCPRoot(root, to: session, at: configPath)
     }
+
+    func managedSchedulerServer(for project: RemoteProject) -> MCPServer {
+        let configuration = managedSchedulerServerConfiguration(for: project)
+        return MCPServer(
+            name: MCPServer.managedSchedulerServerName,
+            command: nil,
+            args: nil,
+            env: nil,
+            url: configuration["url"] as? String,
+            headers: configuration["headers"] as? [String: String]
+        )
+    }
     
     private func managedSchedulerServerConfiguration(for project: RemoteProject) -> [String: Any] {
         let agentId = resolvedAgentId(for: project)
