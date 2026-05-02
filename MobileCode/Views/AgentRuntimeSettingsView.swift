@@ -16,8 +16,19 @@ struct AgentRuntimeSettingsView: View {
     @State private var providerStatus: OpenCodeProviderStatus?
     @State private var apiProviderID = "anthropic"
     @State private var apiKey = ""
+    @State private var modelConfigScope: OpenCodeConfigurationScope = .global
+    @State private var selectedModelID = ""
+    @State private var selectedSmallModelID = ""
+    @State private var customProviderID = ""
+    @State private var customProviderName = ""
+    @State private var customProviderBaseURL = ""
+    @State private var customProviderModelID = ""
+    @State private var customProviderModelName = ""
+    @State private var customProviderAPIKey = ""
     @State private var isLoadingStatus = false
     @State private var isSavingAPIKey = false
+    @State private var isSavingModelConfiguration = false
+    @State private var isSavingCustomProvider = false
     @State private var errorMessage: String?
     @State private var showError = false
 
@@ -139,6 +150,11 @@ struct AgentRuntimeSettingsView: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
+                        if providerStatus.authMethods[provider.id]?.contains(where: { $0.isAPIKeyBased }) != true {
+                            Text("Unsupported in MobileCode setup: requires non-API-key auth.")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
                     }
                     .padding(.vertical, 2)
                 }
@@ -149,10 +165,62 @@ struct AgentRuntimeSettingsView: View {
             }
         }
 
+        Section("OpenCode Models") {
+            Picker("Apply To", selection: $modelConfigScope) {
+                ForEach(OpenCodeConfigurationScope.allCases) { scope in
+                    Text(scope.displayName).tag(scope)
+                }
+            }
+            .onChange(of: modelConfigScope) { _, _ in
+                Task { await loadModelConfiguration(project: project) }
+            }
+
+            Picker("Default Model", selection: $selectedModelID) {
+                Text("OpenCode Default").tag("")
+                if let providerStatus {
+                    ForEach(providerStatus.modelChoices) { choice in
+                        Text(choice.label).tag(choice.id)
+                    }
+                }
+            }
+
+            Picker("Small Model", selection: $selectedSmallModelID) {
+                Text("OpenCode Default").tag("")
+                if let providerStatus {
+                    ForEach(providerStatus.modelChoices) { choice in
+                        Text(choice.label).tag(choice.id)
+                    }
+                }
+            }
+
+            Button {
+                Task { await saveModelConfiguration(project: project) }
+            } label: {
+                if isSavingModelConfiguration {
+                    ProgressView()
+                } else {
+                    Label("Save Model Selection", systemImage: "checkmark.circle")
+                }
+            }
+            .disabled(isSavingModelConfiguration)
+
+            Text("Model ids are written to OpenCode config as provider/model, for example anthropic/claude-sonnet-4-5.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+
         Section("OpenCode API Key") {
-            TextField("Provider ID", text: $apiProviderID)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+            if let providerStatus, !providerStatus.apiKeyProviders.isEmpty {
+                Picker("Provider", selection: $apiProviderID) {
+                    ForEach(providerStatus.apiKeyProviders, id: \.id) { provider in
+                        Text(provider.name).tag(provider.id)
+                    }
+                }
+            } else {
+                TextField("Provider ID", text: $apiProviderID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
 
             SecureField("API Key", text: $apiKey)
                 .textInputAutocapitalization(.never)
@@ -178,6 +246,46 @@ struct AgentRuntimeSettingsView: View {
             }
 
             Text("OpenCode owns provider configuration on the server. MobileCode stores this key under an OpenCode-specific keychain entry and sends it to the selected server.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+
+        Section("Custom OpenAI-Compatible Provider") {
+            TextField("Provider ID", text: $customProviderID)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            TextField("Display Name", text: $customProviderName)
+            TextField("Base URL", text: $customProviderBaseURL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            TextField("Model ID", text: $customProviderModelID)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            TextField("Model Name", text: $customProviderModelName)
+            SecureField("API Key", text: $customProviderAPIKey)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+            Button {
+                Task { await saveCustomProvider(project: project) }
+            } label: {
+                if isSavingCustomProvider {
+                    ProgressView()
+                } else {
+                    Label("Save Custom Provider", systemImage: "plus.circle")
+                }
+            }
+            .disabled(
+                isSavingCustomProvider
+                    || customProviderID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || customProviderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || customProviderBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || customProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || customProviderAPIKey.isEmpty
+            )
+
+            Text("First pass supports API-key OpenAI-compatible providers only. OAuth, subscription, and browser-login providers are intentionally out of scope.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -214,6 +322,7 @@ struct AgentRuntimeSettingsView: View {
 
         do {
             providerStatus = try await providerService.status(for: project)
+            await loadModelConfiguration(project: project)
         } catch {
             providerStatus = nil
             errorMessage = "Failed to load OpenCode providers: \(error.localizedDescription)"
@@ -231,6 +340,62 @@ struct AgentRuntimeSettingsView: View {
             await refreshStatus(for: project)
         } catch {
             errorMessage = "Failed to save OpenCode API key: \(error.localizedDescription)"
+            showError = true
+        }
+    }
+
+    private func loadModelConfiguration(project: RemoteProject) async {
+        do {
+            let configuration = try await providerService.modelConfiguration(for: project, scope: modelConfigScope)
+            selectedModelID = configuration.modelID ?? ""
+            selectedSmallModelID = configuration.smallModelID ?? ""
+        } catch {
+            selectedModelID = ""
+            selectedSmallModelID = ""
+        }
+    }
+
+    private func saveModelConfiguration(project: RemoteProject) async {
+        isSavingModelConfiguration = true
+        defer { isSavingModelConfiguration = false }
+
+        do {
+            try await providerService.saveModelConfiguration(
+                modelID: selectedModelID.isEmpty ? nil : selectedModelID,
+                smallModelID: selectedSmallModelID.isEmpty ? nil : selectedSmallModelID,
+                scope: modelConfigScope,
+                for: project
+            )
+            await loadModelConfiguration(project: project)
+        } catch {
+            errorMessage = "Failed to save OpenCode model selection: \(error.localizedDescription)"
+            showError = true
+        }
+    }
+
+    private func saveCustomProvider(project: RemoteProject) async {
+        isSavingCustomProvider = true
+        defer { isSavingCustomProvider = false }
+
+        do {
+            try await providerService.saveCustomOpenAICompatibleProvider(
+                OpenCodeCustomProviderInput(
+                    id: customProviderID,
+                    name: customProviderName,
+                    baseURL: customProviderBaseURL,
+                    modelID: customProviderModelID,
+                    modelName: customProviderModelName,
+                    apiKey: customProviderAPIKey
+                ),
+                scope: modelConfigScope,
+                for: project
+            )
+
+            apiProviderID = customProviderID
+            customProviderAPIKey = ""
+            await refreshStatus(for: project)
+        } catch {
+            errorMessage = "Failed to save custom OpenCode provider: \(error.localizedDescription)"
             showError = true
         }
     }

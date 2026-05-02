@@ -77,6 +77,15 @@ struct OpenCodeProviderModel: Decodable, Equatable, Identifiable {
 struct OpenCodeProviderAuthMethod: Decodable, Equatable {
     let type: String
     let label: String
+
+    var isAPIKeyBased: Bool {
+        let normalizedType = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalizedType == "api"
+            || normalizedType == "api_key"
+            || normalizedType == "apikey"
+            || normalizedLabel.contains("api key")
+    }
 }
 
 private struct OpenCodeAPIAuthPayload: Encodable {

@@ -409,6 +409,76 @@ struct OpenCodeMCPConfigDocument {
         }
     }
 
+    var selectedModelID: String? {
+        root["model"] as? String
+    }
+
+    var selectedSmallModelID: String? {
+        root["small_model"] as? String
+    }
+
+    var enabledProviderIDs: [String] {
+        root["enabled_providers"] as? [String] ?? []
+    }
+
+    var disabledProviderIDs: [String] {
+        root["disabled_providers"] as? [String] ?? []
+    }
+
+    mutating func setModelSelection(modelID: String?, smallModelID: String?) {
+        setOptionalString(modelID, forKey: "model")
+        setOptionalString(smallModelID, forKey: "small_model")
+        ensureSchema()
+    }
+
+    mutating func setProviderFilters(enabled: [String], disabled: [String]) {
+        setOptionalStringArray(enabled, forKey: "enabled_providers")
+        setOptionalStringArray(disabled, forKey: "disabled_providers")
+        ensureSchema()
+    }
+
+    mutating func setCustomOpenAICompatibleProvider(
+        id: String,
+        name: String,
+        baseURL: String,
+        modelID: String,
+        modelName: String,
+        headers: [String: String] = [:]
+    ) throws {
+        let providerID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelIdentifier = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !providerID.isEmpty, !displayName.isEmpty, !endpoint.isEmpty, !modelIdentifier.isEmpty else {
+            throw MCPConfigurationError.encodingFailed
+        }
+
+        var providerConfig: [String: Any] = [
+            "npm": "@ai-sdk/openai-compatible",
+            "name": displayName,
+            "options": [
+                "baseURL": endpoint
+            ],
+            "models": [
+                modelIdentifier: [
+                    "name": modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? modelIdentifier : modelName
+                ]
+            ]
+        ]
+
+        if !headers.isEmpty {
+            providerConfig["options"] = [
+                "baseURL": endpoint,
+                "headers": headers
+            ]
+        }
+
+        var providers = root["provider"] as? [String: Any] ?? [:]
+        providers[providerID] = providerConfig
+        root["provider"] = providers
+        ensureSchema()
+    }
+
     mutating func setServer(_ server: MCPServer) throws {
         guard let configuration = OpenCodeMCPServerConfiguration(server: server) else {
             throw MCPConfigurationError.encodingFailed
@@ -422,9 +492,7 @@ struct OpenCodeMCPConfigDocument {
             throw MCPConfigurationError.encodingFailed
         }
 
-        if root["$schema"] == nil {
-            root["$schema"] = "https://opencode.ai/config.json"
-        }
+        ensureSchema()
 
         var rawServers = root["mcp"] as? [String: Any] ?? [:]
         rawServers[name] = object
@@ -450,6 +518,32 @@ struct OpenCodeMCPConfigDocument {
             throw MCPConfigurationError.encodingFailed
         }
         return string + "\n"
+    }
+
+    private mutating func ensureSchema() {
+        if root["$schema"] == nil {
+            root["$schema"] = "https://opencode.ai/config.json"
+        }
+    }
+
+    private mutating func setOptionalString(_ value: String?, forKey key: String) {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            root.removeValue(forKey: key)
+        } else {
+            root[key] = trimmed
+        }
+    }
+
+    private mutating func setOptionalStringArray(_ values: [String], forKey key: String) {
+        let sanitized = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if sanitized.isEmpty {
+            root.removeValue(forKey: key)
+        } else {
+            root[key] = sanitized
+        }
     }
 }
 

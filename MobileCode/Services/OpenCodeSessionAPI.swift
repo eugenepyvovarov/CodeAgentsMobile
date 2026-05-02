@@ -204,6 +204,31 @@ struct OpenCodePromptPayload: Encodable {
 struct OpenCodePromptModel: Encodable {
     let providerID: String
     let modelID: String
+
+    init(providerID: String, modelID: String) {
+        self.providerID = providerID
+        self.modelID = modelID
+    }
+
+    init?(fullID: String) {
+        let trimmed = fullID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let separator = trimmed.firstIndex(of: "/") else {
+            return nil
+        }
+
+        let providerID = String(trimmed[..<separator])
+        let modelID = String(trimmed[trimmed.index(after: separator)...])
+        guard !providerID.isEmpty, !modelID.isEmpty else {
+            return nil
+        }
+
+        self.providerID = providerID
+        self.modelID = modelID
+    }
+
+    var fullID: String {
+        "\(providerID)/\(modelID)"
+    }
 }
 
 struct OpenCodePromptPart: Encodable {
