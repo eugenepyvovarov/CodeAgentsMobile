@@ -217,11 +217,9 @@ class ChatViewModel {
 
         toolApprovalStore.ensureDefaults(for: projectId)
         
-        // Check Claude installation and fetch MCP servers when configuring
+        // Check runtime setup, fetch MCP servers, and ensure project rules when configuring.
         Task {
-            guard runtimeKind == .claudeProxy else { return }
-
-            if let server = ProjectContext.shared.activeServer {
+            if runtimeKind == .claudeProxy, let server = ProjectContext.shared.activeServer {
                 _ = await claudeService.checkClaudeInstallation(for: server)
             }
             

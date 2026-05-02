@@ -2,7 +2,7 @@
 //  CodeAgentsUIRules.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Canonical CodeAgents UI rules shared by prompt injection and server rules file.
+//  Purpose: Canonical CodeAgents UI rules shared by prompt injection and AGENTS.md.
 //
 
 import Foundation
@@ -100,8 +100,12 @@ Never output invalid JSON inside a codeagents-ui fence.
         project: RemoteProject,
         onlyIfMissing: Bool
     ) async throws {
-        let rulesDirectory = shellEscaped("\(project.path)/.claude/rules")
-        let rulesPath = shellEscaped("\(project.path)/.claude/rules/codeagents-ui.md")
+        let rulesPathValue = AgentProjectFileLayout.remotePath(
+            projectPath: project.path,
+            relativePath: AgentProjectFileLayout.rulesPrimaryRelativePath
+        )
+        let rulesDirectory = shellEscaped((rulesPathValue as NSString).deletingLastPathComponent)
+        let rulesPath = shellEscaped(rulesPathValue)
 
         if onlyIfMissing {
             let checkCommand = "[ -f \(rulesPath) ] && echo EXISTS || echo MISSING"
@@ -109,6 +113,18 @@ Never output invalid JSON inside a codeagents-ui fence.
             if output.contains("EXISTS") {
                 return
             }
+        } else {
+            let base64Guard = Data(toolCallGuardMarkdown.utf8).base64EncodedString()
+            let guardNeedle = shellEscaped("codeagents-ui is NOT a tool")
+            let ensureCommand = [
+                "mkdir -p \(rulesDirectory)",
+                "if [ -f \(rulesPath) ]; then",
+                "if grep -q \(guardNeedle) \(rulesPath); then :;",
+                "else printf '\\n\\n' >> \(rulesPath) && printf '%s' '\(base64Guard)' | base64 -d >> \(rulesPath); fi;",
+                "else printf '%s' '\(Data(rulesMarkdown.utf8).base64EncodedString())' | base64 -d > \(rulesPath); fi"
+            ].joined(separator: " ")
+            _ = try await session.execute(ensureCommand)
+            return
         }
 
         let base64Content = Data(rulesMarkdown.utf8).base64EncodedString()

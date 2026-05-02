@@ -322,13 +322,16 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         SSHLogger.log("OpenCode event stream attached: \(diagnostics.description)", level: .debug)
                     }
 
+                    let prompt = try OpenCodePromptBuilder.build(
+                        messageID: messageId?.uuidString,
+                        composedPrompt: text,
+                        projectPath: project.path
+                    )
+                    try await validatePromptReferences(prompt, sshSession: sshSession)
                     try await client.promptAsync(
                         sshSession: sshSession,
                         sessionID: sessionID,
-                        payload: OpenCodePromptPayload(
-                            messageID: messageId?.uuidString,
-                            parts: [.text(text)]
-                        ),
+                        payload: prompt.payload,
                         directory: project.path
                     )
 
@@ -595,6 +598,38 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
     private func client(for project: RemoteProject) -> OpenCodeClient {
         clientOverride ?? OpenCodeClientFactory.client(for: project.serverId)
+    }
+
+    private func validatePromptReferences(
+        _ prompt: OpenCodePromptBuildResult,
+        sshSession: SSHSession
+    ) async throws {
+        if let skillReference = prompt.skillReference {
+            let checks = skillReference.skillFilePaths
+                .map { "[ -f \(shellEscaped($0)) ]" }
+                .joined(separator: " || ")
+            let command = "if \(checks); then echo EXISTS; else echo MISSING; fi"
+            let output = try await sshSession.execute(command)
+            guard output.contains("EXISTS") else {
+                throw OpenCodePromptBuildError.missingSkill(
+                    slug: skillReference.slug,
+                    checkedPaths: skillReference.skillFilePaths
+                )
+            }
+        }
+
+        for file in prompt.fileReferences {
+            let command = "[ -f \(shellEscaped(file.absolutePath)) ] && echo EXISTS || echo MISSING"
+            let output = try await sshSession.execute(command)
+            guard output.contains("EXISTS") else {
+                throw OpenCodePromptBuildError.missingAttachment(file.absolutePath)
+            }
+        }
+    }
+
+    private func shellEscaped(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\"'\"'")
+        return "'\(escaped)'"
     }
 }
 

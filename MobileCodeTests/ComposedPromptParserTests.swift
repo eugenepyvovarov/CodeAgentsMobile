@@ -32,6 +32,19 @@ final class ComposedPromptParserTests: XCTestCase {
         XCTAssertEqual(parsed.message, "Do the thing")
     }
 
+    func testParseSlashCommandWithFileReferenceContainingSpaces() {
+        let prompt = """
+        /agent-browser Do the thing
+
+        @docs/My File.pdf
+        """
+        let parsed = ComposedPromptParser.parse(prompt)
+
+        XCTAssertEqual(parsed.skillSlug, "agent-browser")
+        XCTAssertEqual(parsed.fileReferences, ["docs/My File.pdf"])
+        XCTAssertEqual(parsed.message, "Do the thing")
+    }
+
     func testParseSkillNameHeaderAndMessage() {
         let prompt = "Use the “Agent Browser” skill.\n\nDo the thing"
         let parsed = ComposedPromptParser.parse(prompt)

@@ -122,7 +122,6 @@ enum ComposedPromptParser {
         guard line.hasPrefix("@") else { return nil }
         let trimmed = String(line.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return nil }
         return trimmed
     }
 
