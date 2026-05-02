@@ -79,6 +79,75 @@ enum OpenCodeServerProvisioning {
         """
     }
 
+    static func manualInstallScript(
+        username: String = Self.username,
+        password: String?,
+        host: String = Self.host,
+        port: Int = Self.port
+    ) -> String {
+        """
+        set -euo pipefail
+        echo "Ensuring codeagent user..."
+        if ! id -u codeagent >/dev/null 2>&1; then
+          useradd -m -s /bin/bash codeagent
+        fi
+        mkdir -p /home/codeagent/projects
+        chown -R codeagent:codeagent /home/codeagent
+
+        echo "Writing OpenCode server environment..."
+        cat > \(environmentFilePath) <<'OPENCODE_ENV'
+        \(environmentFile(username: username, password: password))
+        OPENCODE_ENV
+        chmod 600 \(environmentFilePath)
+        chown root:root \(environmentFilePath)
+
+        echo "Installing or updating OpenCode..."
+        su - codeagent -c "curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+
+        echo "Writing OpenCode systemd service..."
+        cat > \(serviceFilePath) <<'OPENCODE_SERVICE'
+        \(serviceFile(host: host, port: port))
+        OPENCODE_SERVICE
+        chmod 644 \(serviceFilePath)
+
+        echo "Starting OpenCode service..."
+        systemctl daemon-reload
+        systemctl enable --now opencode
+        systemctl restart opencode
+
+        echo "Waiting for OpenCode health..."
+        set -a
+        . \(environmentFilePath)
+        set +a
+        attempt=1
+        while [ "$attempt" -le 30 ]; do
+          if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
+            curl -fsS -u "${OPENCODE_SERVER_USERNAME:-opencode}:${OPENCODE_SERVER_PASSWORD}" http://\(host):\(port)/global/health >/tmp/opencode-health.json && exit 0
+          else
+            curl -fsS http://\(host):\(port)/global/health >/tmp/opencode-health.json && exit 0
+          fi
+          sleep 2
+          attempt=$((attempt + 1))
+        done
+
+        journalctl -u opencode --no-pager -n 80
+        exit 1
+        """
+    }
+
+    static func environmentFile(username: String, password: String?) -> String {
+        var lines = [
+            "# Managed by CodeAgentsMobile",
+            "OPENCODE_SERVER_USERNAME=\(systemdEnvironmentValue(username))"
+        ]
+
+        if let password, !password.isEmpty {
+            lines.append("OPENCODE_SERVER_PASSWORD=\(systemdEnvironmentValue(password))")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     static func yamlBlock(_ content: String, indentation: Int) -> String {
         let prefix = String(repeating: " ", count: indentation)
         return content
@@ -117,7 +186,8 @@ enum OpenCodeClientFactory {
     static func client(for serverID: UUID) -> OpenCodeClient {
         var configuration = OpenCodeClientConfiguration()
         if let password = try? KeychainManager.shared.retrieveOpenCodeServerPassword(for: serverID) {
-            configuration.username = OpenCodeServerProvisioning.username
+            configuration.username = (try? KeychainManager.shared.retrieveOpenCodeServerUsername(for: serverID))
+                ?? OpenCodeServerProvisioning.username
             configuration.password = password
         }
         return OpenCodeClient(configuration: configuration)

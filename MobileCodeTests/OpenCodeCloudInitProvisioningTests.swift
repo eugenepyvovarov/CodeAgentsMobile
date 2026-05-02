@@ -25,6 +25,22 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         XCTAssertFalse(environment.contains("OPENCODE_SERVER_PASSWORD"))
     }
 
+    func testManualInstallScriptCreatesServiceAndPasswordAuth() {
+        let script = OpenCodeServerProvisioning.manualInstallScript(
+            username: "mobile",
+            password: "fixture_password"
+        )
+
+        XCTAssertTrue(script.contains("useradd -m -s /bin/bash codeagent"))
+        XCTAssertTrue(script.contains("curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"))
+        XCTAssertTrue(script.contains("cat > /etc/opencode-server.env"))
+        XCTAssertTrue(script.contains("OPENCODE_SERVER_USERNAME=\"mobile\""))
+        XCTAssertTrue(script.contains("OPENCODE_SERVER_PASSWORD=\"fixture_password\""))
+        XCTAssertTrue(script.contains("cat > /etc/systemd/system/opencode.service"))
+        XCTAssertTrue(script.contains("systemctl enable --now opencode"))
+        XCTAssertTrue(script.contains("http://127.0.0.1:4096/global/health"))
+    }
+
     func testGeneratedOpenCodePasswordIsEnvironmentSafe() throws {
         let password = try OpenCodeServerPasswordGenerator.generate(byteCount: 32)
 

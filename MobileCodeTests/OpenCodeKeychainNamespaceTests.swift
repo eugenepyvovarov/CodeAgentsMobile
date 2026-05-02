@@ -20,12 +20,16 @@ final class OpenCodeKeychainNamespaceTests: XCTestCase {
             KeychainManager.openCodeServerPasswordAccount(for: serverID),
             "opencode_server_password_11111111-2222-3333-4444-555555555555"
         )
+        XCTAssertEqual(
+            KeychainManager.openCodeServerUsernameAccount(for: serverID),
+            "opencode_server_username_11111111-2222-3333-4444-555555555555"
+        )
     }
 
     func testOpenCodeServerPasswordRoundTripsByServerID() throws {
         let serverID = UUID()
         defer {
-            try? KeychainManager.shared.deleteOpenCodeServerPassword(for: serverID)
+            try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: serverID)
         }
 
         try KeychainManager.shared.storeOpenCodeServerPassword("fixture_password", for: serverID)
@@ -34,6 +38,34 @@ final class OpenCodeKeychainNamespaceTests: XCTestCase {
         XCTAssertEqual(
             try KeychainManager.shared.retrieveOpenCodeServerPassword(for: serverID),
             "fixture_password"
+        )
+    }
+
+    func testOpenCodeServerCredentialsRoundTripWithUsername() throws {
+        let serverID = UUID()
+        defer {
+            try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: serverID)
+        }
+
+        try KeychainManager.shared.storeOpenCodeServerCredentials(
+            username: "mobile",
+            password: "fixture_password",
+            for: serverID
+        )
+
+        XCTAssertEqual(try KeychainManager.shared.retrieveOpenCodeServerUsername(for: serverID), "mobile")
+        XCTAssertEqual(try KeychainManager.shared.retrieveOpenCodeServerPassword(for: serverID), "fixture_password")
+    }
+
+    func testOpenCodeServerUsernameDefaultsToManagedUsername() throws {
+        let serverID = UUID()
+        defer {
+            try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: serverID)
+        }
+
+        XCTAssertEqual(
+            try KeychainManager.shared.retrieveOpenCodeServerUsername(for: serverID),
+            OpenCodeServerProvisioning.username
         )
     }
 

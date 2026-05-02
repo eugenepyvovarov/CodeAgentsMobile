@@ -27,6 +27,9 @@ struct AddServerSheet: View {
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var showingImportKey = false
+    @State private var configureOpenCodeAuth = false
+    @State private var openCodeUsername = OpenCodeServerProvisioning.username
+    @State private var openCodePassword = ""
     
     enum AuthMethod: String, CaseIterable {
         case password = "Password"
@@ -98,6 +101,22 @@ struct AddServerSheet: View {
                             }
                         }
                     }
+                }
+
+                Section {
+                    Toggle("Server Requires Password", isOn: $configureOpenCodeAuth)
+
+                    if configureOpenCodeAuth {
+                        TextField("OpenCode Username", text: $openCodeUsername)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        SecureField("OpenCode Server Password", text: $openCodePassword)
+                    }
+                } header: {
+                    Text("OpenCode Server")
+                } footer: {
+                    Text("Use this when an existing OpenCode server already protects 127.0.0.1:4096 with basic auth. You can install or repair OpenCode after saving the server.")
+                        .font(.caption)
                 }
                 
                 Section {
@@ -253,6 +272,14 @@ struct AddServerSheet: View {
         do {
             if authMethod == .password {
                 try KeychainManager.shared.storePassword(password, for: server.id)
+            }
+
+            if configureOpenCodeAuth && !openCodePassword.isEmpty {
+                try KeychainManager.shared.storeOpenCodeServerCredentials(
+                    username: openCodeUsername,
+                    password: openCodePassword,
+                    for: server.id
+                )
             }
             
             // Call completion handler if provided

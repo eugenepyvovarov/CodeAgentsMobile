@@ -221,6 +221,8 @@ struct SettingsView: View {
             let server = servers[index]
             // Clean up credentials from keychain
             try? KeychainManager.shared.deletePassword(for: server.id)
+            try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: server.id)
+            try? KeychainManager.shared.deletePushSecret(for: server.id)
             // Delete from database
             modelContext.delete(server)
         }

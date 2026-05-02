@@ -176,6 +176,8 @@ struct EditServerSheet: View {
                     }
                 }
 
+                OpenCodeServerSetupSection(server: server)
+
                 Section {
                     HStack {
                         Label("Status", systemImage: isPushEnabled ? "bell.fill" : "bell.slash")

@@ -169,7 +169,34 @@ class KeychainManager {
         }
     }
 
-    /// Store a generated OpenCode server password for a managed server.
+    /// Store OpenCode server basic-auth credentials for a server.
+    func storeOpenCodeServerCredentials(username: String, password: String, for serverId: UUID) throws {
+        let sanitizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        try storeOpenCodeServerUsername(sanitizedUsername.isEmpty ? OpenCodeServerProvisioning.username : sanitizedUsername, for: serverId)
+        try storeOpenCodeServerPassword(password, for: serverId)
+    }
+
+    /// Store an OpenCode server username for a server.
+    func storeOpenCodeServerUsername(_ username: String, for serverId: UUID) throws {
+        let data = username.data(using: .utf8)!
+        try store(data: data, for: Self.openCodeServerUsernameAccount(for: serverId))
+    }
+
+    /// Retrieve the OpenCode server username for a server, defaulting to the managed username.
+    func retrieveOpenCodeServerUsername(for serverId: UUID) throws -> String {
+        do {
+            let data = try retrieve(for: Self.openCodeServerUsernameAccount(for: serverId))
+            guard let username = String(data: data, encoding: .utf8) else {
+                throw KeychainError.invalidData
+            }
+            let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? OpenCodeServerProvisioning.username : trimmed
+        } catch KeychainError.itemNotFound {
+            return OpenCodeServerProvisioning.username
+        }
+    }
+
+    /// Store a generated or manually entered OpenCode server password for a server.
     func storeOpenCodeServerPassword(_ password: String, for serverId: UUID) throws {
         let data = password.data(using: .utf8)!
         try store(data: data, for: Self.openCodeServerPasswordAccount(for: serverId))
@@ -184,7 +211,13 @@ class KeychainManager {
         return password
     }
 
-    /// Delete the generated OpenCode server password for a managed server.
+    /// Delete OpenCode server basic-auth credentials for a server.
+    func deleteOpenCodeServerCredentials(for serverId: UUID) throws {
+        try? delete(for: Self.openCodeServerUsernameAccount(for: serverId))
+        try deleteOpenCodeServerPassword(for: serverId)
+    }
+
+    /// Delete the generated or manually entered OpenCode server password for a server.
     func deleteOpenCodeServerPassword(for serverId: UUID) throws {
         try delete(for: Self.openCodeServerPasswordAccount(for: serverId))
     }
@@ -388,6 +421,10 @@ class KeychainManager {
 
     static func openCodeServerPasswordAccount(for serverId: UUID) -> String {
         "opencode_server_password_\(serverId.uuidString)"
+    }
+
+    static func openCodeServerUsernameAccount(for serverId: UUID) -> String {
+        "opencode_server_username_\(serverId.uuidString)"
     }
 
     static func legacyClaudeProvider(forOpenCodeProviderID providerID: String) -> ClaudeModelProvider? {

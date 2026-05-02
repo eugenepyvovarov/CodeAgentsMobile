@@ -17,6 +17,9 @@ struct ChatView: View {
     @State private var showingPermissions = false
     @State private var showingRules = false
     @State private var showingEnvironment = false
+    @State private var showingServerSettings = false
+    @State private var openCodeRuntimeStatus: OpenCodeRuntimeSetupStatus?
+    @State private var isCheckingOpenCodeRuntime = false
     
     var body: some View {
         NavigationStack {
@@ -28,6 +31,23 @@ struct ChatView: View {
                    !isInstalled {
                     // Replace entire chat UI with installation view
                     ClaudeNotInstalledView(server: server)
+                } else if let server = projectContext.activeServer,
+                          activeRuntimeKind == .openCode,
+                          let openCodeRuntimeStatus,
+                          !openCodeRuntimeStatus.isReady {
+                    OpenCodeUnavailableView(
+                        server: server,
+                        status: openCodeRuntimeStatus,
+                        isChecking: isCheckingOpenCodeRuntime,
+                        onCheckAgain: {
+                            Task {
+                                await refreshOpenCodeRuntimeStatus()
+                            }
+                        },
+                        onOpenServerSettings: {
+                            showingServerSettings = true
+                        }
+                    )
                 } else {
                     // Normal chat UI
                     ChatDetailView(viewModel: viewModel, assistantLabel: assistantLabel)
@@ -109,6 +129,11 @@ struct ChatView: View {
                 }
             }
             viewModel.configure(modelContext: modelContext, projectId: project.id)
+            if activeRuntimeKind(for: project) == .openCode {
+                await refreshOpenCodeRuntimeStatus()
+            } else {
+                openCodeRuntimeStatus = nil
+            }
         }
         .onAppear {
             viewModel.startProxyPolling()
@@ -132,6 +157,9 @@ struct ChatView: View {
                        claudeService.claudeInstallationStatus[server.id] == false {
                         _ = await claudeService.checkClaudeInstallation(for: server)
                     }
+                } else if let project = projectContext.activeProject,
+                          activeRuntimeKind(for: project) == .openCode {
+                    await refreshOpenCodeRuntimeStatus()
                 }
             }
         }
@@ -181,6 +209,11 @@ struct ChatView: View {
         .sheet(isPresented: $showingEnvironment) {
             AgentEnvironmentVariablesView()
         }
+        .sheet(isPresented: $showingServerSettings) {
+            if let server = projectContext.activeServer {
+                EditServerSheet(server: server)
+            }
+        }
     }
     
     private func clearChat() {
@@ -206,6 +239,23 @@ struct ChatView: View {
 
     private func activeRuntimeKind(for project: RemoteProject) -> CodingAgentRuntimeKind {
         CodingAgentRuntimeResolver.runtimeKind(for: project)
+    }
+
+    @MainActor
+    private func refreshOpenCodeRuntimeStatus() async {
+        guard activeRuntimeKind == .openCode,
+              let server = projectContext.activeServer else {
+            openCodeRuntimeStatus = nil
+            return
+        }
+
+        isCheckingOpenCodeRuntime = true
+        defer {
+            isCheckingOpenCodeRuntime = false
+        }
+
+        let status = await OpenCodeInstallerService.shared.checkRuntimeStatus(on: server)
+        openCodeRuntimeStatus = status.isReady ? nil : status
     }
 }
 
