@@ -158,6 +158,31 @@ final class OpenCodeClientTests: XCTestCase {
         XCTAssertFalse(session.sentInput.contains("Accept: application/json"))
     }
 
+    func testEventStreamCanUseScopedDirectoryPath() async throws {
+        let body = """
+        data: {"type":"server.connected","properties":{}}
+
+        """
+        let response = [
+            "HTTP/1.1 200 OK",
+            "Content-Type: text/event-stream",
+            "Transfer-Encoding: chunked",
+            "",
+            chunkedBody(body)
+        ].joined(separator: "\r\n")
+        let session = FakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+        let path = OpenCodeSessionPath.path("/event", directory: "/workspace/Mobile Code")
+
+        var events: [OpenCodeEvent] = []
+        for try await event in client.streamEvents(session: session, path: path) {
+            events.append(event)
+        }
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertTrue(session.sentInput.contains("GET /event?directory=/workspace/Mobile%20Code HTTP/1.1"))
+    }
+
     private func chunkedBody(_ body: String) -> String {
         let size = String(body.utf8.count, radix: 16)
         return "\(size)\r\n\(body)\r\n0\r\n\r\n"

@@ -58,6 +58,25 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         XCTAssertEqual(CodingAgentRuntimeSessionState.openCode(runtime: .openCode, rawStatus: "future").status, .unknown("future"))
     }
 
+    func testOpenCodeRuntimeDiagnosticsDescribeStreamContext() {
+        let diagnostics = OpenCodeRuntimeDiagnostics(
+            eventPath: "/event?directory=/workspace",
+            directory: "/workspace",
+            sessionID: "ses_fixture",
+            modelID: "openai/gpt-4.1"
+        )
+
+        XCTAssertEqual(
+            diagnostics.description,
+            "eventPath=/event?directory=/workspace directory=/workspace sessionID=ses_fixture modelID=openai/gpt-4.1"
+        )
+        XCTAssertTrue(
+            OpenCodeRuntimeError.streamAttachmentTimedOut(diagnostics)
+                .localizedDescription
+                .contains("sessionID=ses_fixture")
+        )
+    }
+
     @MainActor
     func testRuntimeRegistryReturnsRuntimeForKind() {
         let claude = StubRuntime(kind: .claudeProxy)

@@ -421,7 +421,7 @@ struct OpenCodeChatEventAccumulator {
     }
 
     private func matches(_ candidate: String?) -> Bool {
-        candidate == nil || candidate == sessionID
+        candidate == sessionID
     }
 
     private func content(for messageID: String) -> String {

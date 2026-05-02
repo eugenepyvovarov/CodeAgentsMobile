@@ -103,6 +103,20 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(input["callID"] as? String, "call_fixture")
     }
 
+    func testAccumulatorDropsEventsWithoutMatchingSessionID() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        let missingSessionPart = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"part":{"type":"text","text":"cross session","id":"prt_missing","messageID":"msg_missing"},"time":1}}
+        """)
+        XCTAssertTrue(accumulator.consume(missingSessionPart).isEmpty)
+
+        let otherSessionPermission = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"permission.updated","properties":{"id":"perm_other","type":"bash","sessionID":"ses_other","messageID":"msg_other","title":"Run command","metadata":{"command":"ls"},"time":{"created":1}}}
+        """)
+        XCTAssertTrue(accumulator.consume(otherSessionPermission).isEmpty)
+    }
+
     func testHydratedMessagesMapTextPartsToRuntimeMessages() throws {
         let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
         [

@@ -139,6 +139,39 @@ enum CodingAgentRuntimeError: LocalizedError {
     }
 }
 
+struct OpenCodeRuntimeDiagnostics: Equatable, CustomStringConvertible {
+    let eventPath: String
+    let directory: String
+    let sessionID: String
+    let modelID: String?
+
+    var description: String {
+        var values = [
+            "eventPath=\(eventPath)",
+            "directory=\(directory)",
+            "sessionID=\(sessionID)"
+        ]
+        if let modelID {
+            values.append("modelID=\(modelID)")
+        }
+        return values.joined(separator: " ")
+    }
+}
+
+enum OpenCodeRuntimeError: LocalizedError, Equatable {
+    case streamAttachmentTimedOut(OpenCodeRuntimeDiagnostics)
+    case streamEndedBeforePrompt(OpenCodeRuntimeDiagnostics)
+
+    var errorDescription: String? {
+        switch self {
+        case .streamAttachmentTimedOut(let diagnostics):
+            return "OpenCode event stream did not attach before sending the prompt. \(diagnostics.description)"
+        case .streamEndedBeforePrompt(let diagnostics):
+            return "OpenCode event stream ended before sending the prompt. \(diagnostics.description)"
+        }
+    }
+}
+
 @MainActor
 protocol CodingAgentRuntimeService: AnyObject {
     var kind: CodingAgentRuntimeKind { get }
@@ -240,6 +273,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
     private let sshService: SSHService
     private let clientOverride: OpenCodeClient?
+    private let streamAttachTimeoutNanoseconds: UInt64 = 5_000_000_000
 
     init(sshService: SSHService? = nil, client: OpenCodeClient? = nil) {
         self.sshService = sshService ?? .shared
@@ -272,7 +306,21 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     let client = client(for: project)
                     let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
                     var accumulator = OpenCodeChatEventAccumulator(sessionID: sessionID)
-                    let events = client.streamEvents(session: sshSession)
+                    let eventPath = OpenCodeSessionPath.path("/event", directory: project.path)
+                    let diagnostics = OpenCodeRuntimeDiagnostics(
+                        eventPath: eventPath,
+                        directory: project.path,
+                        sessionID: sessionID,
+                        modelID: nil
+                    )
+                    let eventIterator = OpenCodeEventIterator(stream: client.streamEvents(session: sshSession, path: eventPath))
+                    let firstEvent = try await waitForStreamAttachment(
+                        eventIterator: eventIterator,
+                        diagnostics: diagnostics
+                    )
+                    if case .serverConnected = firstEvent {
+                        SSHLogger.log("OpenCode event stream attached: \(diagnostics.description)", level: .debug)
+                    }
 
                     try await client.promptAsync(
                         sshSession: sshSession,
@@ -284,19 +332,54 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         directory: project.path
                     )
 
-                    for try await event in events {
+                    func consume(_ event: OpenCodeEvent) async throws -> Bool {
                         let chunks = accumulator.consume(event)
                         for chunk in chunks {
                             continuation.yield(chunk)
                             if chunk.isComplete {
                                 try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
                                 continuation.finish()
+                                return true
+                            }
+                        }
+                        return false
+                    }
+
+                    if case .serverConnected = firstEvent {
+                    } else if try await consume(firstEvent) {
+                        return
+                    }
+
+                    do {
+                        while let event = try await eventIterator.next() {
+                            if try await consume(event) {
                                 return
                             }
                         }
+                    } catch {
+                        let fallbackChunks = (try? await fallbackHydrationChunks(
+                            project: project,
+                            sshSession: sshSession,
+                            sessionID: sessionID
+                        )) ?? []
+                        if fallbackChunks.isEmpty {
+                            throw error
+                        }
+                        for chunk in fallbackChunks {
+                            continuation.yield(chunk)
+                        }
+                        continuation.finish()
+                        return
                     }
 
-                    try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
+                    let fallbackChunks = try await fallbackHydrationChunks(
+                        project: project,
+                        sshSession: sshSession,
+                        sessionID: sessionID
+                    )
+                    for chunk in fallbackChunks {
+                        continuation.yield(chunk)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -402,6 +485,98 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
     }
 
+    private func fallbackHydrationChunks(
+        project: RemoteProject,
+        sshSession: SSHSession,
+        sessionID: String
+    ) async throws -> [MessageChunk] {
+        let client = client(for: project)
+        let previousState = project.openCodeHydrationState
+        let messages = try await client.sessionMessages(
+            sshSession: sshSession,
+            sessionID: sessionID,
+            directory: project.path
+        )
+        let diff = OpenCodeHydrationDiffer.diff(local: previousState, remoteMessages: messages)
+        project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
+        guard diff.hasChanges else {
+            return []
+        }
+
+        return OpenCodeChatMapper.hydratedMessages(from: messages).compactMap { hydrated in
+            let partIDs = Set(hydrated.runtimePartIDs)
+            let hasNewParts = !partIDs.isDisjoint(with: diff.addedPartIDs)
+            guard hydrated.role == .assistant,
+                  diff.addedMessageIDs.contains(hydrated.runtimeMessageID) || hasNewParts else {
+                return nil
+            }
+
+            var metadata: [String: Any] = [
+                "type": "result",
+                "runtime": CodingAgentRuntimeKind.openCode.rawValue,
+                "opencodeSessionId": sessionID,
+                "opencodeMessageId": hydrated.runtimeMessageID,
+                "opencodePartIds": hydrated.runtimePartIDs,
+                "result": hydrated.text,
+                "content": [
+                    [
+                        "type": "text",
+                        "text": hydrated.text
+                    ]
+                ]
+            ]
+            if let originalPayload = hydrated.originalPayload,
+               let originalJSON = String(data: originalPayload, encoding: .utf8) {
+                metadata["originalJSON"] = originalJSON
+            }
+
+            return MessageChunk(
+                content: hydrated.text,
+                isComplete: true,
+                isError: false,
+                metadata: metadata
+            )
+        }
+    }
+
+    private func waitForStreamAttachment(
+        eventIterator: OpenCodeEventIterator,
+        diagnostics: OpenCodeRuntimeDiagnostics
+    ) async throws -> OpenCodeEvent {
+        switch try await nextEventWithTimeout(from: eventIterator, timeoutNanoseconds: streamAttachTimeoutNanoseconds) {
+        case .event(let event):
+            return event
+        case .ended:
+            throw OpenCodeRuntimeError.streamEndedBeforePrompt(diagnostics)
+        case .timedOut:
+            throw OpenCodeRuntimeError.streamAttachmentTimedOut(diagnostics)
+        }
+    }
+
+    private func nextEventWithTimeout(
+        from iterator: OpenCodeEventIterator,
+        timeoutNanoseconds: UInt64
+    ) async throws -> OpenCodeTimedEvent {
+        try await withThrowingTaskGroup(of: OpenCodeTimedEvent.self) { group in
+            group.addTask {
+                if let event = try await iterator.next() {
+                    return .event(event)
+                }
+                return .ended
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return .timedOut
+            }
+
+            guard let result = try await group.next() else {
+                return .ended
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
     private func sanitizedSessionID(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let trimmed, !trimmed.isEmpty else { return nil }
@@ -420,6 +595,27 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
     private func client(for project: RemoteProject) -> OpenCodeClient {
         clientOverride ?? OpenCodeClientFactory.client(for: project.serverId)
+    }
+}
+
+private enum OpenCodeTimedEvent {
+    case event(OpenCodeEvent)
+    case ended
+    case timedOut
+}
+
+private actor OpenCodeEventIterator {
+    private var iterator: AsyncThrowingStream<OpenCodeEvent, Error>.Iterator
+
+    init(stream: AsyncThrowingStream<OpenCodeEvent, Error>) {
+        self.iterator = stream.makeAsyncIterator()
+    }
+
+    func next() async throws -> OpenCodeEvent? {
+        var activeIterator = iterator
+        let event = try await activeIterator.next()
+        iterator = activeIterator
+        return event
     }
 }
 
