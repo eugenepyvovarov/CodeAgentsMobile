@@ -220,7 +220,7 @@ struct EditServerSheet: View {
                 } header: {
                     Text("Push Notifications")
                 } footer: {
-                    Text("Enables push notifications for replies finished by this server’s CodeAgents daemon. You’ll be auto-subscribed when opening an agent chat.")
+                    Text("Foreground OpenCode chat connects directly over SSH. Push notifications are for CodeAgents daemon background completions, such as scheduled tasks. You’ll be auto-subscribed when opening an agent chat.")
                         .font(.caption)
                 }
                 
