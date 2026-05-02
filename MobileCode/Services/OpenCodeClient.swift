@@ -12,6 +12,7 @@ struct OpenCodeClientConfiguration: Equatable {
     var port: Int = 4096
     var username: String = "opencode"
     var password: String?
+    var requestTimeoutSeconds: TimeInterval = 30
 }
 
 enum OpenCodeHTTPMethod: String {
@@ -38,6 +39,7 @@ enum OpenCodeClientError: LocalizedError, Equatable {
     case invalidResponse(String)
     case httpError(status: Int, body: String)
     case decodingFailed(String)
+    case requestTimedOut(seconds: TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -49,6 +51,8 @@ enum OpenCodeClientError: LocalizedError, Equatable {
             return "OpenCode HTTP \(status): \(body)"
         case .decodingFailed(let message):
             return "OpenCode response decoding failed: \(message)"
+        case .requestTimedOut(let seconds):
+            return "OpenCode request timed out after \(seconds) seconds"
         }
     }
 }
@@ -108,10 +112,11 @@ final class OpenCodeClient {
         let requestText = try buildHTTPRequest(method: method, path: path, body: body, headers: headers)
         try await handle.sendInput(requestText)
 
-        var responseText = ""
-        for try await chunk in handle.outputStream() {
-            responseText += chunk
-        }
+        let responseText = try await withRequestTimeout(
+            seconds: configuration.requestTimeoutSeconds,
+            onTimeout: { handle.terminate() },
+            operation: { try await self.readResponseText(from: handle) }
+        )
 
         let response = try OpenCodeHTTPResponseParser.parse(responseText)
         guard (200...299).contains(response.statusCode) else {
@@ -286,6 +291,43 @@ final class OpenCodeClient {
         }
 
         return requestHeaders.joined(separator: "\r\n") + "\r\n\r\n" + (body ?? "")
+    }
+
+    private func readResponseText(from handle: ProcessHandle) async throws -> String {
+        var responseText = ""
+        for try await chunk in handle.outputStream() {
+            responseText += chunk
+        }
+        return responseText
+    }
+
+    private func withRequestTimeout<T>(
+        seconds: TimeInterval,
+        onTimeout: @escaping () -> Void,
+        operation: @escaping () async throws -> T
+    ) async throws -> T {
+        guard seconds > 0 else {
+            return try await operation()
+        }
+
+        let timeoutNanoseconds = UInt64(max(1, (seconds * 1_000_000_000).rounded()))
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                onTimeout()
+                throw OpenCodeClientError.requestTimedOut(seconds: seconds)
+            }
+
+            guard let result = try await group.next() else {
+                onTimeout()
+                throw OpenCodeClientError.requestTimedOut(seconds: seconds)
+            }
+            group.cancelAll()
+            return result
+        }
     }
 }
 

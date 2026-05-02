@@ -122,6 +122,31 @@ final class OpenCodeClientTests: XCTestCase {
         }
     }
 
+    func testRequestTimesOutAndTerminatesHandleWhenResponseDoesNotFinish() async throws {
+        let response = [
+            "HTTP/1.1 200 OK",
+            "Content-Length: 2",
+            "",
+            "{}"
+        ].joined(separator: "\r\n")
+        let session = FakeSSHSession(responseChunks: [response], chunkDelayNanoseconds: 200_000_000)
+        let configuration = OpenCodeClientConfiguration(requestTimeoutSeconds: 0.01)
+        let client = OpenCodeClient(configuration: configuration)
+
+        do {
+            _ = try await client.request(session: session, method: .get, path: "/session")
+            XCTFail("Expected timeout")
+        } catch let error as OpenCodeClientError {
+            guard case .requestTimedOut(let seconds) = error else {
+                return XCTFail("Expected timeout, got \(error)")
+            }
+            XCTAssertEqual(seconds, 0.01, accuracy: 0.001)
+            XCTAssertTrue(session.didTerminateProcess)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testEventStreamDecodesChunkedSSE() async throws {
         let body = """
         data: {"type":"server.connected","properties":{}}
@@ -198,8 +223,15 @@ private final class FakeSSHSession: SSHSession {
         processHandle.sentInput
     }
 
-    init(responseChunks: [String]) {
-        self.processHandle = FakeProcessHandle(responseChunks: responseChunks)
+    var didTerminateProcess: Bool {
+        processHandle.terminated
+    }
+
+    init(responseChunks: [String], chunkDelayNanoseconds: UInt64? = nil) {
+        self.processHandle = FakeProcessHandle(
+            responseChunks: responseChunks,
+            chunkDelayNanoseconds: chunkDelayNanoseconds
+        )
     }
 
     func execute(_ command: String) async throws -> String {
@@ -245,6 +277,7 @@ private final class FakeSSHSession: SSHSession {
 
 private final class FakeProcessHandle: ProcessHandle {
     private let responseChunks: [String]
+    private let chunkDelayNanoseconds: UInt64?
     private(set) var sentInput = ""
     private(set) var terminated = false
 
@@ -252,8 +285,9 @@ private final class FakeProcessHandle: ProcessHandle {
         !terminated
     }
 
-    init(responseChunks: [String]) {
+    init(responseChunks: [String], chunkDelayNanoseconds: UInt64? = nil) {
         self.responseChunks = responseChunks
+        self.chunkDelayNanoseconds = chunkDelayNanoseconds
     }
 
     func sendInput(_ text: String) async throws {
@@ -266,10 +300,21 @@ private final class FakeProcessHandle: ProcessHandle {
 
     func outputStream() -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            for chunk in responseChunks {
-                continuation.yield(chunk)
+            let chunks = responseChunks
+            let delay = chunkDelayNanoseconds
+            Task {
+                for chunk in chunks {
+                    if let delay {
+                        try? await Task.sleep(nanoseconds: delay)
+                    }
+                    if Task.isCancelled {
+                        continuation.finish()
+                        return
+                    }
+                    continuation.yield(chunk)
+                }
+                continuation.finish()
             }
-            continuation.finish()
         }
     }
 

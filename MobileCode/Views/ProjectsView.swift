@@ -122,6 +122,7 @@ struct ProjectsView: View {
                     } label: {
                         Image(systemName: "gearshape")
                     }
+                    .accessibilityIdentifier("agents-settings-button")
                 }
             }
             .environment(\.editMode, $editMode)

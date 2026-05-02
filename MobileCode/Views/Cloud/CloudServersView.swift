@@ -30,6 +30,7 @@ struct CloudServersView: View {
                 }
                 .pickerStyle(SegmentedPickerStyle())
                 .padding()
+                .accessibilityIdentifier("add-server-type-picker")
                 
                 // Main content area
                 if selectedTab == "manual" {
@@ -87,6 +88,9 @@ struct ManualServerForm: View {
     @State private var alertMessage = ""
     @State private var showAlert = false
     @State private var showAddSSHKeySheet = false
+    @State private var configureOpenCodeAuth = false
+    @State private var openCodeUsername = OpenCodeServerProvisioning.username
+    @State private var openCodePassword = ""
     
     private var selectedSSHKey: SSHKey? {
         guard let id = selectedSSHKeyID else { return nil }
@@ -137,6 +141,26 @@ struct ManualServerForm: View {
                     }
                 }
             }
+
+            Section {
+                Toggle("Server Requires Password", isOn: $configureOpenCodeAuth)
+                    .accessibilityIdentifier("manual-server-opencode-auth-toggle")
+
+                if configureOpenCodeAuth {
+                    TextField("OpenCode Username", text: $openCodeUsername)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("manual-server-opencode-username-field")
+
+                    SecureField("OpenCode Server Password", text: $openCodePassword)
+                        .accessibilityIdentifier("manual-server-opencode-password-field")
+                }
+            } header: {
+                Text("OPENCODE SERVER")
+            } footer: {
+                Text("Use this when an existing OpenCode server already protects 127.0.0.1:4096 with basic auth.")
+                    .font(.caption)
+            }
             
             Section {
                 Button(action: testConnection) {
@@ -182,11 +206,15 @@ struct ManualServerForm: View {
         .onChange(of: password) { _, _ in updateCanSave() }
         .onChange(of: selectedSSHKeyID) { _, _ in updateCanSave() }
         .onChange(of: authMethodType) { _, _ in updateCanSave() }
+        .onChange(of: configureOpenCodeAuth) { _, _ in updateCanSave() }
+        .onChange(of: openCodePassword) { _, _ in updateCanSave() }
     }
     
     private var isFormValid: Bool {
-        !host.isEmpty && !username.isEmpty &&
-        (authMethodType == "password" ? !password.isEmpty : selectedSSHKey != nil)
+        !host.isEmpty
+            && !username.isEmpty
+            && (authMethodType == "password" ? !password.isEmpty : selectedSSHKey != nil)
+            && (!configureOpenCodeAuth || !openCodePassword.isEmpty)
     }
     
     private func updateCanSave() {
@@ -234,6 +262,21 @@ struct ManualServerForm: View {
                 return
             }
         }
+
+        if configureOpenCodeAuth && !openCodePassword.isEmpty {
+            do {
+                try KeychainManager.shared.storeOpenCodeServerCredentials(
+                    username: sanitizedOpenCodeUsername(),
+                    password: openCodePassword,
+                    for: server.id
+                )
+            } catch {
+                alertMessage = "Failed to save OpenCode credentials: \(error.localizedDescription)"
+                showAlert = true
+                isSaving = false
+                return
+            }
+        }
         
         do {
             try modelContext.save()
@@ -244,6 +287,11 @@ struct ManualServerForm: View {
         }
         
         isSaving = false
+    }
+
+    private func sanitizedOpenCodeUsername() -> String {
+        let trimmed = openCodeUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? OpenCodeServerProvisioning.username : trimmed
     }
 }
 

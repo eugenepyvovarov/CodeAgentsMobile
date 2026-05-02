@@ -74,6 +74,7 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                    .accessibilityIdentifier("settings-agent-runtime-link")
                 }
                 
                 Section("Cloud Providers") {
@@ -117,6 +118,7 @@ struct SettingsView: View {
                                 .foregroundColor(.accentColor)
                         }
                     }
+                    .accessibilityIdentifier("settings-add-server-button")
                 }
                 
                 Section("SSH Keys") {

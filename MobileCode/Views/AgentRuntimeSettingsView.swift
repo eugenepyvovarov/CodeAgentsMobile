@@ -55,6 +55,8 @@ struct AgentRuntimeSettingsView: View {
                         Text(runtime.displayName).tag(runtime)
                     }
                 }
+                .accessibilityIdentifier("agent-runtime-picker")
+                .accessibilityValue(runtimeOptionsAccessibilityValue)
 
                 if let project = activeProject {
                     LabeledContent("Active Agent", value: project.displayTitle)
@@ -85,6 +87,7 @@ struct AgentRuntimeSettingsView: View {
                         }
                     }
                     .disabled(isLoadingStatus)
+                    .accessibilityIdentifier("agent-runtime-check-button")
 
                     if let runtimeHealth {
                         LabeledContent("Health", value: healthText(runtimeHealth))
@@ -171,6 +174,7 @@ struct AgentRuntimeSettingsView: View {
                     Text(scope.displayName).tag(scope)
                 }
             }
+            .accessibilityIdentifier("opencode-model-scope-picker")
             .onChange(of: modelConfigScope) { _, _ in
                 Task { await loadModelConfiguration(project: project) }
             }
@@ -183,6 +187,7 @@ struct AgentRuntimeSettingsView: View {
                     }
                 }
             }
+            .accessibilityIdentifier("opencode-default-model-picker")
 
             Picker("Small Model", selection: $selectedSmallModelID) {
                 Text("OpenCode Default").tag("")
@@ -192,6 +197,7 @@ struct AgentRuntimeSettingsView: View {
                     }
                 }
             }
+            .accessibilityIdentifier("opencode-small-model-picker")
 
             Button {
                 Task { await saveModelConfiguration(project: project) }
@@ -225,6 +231,7 @@ struct AgentRuntimeSettingsView: View {
             SecureField("API Key", text: $apiKey)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .accessibilityIdentifier("opencode-api-key-field")
 
             HStack {
                 Button("Load Stored") {
@@ -243,6 +250,7 @@ struct AgentRuntimeSettingsView: View {
                     }
                 }
                 .disabled(isSavingAPIKey || apiProviderID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || apiKey.isEmpty)
+                .accessibilityIdentifier("opencode-save-api-key-button")
             }
 
             Text("OpenCode owns provider configuration on the server. MobileCode stores this key under an OpenCode-specific keychain entry and sends it to the selected server.")
@@ -284,6 +292,7 @@ struct AgentRuntimeSettingsView: View {
                     || customProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || customProviderAPIKey.isEmpty
             )
+            .accessibilityIdentifier("opencode-save-custom-provider-button")
 
             Text("First pass supports API-key OpenAI-compatible providers only. OAuth, subscription, and browser-login providers are intentionally out of scope.")
                 .font(.caption)
@@ -296,6 +305,10 @@ struct AgentRuntimeSettingsView: View {
             get: { effectiveRuntime },
             set: { applyRuntimeSelection($0) }
         )
+    }
+
+    private var runtimeOptionsAccessibilityValue: String {
+        CodingAgentRuntimeKind.allCases.map(\.displayName).joined(separator: ", ")
     }
 
     private func applyRuntimeSelection(_ runtime: CodingAgentRuntimeKind) {

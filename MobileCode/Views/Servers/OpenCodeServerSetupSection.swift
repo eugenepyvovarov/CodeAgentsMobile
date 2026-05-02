@@ -33,8 +33,10 @@ struct OpenCodeServerSetupSection: View {
             TextField("Server Username", text: $username)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .accessibilityIdentifier("opencode-server-username-field")
 
             SecureField(hasStoredCredentials ? "New Server Password" : "Server Password", text: $password)
+                .accessibilityIdentifier("opencode-server-password-field")
 
             HStack {
                 Button {
@@ -43,6 +45,7 @@ struct OpenCodeServerSetupSection: View {
                     Label("Save Auth", systemImage: "key")
                 }
                 .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("opencode-server-save-auth-button")
 
                 Spacer()
 
@@ -52,6 +55,7 @@ struct OpenCodeServerSetupSection: View {
                     Label("Clear", systemImage: "xmark.circle")
                 }
                 .disabled(!hasStoredCredentials && password.isEmpty)
+                .accessibilityIdentifier("opencode-server-clear-auth-button")
             }
 
             Button {
@@ -68,6 +72,7 @@ struct OpenCodeServerSetupSection: View {
                 }
             }
             .disabled(isChecking || isInstalling)
+            .accessibilityIdentifier("opencode-server-check-button")
 
             Button {
                 Task {
@@ -83,6 +88,7 @@ struct OpenCodeServerSetupSection: View {
                 }
             }
             .disabled(isChecking || isInstalling)
+            .accessibilityIdentifier("opencode-server-install-button")
 
             if let status {
                 Text(status.message)

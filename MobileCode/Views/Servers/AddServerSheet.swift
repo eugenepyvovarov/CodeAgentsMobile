@@ -105,12 +105,15 @@ struct AddServerSheet: View {
 
                 Section {
                     Toggle("Server Requires Password", isOn: $configureOpenCodeAuth)
+                        .accessibilityIdentifier("add-server-opencode-auth-toggle")
 
                     if configureOpenCodeAuth {
                         TextField("OpenCode Username", text: $openCodeUsername)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("add-server-opencode-username-field")
                         SecureField("OpenCode Server Password", text: $openCodePassword)
+                            .accessibilityIdentifier("add-server-opencode-password-field")
                     }
                 } header: {
                     Text("OpenCode Server")

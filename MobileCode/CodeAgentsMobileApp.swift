@@ -15,6 +15,15 @@ struct CodeAgentsMobileApp: App {
 
     let sharedModelContainer: ModelContainer = {
         let schema = CodeAgentsSwiftDataSchema.schema
+        if CodeAgentsMobileApp.isRunningUITests {
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            do {
+                return try ModelContainer(for: schema, configurations: [configuration])
+            } catch {
+                fatalError("Could not create UI test ModelContainer: \(error)")
+            }
+        }
+
         SwiftDataStoreMigrator.migrateIfNeeded(schema: schema, destinationURL: AppGroup.storeURL)
         let configuration = ModelConfiguration(schema: schema, url: AppGroup.storeURL)
 
@@ -26,6 +35,11 @@ struct CodeAgentsMobileApp: App {
     }()
 
     init() {
+        if Self.shouldResetUITestDefaults,
+           let bundleIdentifier = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
+        }
+
         if FirebaseApp.app() == nil {
             if let options = FirebaseOptions.defaultOptions() {
                 FirebaseApp.configure(options: options)
@@ -41,5 +55,13 @@ struct CodeAgentsMobileApp: App {
             ContentView()
         }
         .modelContainer(sharedModelContainer)
+    }
+
+    private static var isRunningUITests: Bool {
+        ProcessInfo.processInfo.arguments.contains("--ui-testing")
+    }
+
+    private static var shouldResetUITestDefaults: Bool {
+        ProcessInfo.processInfo.arguments.contains("--reset-ui-test-defaults")
     }
 }

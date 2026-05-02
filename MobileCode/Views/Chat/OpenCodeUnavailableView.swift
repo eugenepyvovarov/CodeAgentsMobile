@@ -45,12 +45,14 @@ struct OpenCodeUnavailableView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(isChecking)
+                .accessibilityIdentifier("opencode-unavailable-check-button")
 
                 Button(action: onOpenServerSettings) {
                     Label("Open Server Settings", systemImage: "server.rack")
                         .frame(maxWidth: 260)
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("opencode-unavailable-server-settings-button")
             }
 
             Text("\(server.name) · \(server.host)")
