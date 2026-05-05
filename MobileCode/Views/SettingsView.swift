@@ -98,6 +98,7 @@ struct SettingsView: View {
                                 .foregroundColor(.accentColor)
                         }
                     }
+                    .accessibilityIdentifier("settings-add-cloud-provider-button")
                     .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
                 }
                 
@@ -151,12 +152,14 @@ struct SettingsView: View {
                     } label: {
                         Label("MCP Servers", systemImage: "server.rack")
                     }
+                    .accessibilityIdentifier("settings-mcp-servers-link")
 
                     NavigationLink {
                         AgentSkillsListView()
                     } label: {
                         Label("Agent Skills", systemImage: "sparkles")
                     }
+                    .accessibilityIdentifier("settings-agent-skills-link")
                 }
                 
                 Section("About") {

@@ -68,6 +68,7 @@ struct MCPServersListView: View {
                             Label("Add MCP Server", systemImage: "plus.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("mcp-add-server-empty-button")
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -90,6 +91,7 @@ struct MCPServersListView: View {
                         Section {
                             ForEach(servers) { server in
                                 MCPServerRow(server: server)
+                                    .accessibilityIdentifier("mcp-server-row-\(server.name.cloudAccessibilityIdentifierFragment)")
                                     .contentShape(Rectangle())
                                     .onTapGesture {
                                         if server.isManagedSchedulerServer {
@@ -127,6 +129,7 @@ struct MCPServersListView: View {
                         Image(systemName: "plus")
                     }
                     .disabled(project == nil)
+                    .accessibilityIdentifier("mcp-add-server-button")
                 }
             }
             .task {

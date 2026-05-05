@@ -25,6 +25,12 @@ class SSHService {
     
     /// Active SSH sessions keyed by ConnectionKey
     private var connectionPool: [ConnectionKey: SSHSession] = [:]
+
+    /// In-flight SSH connection attempts keyed by ConnectionKey.
+    ///
+    /// Multiple view lifecycle tasks can ask for the same connection at the same time. Without coalescing, each
+    /// caller passes the pool check before the first connection finishes, creating duplicate SSH sessions.
+    private var connectionTasks: [ConnectionKey: Task<SSHSession, Error>] = [:]
     
     /// Map to track which server each project belongs to
     private var projectServerMap: [UUID: UUID] = [:]
@@ -112,6 +118,11 @@ class SSHService {
             SSHLogger.log("Reusing existing connection for \(key)", level: .debug)
             return existingSession
         }
+
+        if let connectionTask = connectionTasks[key] {
+            SSHLogger.log("Awaiting existing connection attempt for \(key)", level: .debug)
+            return try await connectionTask.value
+        }
         
         // Get server for this project
         let serverId = project.serverId
@@ -121,11 +132,21 @@ class SSHService {
         
         // Create new connection
         SSHLogger.log("Creating new connection for \(key)", level: .info)
-        let session = try await createSession(for: server)
-        connectionPool[key] = session
-        projectServerMap[project.id] = serverId
-        
-        return session
+        let connectionTask = Task { @MainActor in
+            try await createSession(for: server)
+        }
+        connectionTasks[key] = connectionTask
+
+        do {
+            let session = try await connectionTask.value
+            connectionPool[key] = session
+            projectServerMap[project.id] = serverId
+            connectionTasks.removeValue(forKey: key)
+            return session
+        } catch {
+            connectionTasks.removeValue(forKey: key)
+            throw error
+        }
     }
     
     
@@ -167,6 +188,8 @@ class SSHService {
                 session.disconnect()
                 connectionPool.removeValue(forKey: key)
             }
+            connectionTasks[key]?.cancel()
+            connectionTasks.removeValue(forKey: key)
         } else {
             // Close all connections for this project
             for connectionPurpose in ConnectionPurpose.allCases {
@@ -176,6 +199,8 @@ class SSHService {
                     session.disconnect()
                     connectionPool.removeValue(forKey: key)
                 }
+                connectionTasks[key]?.cancel()
+                connectionTasks.removeValue(forKey: key)
             }
             // Clean up project mapping
             projectServerMap.removeValue(forKey: projectId)
@@ -189,7 +214,11 @@ class SSHService {
             SSHLogger.log("Closing connection for \(key)", level: .debug)
             session.disconnect()
         }
+        for task in connectionTasks.values {
+            task.cancel()
+        }
         connectionPool.removeAll()
+        connectionTasks.removeAll()
         projectServerMap.removeAll()
     }
     

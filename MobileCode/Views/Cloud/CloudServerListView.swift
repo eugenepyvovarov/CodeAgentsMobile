@@ -21,8 +21,7 @@ struct CloudServerListView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showError = false
-    @State private var selectedServer: CloudServer?
-    @State private var showAttachSheet = false
+    @State private var serverToAttach: CloudServer?
     
     var body: some View {
         NavigationStack {
@@ -85,8 +84,8 @@ struct CloudServerListView: View {
                     loadServers()
                 }
             }
-            .sheet(isPresented: $showAttachSheet) {
-                if let server = selectedServer, let provider = selectedProvider {
+            .sheet(item: $serverToAttach) { server in
+                if let provider = selectedProvider {
                     AttachServerSheet(
                         cloudServer: server,
                         provider: provider,
@@ -94,13 +93,27 @@ struct CloudServerListView: View {
                             // Save the attached server
                             modelContext.insert(attachedServer)
                             try? modelContext.save()
-                            showAttachSheet = false
-                            selectedServer = nil
+                            serverToAttach = nil
                             
                             // Reload to update UI
                             loadServers()
                         }
                     )
+                } else {
+                    NavigationStack {
+                        ContentUnavailableView(
+                            "Provider Unavailable",
+                            systemImage: "exclamationmark.triangle",
+                            description: Text("Close this sheet and select a provider again.")
+                        )
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") {
+                                    serverToAttach = nil
+                                }
+                            }
+                        }
+                    }
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -152,8 +165,7 @@ struct CloudServerListView: View {
     }
     
     private func attachServer(_ cloudServer: CloudServer) {
-        selectedServer = cloudServer
-        showAttachSheet = true
+        serverToAttach = cloudServer
     }
 }
 
@@ -252,6 +264,7 @@ struct AttachServerSheet: View {
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var showCreateKey = false
+    @State private var openCodeAuth = OpenCodeServerAuthConfiguration()
     
     var body: some View {
         NavigationStack {
@@ -325,6 +338,26 @@ struct AttachServerSheet: View {
                         }
                     }
                 }
+
+                Section {
+                    Toggle("Server Requires Password", isOn: $openCodeAuth.isEnabled)
+                        .accessibilityIdentifier("attach-server-opencode-auth-toggle")
+
+                    if openCodeAuth.isEnabled {
+                        TextField("OpenCode Username", text: $openCodeAuth.username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .accessibilityIdentifier("attach-server-opencode-username-field")
+
+                        SecureField("OpenCode Server Password", text: $openCodeAuth.password)
+                            .accessibilityIdentifier("attach-server-opencode-password-field")
+                    }
+                } header: {
+                    Text("OpenCode Server")
+                } footer: {
+                    Text("Use this when the existing server protects OpenCode on 127.0.0.1:4096 with basic auth.")
+                        .font(.caption)
+                }
                 
                 if let result = connectionTestResult {
                     Section("Connection Test") {
@@ -354,7 +387,7 @@ struct AttachServerSheet: View {
                     Button(action: attachServer) {
                         Text("Attach Server")
                     }
-                    .disabled(connectionTestResult != true || !isAuthValid)
+                    .disabled(connectionTestResult != true || !isAuthValid || !openCodeAuth.canSave)
                 }
             }
             .navigationTitle("Attach Server")
@@ -467,7 +500,7 @@ struct AttachServerSheet: View {
     }
     
     private func attachServer() {
-        guard let ip = cloudServer.publicIP,
+        guard cloudServer.publicIP != nil,
               connectionTestResult == true,
               isAuthValid else { return }
         
@@ -475,17 +508,15 @@ struct AttachServerSheet: View {
             return
         }
         
-        let server = Server(
-            name: serverName.isEmpty ? cloudServer.name : serverName,
-            host: ip,
-            port: 22,
+        let server = CloudServerAttachmentConfiguration.makeAttachedServer(
+            cloudServer: cloudServer,
+            provider: provider,
+            displayName: serverName,
             username: username,
-            authMethodType: authMethod == .password ? "password" : "key"
+            authMethodType: authMethod == .password ? "password" : "key",
+            sshKeyId: selectedKey?.id
         )
-        
-        server.providerId = provider.id
-        server.providerServerId = cloudServer.id
-        
+
         switch authMethod {
         case .password:
             do {
@@ -496,7 +527,21 @@ struct AttachServerSheet: View {
                 return
             }
         case .key:
-            server.sshKeyId = selectedKey?.id
+            break
+        }
+
+        if let credentials = openCodeAuth.credentials {
+            do {
+                try KeychainManager.shared.storeOpenCodeServerCredentials(
+                    username: credentials.username,
+                    password: credentials.password,
+                    for: server.id
+                )
+            } catch {
+                errorMessage = "Failed to store OpenCode credentials: \(error.localizedDescription)"
+                showError = true
+                return
+            }
         }
         
         onComplete(server)

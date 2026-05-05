@@ -163,6 +163,13 @@ class ChatViewModel {
     /// Configure the view model with model context and project
     func configure(modelContext: ModelContext, projectId: UUID) {
         print("📝 configure: Called with agentId: \(projectId)")
+
+        // SwiftUI may re-enter configuration for the same project/context as the view settles. Treat that as a
+        // no-op so we do not restart hydration, MCP fetches, or transient loading state.
+        if self.projectId == projectId && self.modelContext === modelContext {
+            print("📝 configure: Already configured for same agent, returning")
+            return
+        }
         
         // Prevent concurrent configuration
         guard !isConfiguring else {
@@ -177,12 +184,6 @@ class ChatViewModel {
         isLoadingPreviousSession = false
         showActiveSessionIndicator = false
         print("📝 configure: Cleared loading states")
-        
-        // Skip if already configured for the same project
-        if self.projectId == projectId && self.modelContext === modelContext {
-            print("📝 configure: Already configured for same agent, returning")
-            return
-        }
         
         // Cancel any existing session check task before resetting
         sessionCheckTask?.cancel()
@@ -657,11 +658,58 @@ class ChatViewModel {
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
             let stream = runtime.sendMessage(text, in: project, messageId: assistantMessage.id, mcpServers: cachedMCPServers)
-            var didReceiveContent = false
+            var didReceiveAnswerText = false
+            var didReceiveProgress = false
+            var toolMessagesByPartID: [String: Message] = [:]
 
             for try await chunk in stream {
-                if let type = chunk.metadata?["type"] as? String, type == "tool_permission" {
+                let chunkType = chunk.metadata?["type"] as? String
+
+                if chunkType == "tool_permission" {
                     handleToolPermissionChunk(chunk, project: project)
+                    continue
+                }
+
+                if chunkType == "opencode_tool" {
+                    didReceiveProgress = true
+                    let partID = chunk.metadata?["toolPartID"] as? String ?? UUID().uuidString
+                    let toolMessage: Message
+                    if let existing = toolMessagesByPartID[partID] {
+                        toolMessage = existing
+                    } else {
+                        toolMessage = createMessage(
+                            content: chunk.content,
+                            role: .assistant,
+                            isComplete: chunk.isComplete,
+                            isStreaming: !chunk.isComplete
+                        )
+                        toolMessagesByPartID[partID] = toolMessage
+                    }
+
+                    let originalJSON = (chunk.metadata?["originalJSON"] as? String)?.data(using: .utf8)
+                    updateMessageWithJSON(
+                        toolMessage,
+                        content: chunk.content,
+                        originalJSON: originalJSON,
+                        replaceOriginalJSON: true
+                    )
+                    toolMessage.isStreaming = !chunk.isComplete
+                    toolMessage.isComplete = chunk.isComplete
+
+                    if let provider = chunk.metadata?["runtimeProvider"] as? String {
+                        project.lastSuccessfulRuntimeProviderRawValue = provider
+                    }
+                    continue
+                }
+
+                if chunkType == "opencode_progress" {
+                    didReceiveProgress = true
+                    if !didReceiveAnswerText {
+                        updateMessage(assistantMessage, with: chunk.content)
+                    }
+                    if let provider = chunk.metadata?["runtimeProvider"] as? String {
+                        project.lastSuccessfulRuntimeProviderRawValue = provider
+                    }
                     continue
                 }
 
@@ -670,13 +718,13 @@ class ChatViewModel {
                     updateMessage(assistantMessage, with: errorText)
                     assistantMessage.isStreaming = false
                     assistantMessage.isComplete = true
-                    didReceiveContent = true
+                    didReceiveAnswerText = true
                     break
                 }
 
                 if !chunk.content.isEmpty {
                     updateOpenCodeMessage(assistantMessage, with: chunk)
-                    didReceiveContent = true
+                    didReceiveAnswerText = true
                 }
 
                 if let provider = chunk.metadata?["runtimeProvider"] as? String {
@@ -690,10 +738,17 @@ class ChatViewModel {
                 }
             }
 
-            if !didReceiveContent {
-                updateMessage(assistantMessage, with: "OpenCode finished without returning text.")
+            if !didReceiveAnswerText {
+                let fallback = didReceiveProgress
+                    ? "OpenCode ran steps but did not return a final message."
+                    : "OpenCode finished without returning text."
+                updateMessage(assistantMessage, with: fallback)
             }
 
+            for toolMessage in toolMessagesByPartID.values {
+                toolMessage.isStreaming = false
+                toolMessage.isComplete = true
+            }
             assistantMessage.isStreaming = false
             assistantMessage.isComplete = true
             project.activeStreamingMessageId = nil
@@ -853,6 +908,8 @@ class ChatViewModel {
         // Clear references
         streamingMessage = nil
         streamingBlocks = []
+        isLoadingPreviousSession = false
+        showActiveSessionIndicator = false
         showSyncRetryIndicator = false
         proxySyncRetryCount = 0
         proxySyncNextAttemptAt = .distantPast
@@ -1130,13 +1187,21 @@ class ChatViewModel {
     }
     
     /// Update message with content and original JSON
-    private func updateMessageWithJSON(_ message: Message, content: String, originalJSON: Data?, proxyEventId: Int? = nil) {
+    private func updateMessageWithJSON(
+        _ message: Message,
+        content: String,
+        originalJSON: Data?,
+        proxyEventId: Int? = nil,
+        replaceOriginalJSON: Bool = false
+    ) {
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
             let existing = messages[index]
             let hadOriginalJSON = existing.originalJSON != nil
             existing.content = content
             if let originalJSON = originalJSON {
-                let mergedJSON = appendOriginalJSON(existing: existing.originalJSON, new: originalJSON)
+                let mergedJSON = replaceOriginalJSON
+                    ? normalizedOriginalJSONLine(from: originalJSON)
+                    : appendOriginalJSON(existing: existing.originalJSON, new: originalJSON)
                 existing.originalJSON = mergedJSON
                 ProxyStreamDiagnostics.log(
                     "message update id=\(message.id) contentLen=\(content.count) \(ProxyStreamDiagnostics.summarize(data: mergedJSON ?? originalJSON))"
@@ -1166,7 +1231,7 @@ class ChatViewModel {
     private func updateOpenCodeMessage(_ message: Message, with chunk: MessageChunk) {
         let originalJSON = (chunk.metadata?["originalJSON"] as? String)?.data(using: .utf8)
         let content = chunk.content.isEmpty ? message.content : chunk.content
-        updateMessageWithJSON(message, content: content, originalJSON: originalJSON)
+        updateMessageWithJSON(message, content: content, originalJSON: originalJSON, replaceOriginalJSON: true)
         message.isStreaming = !chunk.isComplete
         message.isComplete = chunk.isComplete
 
@@ -1342,6 +1407,17 @@ class ChatViewModel {
         let separator = existingString.hasSuffix("\n") ? "" : "\n"
         let combined = existingString + separator + trimmedNew
         return combined.data(using: .utf8)
+    }
+
+    private func normalizedOriginalJSONLine(from data: Data) -> Data? {
+        guard let string = String(data: data, encoding: .utf8) else {
+            return data
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return data
+        }
+        return trimmed.data(using: .utf8)
     }
     
     /// Update streaming message with blocks

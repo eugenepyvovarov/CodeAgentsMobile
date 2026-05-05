@@ -297,12 +297,16 @@ struct ManualServerForm: View {
 
 struct ManagedServerContent: View {
     @Query private var providers: [ServerProvider]
-    @State private var showServerList = false
-    @State private var selectedProvider: ServerProvider?
+    @State private var providerSelection = CloudProviderSelectionState()
     @State private var showAddProvider = false
     @State private var selectedProviderType: String?
     
     let dismissAll: (() -> Void)?
+
+    private var selectedProvider: ServerProvider? {
+        guard let selectedProviderID = providerSelection.selectedProviderID else { return nil }
+        return providers.first { $0.id == selectedProviderID }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -324,6 +328,7 @@ struct ManagedServerContent: View {
                             .foregroundColor(.white)
                             .cornerRadius(10)
                     }
+                    .accessibilityIdentifier("managed-server-add-provider-button")
                     .padding(.horizontal)
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
@@ -342,9 +347,10 @@ struct ManagedServerContent: View {
                                 provider: provider,
                                 displayName: provider.name,
                                 isConnected: false,
-                                isSelected: selectedProvider?.id == provider.id,
+                                isSelected: providerSelection.selectedProviderID == provider.id,
+                                accessibilityIdentifier: "managed-provider-\(provider.name.cloudAccessibilityIdentifierFragment)",
                                 onTap: {
-                                    selectedProvider = provider
+                                    providerSelection.selectProvider(id: provider.id)
                                 }
                             )
                         }
@@ -358,7 +364,7 @@ struct ManagedServerContent: View {
                 VStack(spacing: 12) {
                     Button {
                         if selectedProvider != nil {
-                            showServerList = true
+                            providerSelection.presentSelectedProvider()
                         }
                     } label: {
                         Text("Next")
@@ -369,6 +375,7 @@ struct ManagedServerContent: View {
                             .cornerRadius(10)
                     }
                     .disabled(selectedProvider == nil)
+                    .accessibilityIdentifier("managed-provider-next-button")
                     
                     Button {
                         showAddProvider = true
@@ -377,13 +384,16 @@ struct ManagedServerContent: View {
                             .font(.subheadline)
                             .foregroundColor(.accentColor)
                     }
+                    .accessibilityIdentifier("managed-server-add-another-provider-button")
                 }
                 .padding()
             }
         }
-        .sheet(isPresented: $showServerList) {
-            if let provider = selectedProvider {
+        .sheet(item: $providerSelection.serverListRoute) { route in
+            if let provider = providers.first(where: { $0.id == route.providerID }) {
                 ManagedServerListView(provider: provider, dismissAll: dismissAll)
+            } else {
+                MissingCloudProviderSheet()
             }
         }
         .sheet(isPresented: $showAddProvider) {
@@ -392,6 +402,27 @@ struct ManagedServerContent: View {
                 // The ManagedServerContent will refresh automatically via @Query
                 showAddProvider = false
             })
+        }
+    }
+}
+
+private struct MissingCloudProviderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ContentUnavailableView {
+                Label("Cloud Provider Unavailable", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text("The selected cloud provider is no longer available.")
+            } actions: {
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .navigationTitle("Cloud Provider")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

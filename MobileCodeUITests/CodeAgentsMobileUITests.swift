@@ -67,6 +67,22 @@ final class CodeAgentsMobileUITests: XCTestCase {
         XCTAssertTrue((runtimePicker.value as? String)?.contains("Claude Proxy (Legacy)") == true)
     }
 
+    func testSettingsExposeMCPAndSkillsManagement() throws {
+        try openSettingsFromAgentsScreen()
+
+        let mcpLink = app.staticTexts["MCP Servers"].firstMatch
+        XCTAssertTrue(scrollToElement(mcpLink, timeout: 10), "Settings did not expose the MCP Servers entry.")
+
+        let skillsLink = app.staticTexts["Agent Skills"].firstMatch
+        XCTAssertTrue(scrollToElement(skillsLink, timeout: 10), "Settings did not expose the Agent Skills entry.")
+        skillsLink.tap()
+        XCTAssertTrue(app.navigationBars["Agent Skills"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.buttons["agent-skills-add-menu-button"].waitForExistence(timeout: 5)
+                || app.buttons["agent-skills-browse-marketplaces-button"].waitForExistence(timeout: 5)
+        )
+    }
+
     func testManualServerFlowIncludesOpenCodeServerAuthSetup() throws {
         try openSettingsFromAgentsScreen()
 
@@ -134,5 +150,17 @@ final class CodeAgentsMobileUITests: XCTestCase {
 
         XCTFail("Could not detect root UI. Expected Chat tabs or Agents screen.")
         return .agents
+    }
+
+    private func scrollToElement(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists && element.isHittable {
+                return true
+            }
+            app.swipeUp()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        }
+        return element.exists && element.isHittable
     }
 }

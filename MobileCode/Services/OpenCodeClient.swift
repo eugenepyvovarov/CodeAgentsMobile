@@ -297,6 +297,9 @@ final class OpenCodeClient {
         var responseText = ""
         for try await chunk in handle.outputStream() {
             responseText += chunk
+            if OpenCodeHTTPResponseParser.isComplete(responseText) {
+                return responseText
+            }
         }
         return responseText
     }
@@ -348,14 +351,29 @@ private final class OpenCodeStreamLifetime: @unchecked Sendable {
 }
 
 private enum OpenCodeHTTPResponseParser {
+    static func isComplete(_ responseText: String) -> Bool {
+        guard let parts = splitHeaderAndBody(responseText) else { return false }
+        let headers = parseHeaders(from: parts.header)
+
+        if headers["transfer-encoding"]?.lowercased().contains("chunked") == true {
+            return hasCompleteChunkedBody(parts.body)
+        }
+
+        if let lengthValue = headers["content-length"],
+           let length = Int(lengthValue) {
+            return parts.body.utf8.count >= length
+        }
+
+        return false
+    }
+
     static func parse(_ responseText: String) throws -> OpenCodeHTTPResponse {
-        guard let headerRange = responseText.range(of: "\r\n\r\n") ?? responseText.range(of: "\n\n") else {
+        guard let parts = splitHeaderAndBody(responseText) else {
             throw OpenCodeClientError.invalidResponse("Missing header/body separator")
         }
 
-        let rawHeaders = String(responseText[..<headerRange.lowerBound])
-        let rawBody = String(responseText[headerRange.upperBound...])
-        let headerLines = rawHeaders
+        let rawBody = parts.body
+        let headerLines = parts.header
             .replacingOccurrences(of: "\r\n", with: "\n")
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
@@ -392,6 +410,80 @@ private enum OpenCodeHTTPResponseParser {
         }
 
         return OpenCodeHTTPResponse(statusCode: statusCode, headers: headers, body: body)
+    }
+
+    private static func splitHeaderAndBody(_ responseText: String) -> (header: String, body: String)? {
+        if let headerRange = responseText.range(of: "\r\n\r\n") {
+            return (String(responseText[..<headerRange.lowerBound]), String(responseText[headerRange.upperBound...]))
+        }
+        if let headerRange = responseText.range(of: "\n\n") {
+            return (String(responseText[..<headerRange.lowerBound]), String(responseText[headerRange.upperBound...]))
+        }
+        return nil
+    }
+
+    private static func parseHeaders(from headerText: String) -> [String: String] {
+        let headerLines = headerText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        var headers: [String: String] = [:]
+        for line in headerLines.dropFirst() where !line.isEmpty {
+            guard let separator = line.firstIndex(of: ":") else { continue }
+            let key = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            headers[key] = value
+        }
+        return headers
+    }
+
+    private static func hasCompleteChunkedBody(_ rawBody: String) -> Bool {
+        let bytes = Array(rawBody.utf8)
+        var index = 0
+
+        while true {
+            while index < bytes.count {
+                if bytes[index] == 13, index + 1 < bytes.count, bytes[index + 1] == 10 {
+                    index += 2
+                } else if bytes[index] == 10 {
+                    index += 1
+                } else {
+                    break
+                }
+            }
+
+            guard let lineEnd = lineEnd(in: bytes, startingAt: index) else {
+                return false
+            }
+
+            let sizeLine = String(decoding: bytes[index..<lineEnd.contentEnd], as: UTF8.self)
+                .split(separator: ";", maxSplits: 1)
+                .first
+                .map(String.init)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            guard let size = Int(sizeLine, radix: 16) else {
+                return false
+            }
+
+            index = lineEnd.afterLineBreak
+            if size == 0 {
+                return true
+            }
+
+            guard index + size <= bytes.count else {
+                return false
+            }
+            index += size
+
+            if index + 1 < bytes.count, bytes[index] == 13, bytes[index + 1] == 10 {
+                index += 2
+            } else if index < bytes.count, bytes[index] == 10 {
+                index += 1
+            } else {
+                return false
+            }
+        }
     }
 
     private static func decodeChunkedBody(_ rawBody: String) throws -> String {

@@ -61,7 +61,7 @@ enum OpenCodePromptBuilder {
         let skillReference = makeSkillReference(from: components, projectPath: projectPath)
 
         let payload = OpenCodePromptPayload(
-            messageID: messageID,
+            messageID: openCodeMessageID(from: messageID),
             system: makeSystemPrompt(systemRules: systemRules, skillReference: skillReference),
             tools: skillReference == nil ? nil : ["skill": true],
             parts: makeParts(message: components.message, files: fileReferences, skillReference: skillReference)
@@ -76,6 +76,14 @@ enum OpenCodePromptBuilder {
     }
 
     // MARK: - Private
+
+    private static func openCodeMessageID(from value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, trimmed.hasPrefix("msg_") else {
+            return nil
+        }
+        return trimmed
+    }
 
     private static func makeParts(
         message: String,

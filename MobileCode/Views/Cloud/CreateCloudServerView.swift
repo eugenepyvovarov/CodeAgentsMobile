@@ -24,8 +24,8 @@ struct CreateCloudServerView: View {
     }
     @Environment(\.modelContext) private var modelContext
     @Query private var sshKeys: [SSHKey]
-    @State private var showProjectCreation = false
     @State private var savedServer: Server?
+    @State private var projectCreationRoute: CloudServerProjectCreationRoute?
     
     // Form fields
     @State private var serverName = ""
@@ -106,6 +106,7 @@ struct CreateCloudServerView: View {
                             createServer()
                         }
                         .disabled(!isFormValid)
+                        .accessibilityIdentifier("cloud-server-create-button")
                     }
                 }
             }
@@ -118,20 +119,23 @@ struct CreateCloudServerView: View {
                 loadOptions()
             }
             .onDisappear {
-                // If server creation task is still running when view disappears,
-                // cancel it to avoid duplicate monitoring
+                guard !hasInFlightProvisioning else {
+                    print("Keeping server provisioning tasks alive while the create-server view disappears")
+                    return
+                }
+
                 if serverCreationTask != nil {
                     serverCreationTask?.cancel()
                     serverCreationTask = nil
-                    print("⚠️ Cancelled inline monitoring task on view disappear")
+                    print("Cancelled idle server creation task on view disappear")
                 }
                 if runtimeVerificationTask != nil {
                     runtimeVerificationTask?.cancel()
                     runtimeVerificationTask = nil
-                    print("Cancelled OpenCode runtime verification task on view disappear")
+                    print("Cancelled idle OpenCode runtime verification task on view disappear")
                 }
                 if savedServer == nil, let pendingLocalServerID {
-                    try? KeychainManager.shared.deleteOpenCodeServerPassword(for: pendingLocalServerID)
+                    try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: pendingLocalServerID)
                 }
             }
             .sheet(isPresented: $showGenerateKey) {
@@ -144,13 +148,13 @@ struct CreateCloudServerView: View {
                     providerType: provider.providerType
                 )
             }
-            .sheet(isPresented: $showProjectCreation) {
-                if let server = savedServer {
+            .sheet(item: $projectCreationRoute) { route in
+                if let server = savedServer, server.id == route.serverID {
                     AddProjectSheet(
                         preselectedServer: server,
                         onProjectCreated: {
                             // When project is successfully created, dismiss all views
-                            showProjectCreation = false
+                            projectCreationRoute = nil
                             // Call dismissAll if provided to close entire navigation chain
                             if let dismissAll = dismissAll {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -166,7 +170,7 @@ struct CreateCloudServerView: View {
                         },
                         onSkip: {
                             // When user clicks Skip, dismiss all views
-                            showProjectCreation = false
+                            projectCreationRoute = nil
                             // Call dismissAll if provided to close entire navigation chain
                             if let dismissAll = dismissAll {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -181,6 +185,8 @@ struct CreateCloudServerView: View {
                             }
                         }
                     )
+                } else {
+                    MissingCreatedServerSheet()
                 }
             }
         }
@@ -192,6 +198,7 @@ struct CreateCloudServerView: View {
                 TextField("Server Name", text: $serverName)
                     .autocapitalization(.none)
                     .autocorrectionDisabled()
+                    .accessibilityIdentifier("cloud-server-name-field")
                 
                 Picker("Region", selection: $selectedRegion) {
                     Text("Select Region").tag("")
@@ -199,6 +206,7 @@ struct CreateCloudServerView: View {
                         Text(region.name).tag(region.id)
                     }
                 }
+                .accessibilityIdentifier("cloud-server-region-picker")
                 .onChange(of: selectedRegion) { newRegion in
                     // Clear selected size if it's not available in the new region
                     if provider.providerType == "digitalocean" && !newRegion.isEmpty {
@@ -241,6 +249,7 @@ struct CreateCloudServerView: View {
                         .cornerRadius(8)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .accessibilityIdentifier("cloud-server-size-button")
                 }
                 
                 // OS/Image is automatically selected (latest Ubuntu version)
@@ -270,6 +279,7 @@ struct CreateCloudServerView: View {
                             Label("Generate New Key", systemImage: "key.fill")
                         }
                         .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("cloud-server-generate-key-button")
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
@@ -295,12 +305,15 @@ struct CreateCloudServerView: View {
                         .onTapGesture {
                             toggleSSHKey(key.id.uuidString)
                         }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("cloud-server-ssh-key-\(key.name.cloudAccessibilityIdentifierFragment)")
                     }
                     
                     Button(action: { showGenerateKey = true }) {
                         Label("Generate New Key", systemImage: "plus.circle")
                             .font(.footnote)
                     }
+                    .accessibilityIdentifier("cloud-server-generate-key-button")
                 }
             }
         }
@@ -563,12 +576,14 @@ struct CreateCloudServerView: View {
                         retryRuntimeVerification()
                     }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("cloud-server-retry-runtime-button")
                     
                     Button("Skip for Now") {
                         skipRuntimeVerification()
                     }
                     .font(.footnote)
                     .foregroundColor(.secondary)
+                    .accessibilityIdentifier("cloud-server-skip-button")
                 }
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.3), value: provisioningStatus.runtimeSetupStatus)
@@ -587,6 +602,7 @@ struct CreateCloudServerView: View {
                         .background(Color.blue)
                         .cornerRadius(12)
                     }
+                    .accessibilityIdentifier("cloud-server-add-agent-button")
                     
                     Button("Skip for Now") {
                         // Save the server to database if not already saved
@@ -604,6 +620,7 @@ struct CreateCloudServerView: View {
                     }
                     .font(.footnote)
                     .foregroundColor(.secondary)
+                    .accessibilityIdentifier("cloud-server-skip-button")
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .animation(.easeInOut(duration: 0.3), value: creationStatus)
@@ -695,6 +712,7 @@ struct CreateCloudServerView: View {
                     .background(Color.blue)
                     .cornerRadius(12)
                 }
+                .accessibilityIdentifier("cloud-server-add-agent-button")
                 
                 Button("Skip for Now") {
                     // Create and save the server record only if not already saved
@@ -706,6 +724,7 @@ struct CreateCloudServerView: View {
                 }
                 .font(.footnote)
                 .foregroundColor(.secondary)
+                .accessibilityIdentifier("cloud-server-skip-button")
             }
         }
         .padding()
@@ -746,20 +765,26 @@ struct CreateCloudServerView: View {
         if savedServer == nil, let cloudServer = createdServer {
             savedServer = createAndSaveServerRecord(from: cloudServer)
         }
-        
-        // Save the server to database when user chooses to add a project
-        if let server = savedServer {
-            modelContext.insert(server)
-            do {
-                try modelContext.save()
-                print("💾 Server saved to database on 'Add Agent'")
-            } catch {
-                print("Failed to save server: \(error)")
-            }
+
+        guard let server = savedServer else {
+            errorMessage = "Server record is not ready yet. Please wait a moment and try again."
+            showError = true
+            return
+        }
+
+        // Save the server to database when user chooses to add a project.
+        modelContext.insert(server)
+        do {
+            try modelContext.save()
+            print("💾 Server saved to database on 'Add Agent'")
+        } catch {
+            errorMessage = "Failed to save server: \(error.localizedDescription)"
+            showError = true
+            return
         }
         
         // Navigate to project creation
-        showProjectCreation = true
+        projectCreationRoute = CloudServerProjectCreationRoute.route(for: server.id)
     }
     
     private func loadOptions() {
@@ -843,6 +868,8 @@ struct CreateCloudServerView: View {
             if provider.providerType == "digitalocean" {
                 loadProjects()
             }
+
+            applyUITestAutofillIfNeeded()
         } catch {
             print("Failed to load options from API: \(error)")
             isLoadingOptions = false
@@ -871,11 +898,117 @@ struct CreateCloudServerView: View {
         // TODO: Fetch projects from DigitalOcean API
         // For now, we'll just use the default project
     }
+
+    private func applyUITestAutofillIfNeeded() {
+        let processInfo = ProcessInfo.processInfo
+        guard processInfo.arguments.contains("--ui-testing"),
+              processInfo.environment["MOBILECODE_E2E_AUTOFILL_CLOUD_SERVER"] == "1" else {
+            return
+        }
+
+        let environment = processInfo.environment
+        if serverName.isEmpty, let name = environment["MOBILECODE_E2E_SERVER_NAME"], !name.isEmpty {
+            serverName = name
+        }
+
+        if selectedRegion.isEmpty {
+            if let requestedRegion = environment["MOBILECODE_E2E_REGION"], !requestedRegion.isEmpty,
+               let matchedRegion = availableRegions.first(where: {
+                   $0.id == requestedRegion || $0.name.localizedCaseInsensitiveContains(requestedRegion)
+               }) {
+                selectedRegion = matchedRegion.id
+            } else {
+                selectedRegion = availableRegions.first?.id ?? ""
+            }
+        }
+
+        if selectedSize.isEmpty {
+            if let requestedSize = environment["MOBILECODE_E2E_SIZE"], !requestedSize.isEmpty,
+               let matchedSize = filteredSizes.first(where: {
+                   $0.id == requestedSize || $0.name.localizedCaseInsensitiveContains(requestedSize)
+               }) {
+                selectedSize = matchedSize.id
+            } else {
+                selectedSize = preferredUITestSize(in: filteredSizes)?.id ?? filteredSizes.first?.id ?? ""
+            }
+        }
+
+        seedUITestSSHKeyIfNeeded(environment: environment)
+    }
+
+    private func preferredUITestSize(
+        in sizes: [(id: String, name: String, description: String)]
+    ) -> (id: String, name: String, description: String)? {
+        if provider.providerType == "digitalocean" {
+            let preferredSlugs = [
+                "s-1vcpu-1gb",
+                "s-1vcpu-2gb",
+                "s-2vcpu-2gb"
+            ]
+            if let match = sizes.first(where: { size in
+                preferredSlugs.contains { size.id.localizedCaseInsensitiveContains($0) }
+            }) {
+                return match
+            }
+        }
+
+        if provider.providerType == "hetzner" {
+            let preferredSlugs = ["cx22", "cpx11", "cx32"]
+            if let match = sizes.first(where: { size in
+                preferredSlugs.contains { size.id.localizedCaseInsensitiveContains($0) }
+            }) {
+                return match
+            }
+        }
+
+        return sizes.first { size in
+            !size.id.localizedCaseInsensitiveContains("512mb")
+                && !size.description.localizedCaseInsensitiveContains("512MB")
+        }
+    }
+
+    private func seedUITestSSHKeyIfNeeded(environment: [String: String]) {
+        guard environment["MOBILECODE_E2E_AUTOUSE_HOST_SSH_KEY"] == "1",
+              let keyName = environment["MOBILECODE_E2E_SSH_KEY_NAME"], !keyName.isEmpty,
+              let publicKey = environment["MOBILECODE_E2E_SSH_PUBLIC_KEY"], !publicKey.isEmpty,
+              let privateKeyBase64 = environment["MOBILECODE_E2E_SSH_PRIVATE_KEY_B64"], !privateKeyBase64.isEmpty else {
+            return
+        }
+
+        if let existingKey = sshKeys.first(where: { $0.name == keyName }) {
+            selectedSSHKeys.insert(existingKey.id.uuidString)
+            E2EProvisioningDebugLog.append("selected seeded SSH key \(keyName)")
+            return
+        }
+
+        guard let privateKeyData = Data(base64Encoded: privateKeyBase64) else {
+            E2EProvisioningDebugLog.append("failed to decode seeded SSH private key for \(keyName)")
+            return
+        }
+
+        do {
+            let sshKey = SSHKey(
+                name: keyName,
+                keyType: "Ed25519",
+                privateKeyIdentifier: UUID().uuidString
+            )
+            sshKey.publicKey = publicKey
+            try KeychainManager.shared.storeSSHKey(privateKeyData, for: sshKey.id)
+            modelContext.insert(sshKey)
+            try modelContext.save()
+            selectedSSHKeys.insert(sshKey.id.uuidString)
+            E2EProvisioningDebugLog.append("seeded and selected host SSH key \(keyName)")
+        } catch {
+            E2EProvisioningDebugLog.append("failed to seed host SSH key \(keyName): \(error.localizedDescription)")
+        }
+    }
     
     private func createServer() {
         creationStatus = .creating
         isProvisioning = true  // Start provisioning
         print("🚀 Starting server provisioning - isProvisioning set to true")
+        E2EProvisioningDebugLog.reset()
+        E2EProvisioningDebugLog.append("starting server provisioning name=\(serverName) region=\(selectedRegion) size=\(selectedSize)")
         provisioningStatus = ServerProvisioningStatus()
         runtimeSetupLogs = []
         runtimeSetupError = nil
@@ -887,7 +1020,12 @@ struct CreateCloudServerView: View {
         let openCodeServerPassword: String
         do {
             openCodeServerPassword = try OpenCodeServerPasswordGenerator.generate()
-            try KeychainManager.shared.storeOpenCodeServerPassword(openCodeServerPassword, for: localServerID)
+            try KeychainManager.shared.storeOpenCodeServerCredentials(
+                username: OpenCodeServerProvisioning.username,
+                password: openCodeServerPassword,
+                for: localServerID
+            )
+            E2EProvisioningDebugLog.append("stored generated OpenCode server auth for pending local server id")
         } catch {
             creationStatus = .failed(error: error.localizedDescription)
             errorMessage = error.localizedDescription
@@ -949,6 +1087,9 @@ struct CreateCloudServerView: View {
                     with: selectedSSHKeys,
                     openCodeServerPassword: openCodeServerPassword
                 )
+                E2EProvisioningDebugLog.append(
+                    "generated cloud-init selectedSSHKeys=\(selectedSSHKeys.count) cloudKeyIds=\(cloudKeyIds.count)"
+                )
                 
                 // Create the server
                 let server = try await service.createServer(
@@ -964,12 +1105,18 @@ struct CreateCloudServerView: View {
                     createdServer = server
                     creationStatus = .polling(serverId: server.id)
                 }
+                E2EProvisioningDebugLog.append("created cloud server id=\(server.id) status=\(server.status)")
                 
                 // Poll for server to become active
-                await pollServerStatus(serverId: server.id, service: service)
+                await pollServerStatus(
+                    serverId: server.id,
+                    service: service,
+                    openCodeServerPassword: openCodeServerPassword
+                )
                 
             } catch {
-                try? KeychainManager.shared.deleteOpenCodeServerPassword(for: localServerID)
+                try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: localServerID)
+                E2EProvisioningDebugLog.append("server creation failed: \(error.localizedDescription)")
                 await MainActor.run {
                     creationStatus = .failed(error: error.localizedDescription)
                     errorMessage = error.localizedDescription
@@ -978,6 +1125,14 @@ struct CreateCloudServerView: View {
                 }
             }
         }
+    }
+
+    private var hasInFlightProvisioning: Bool {
+        isProvisioning
+            || creationStatus == .creating
+            || creationStatus.isPolling
+            || creationStatus.isCheckingCloudInit
+            || creationStatus.isVerifyingRuntime
     }
     
     private func createAndSaveServerRecord(from cloudServer: CloudServer) -> Server {
@@ -1036,66 +1191,21 @@ struct CreateCloudServerView: View {
     }
     
     private func selectLatestUbuntuImage() -> String {
-        // Filter Ubuntu images - check both name and ID for Ubuntu
-        let ubuntuImages = availableImages.filter { image in
-            let nameLower = image.name.lowercased()
-            let idLower = image.id.lowercased()
-            return nameLower.contains("ubuntu") || idLower.contains("ubuntu")
-        }
-        
-        // Sort by version number (highest first) - simplified
-        let sorted = ubuntuImages.sorted { first, second in
-            let firstNameVersion = extractUbuntuVersion(from: first.name)
-            let firstIdVersion = extractUbuntuVersion(from: first.id)
-            
-            let secondNameVersion = extractUbuntuVersion(from: second.name)
-            let secondIdVersion = extractUbuntuVersion(from: second.id)
-            
-            // Use the better version from name or ID
-            let firstVersion = (firstNameVersion.major > firstIdVersion.major ||
-                               (firstNameVersion.major == firstIdVersion.major && firstNameVersion.minor > firstIdVersion.minor))
-                               ? firstNameVersion : firstIdVersion
-            
-            let secondVersion = (secondNameVersion.major > secondIdVersion.major ||
-                                (secondNameVersion.major == secondIdVersion.major && secondNameVersion.minor > secondIdVersion.minor))
-                                ? secondNameVersion : secondIdVersion
-            
-            // Compare versions (e.g., 24.04 > 22.04)
-            if firstVersion.major != secondVersion.major {
-                return firstVersion.major > secondVersion.major
-            }
-            return firstVersion.minor > secondVersion.minor
-        }
-        
-        // Return the ID of the latest Ubuntu version
-        if let selected = sorted.first {
+        let selectedImageId = CloudImageSelector.preferredUbuntuImage(from: availableImages)
+        if let selected = availableImages.first(where: { $0.id == selectedImageId }) {
             print("Selected Ubuntu image: \(selected.name) (id: \(selected.id))")
-            return selected.id
+        } else if selectedImageId.isEmpty {
+            print("No Ubuntu image found, falling back to any available image")
         }
-        
-        // Fallback: if no Ubuntu found, try to find any Linux image
-        print("No Ubuntu image found, falling back to any available image")
-        return availableImages.first?.id ?? ""
+
+        return selectedImageId
     }
     
-    private func extractUbuntuVersion(from name: String) -> (major: Int, minor: Int) {
-        // Handle formats like "Ubuntu 24.04 LTS", "ubuntu-24-04-x64", etc.
-        let pattern = #"(\d+)[.-](\d+)"#
-        
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) {
-            if let majorRange = Range(match.range(at: 1), in: name),
-               let minorRange = Range(match.range(at: 2), in: name),
-               let major = Int(name[majorRange]),
-               let minor = Int(name[minorRange]) {
-                return (major, minor)
-            }
-        }
-        
-        return (0, 0) // Default if no version found
-    }
-    
-    private func pollServerStatus(serverId: String, service: CloudProviderProtocol) async {
+    private func pollServerStatus(
+        serverId: String,
+        service: CloudProviderProtocol,
+        openCodeServerPassword: String
+    ) async {
         var attempts = 0
         let maxAttempts = 30 // Poll for up to 2.5 minutes (30 * 5 seconds)
         
@@ -1112,6 +1222,9 @@ struct CreateCloudServerView: View {
                         createdServer = server
                         provisioningStatus.providerStatus = server.status.lowercased()
                     }
+                    E2EProvisioningDebugLog.append(
+                        "provider poll attempt=\(attempts) status=\(server.status) publicIP=\(server.publicIP ?? "none")"
+                    )
                     
                     if server.status.lowercased() == "active" || server.status.lowercased() == "running" {
                         // Update provider status to show properly
@@ -1129,10 +1242,26 @@ struct CreateCloudServerView: View {
                             print("📝 Creating server record (NOT saving to database) - isProvisioning: \(isProvisioning)")
                             // Create in main actor context
                             await MainActor.run {
-                                savedServer = createAndSaveServerRecord(from: server)
+                                let preparedServer = createAndSaveServerRecord(from: server)
+                                do {
+                                    try KeychainManager.shared.storeOpenCodeServerCredentials(
+                                        username: OpenCodeServerProvisioning.username,
+                                        password: openCodeServerPassword,
+                                        for: preparedServer.id
+                                    )
+                                    E2EProvisioningDebugLog.append(
+                                        "stored generated OpenCode server auth for prepared server id"
+                                    )
+                                } catch {
+                                    E2EProvisioningDebugLog.append(
+                                        "failed to store generated OpenCode server auth for prepared server id: \(error.localizedDescription)"
+                                    )
+                                }
+                                savedServer = preparedServer
                             }
                             print("📦 Server record created in memory, waiting for user action to save")
                         }
+                        E2EProvisioningDebugLog.append("cloud server active; starting cloud-init checks")
                         
                         // Now check cloud-init
                         await MainActor.run {
@@ -1148,6 +1277,7 @@ struct CreateCloudServerView: View {
             } catch {
                 // Continue polling even if one request fails
                 print("Poll failed: \(error)")
+                E2EProvisioningDebugLog.append("provider poll attempt=\(attempts) failed: \(error.localizedDescription)")
             }
         }
         
@@ -1167,6 +1297,7 @@ struct CreateCloudServerView: View {
     
     private func checkCloudInitStatus(server: CloudServer) async {
         guard let publicIP = server.publicIP else {
+            E2EProvisioningDebugLog.append("cloud-init check failed: no public IP")
             await MainActor.run {
                 creationStatus = .failed(error: "No public IP assigned")
                 isProvisioning = false  // End provisioning if no IP
@@ -1175,6 +1306,7 @@ struct CreateCloudServerView: View {
         }
         
         // Wait a bit for SSH to be available
+        E2EProvisioningDebugLog.append("waiting for SSH before cloud-init checks publicIP=\(publicIP)")
         try? await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
         
         let maxCloudInitAttempts = 120 // Check for up to 20 minutes (120 * 10 seconds)
@@ -1189,6 +1321,7 @@ struct CreateCloudServerView: View {
             
             // Try to check cloud-init status via SSH
             if let status = await checkCloudInitViaSSH(host: publicIP) {
+                E2EProvisioningDebugLog.append("cloud-init attempt=\(cloudInitAttempts) status=\(status)")
                 await MainActor.run {
                     // If we got a status, it means SSH is working
                     if provisioningStatus.cloudInitStatus == "checking" {
@@ -1217,8 +1350,13 @@ struct CreateCloudServerView: View {
                     }
                     return
                 } else if status == "error" {
+                    E2EProvisioningDebugLog.append("cloud-init failed with error status")
                     await MainActor.run {
-                        creationStatus = .failed(error: "Cloud-init configuration failed")
+                        let details = runtimeSetupError.map { "\n\n\($0)" } ?? ""
+                        let message = "Cloud-init configuration failed\(details)"
+                        creationStatus = .failed(error: message)
+                        errorMessage = message
+                        showError = true
                         isProvisioning = false  // End provisioning on cloud-init error
                     }
                     return
@@ -1232,6 +1370,7 @@ struct CreateCloudServerView: View {
         // Check if cancelled
         if Task.isCancelled {
             print("🛑 Cloud-init monitoring cancelled - handing over to background monitor")
+            E2EProvisioningDebugLog.append("cloud-init monitoring cancelled")
             return
         }
         
@@ -1242,12 +1381,14 @@ struct CreateCloudServerView: View {
             creationStatus = .success // Allow proceeding anyway
             isProvisioning = false  // End provisioning on timeout
         }
+        E2EProvisioningDebugLog.append("cloud-init monitoring timed out")
     }
     
     private func checkCloudInitViaSSH(host: String) async -> String? {
         // Use the saved server object if available - it already has all the connection info
         guard let server = savedServer else {
             print("No saved server available for cloud-init check")
+            E2EProvisioningDebugLog.append("cloud-init SSH check skipped: no saved server")
             return nil
         }
         
@@ -1255,6 +1396,7 @@ struct CreateCloudServerView: View {
             // Use the same connection method as ProjectService - much simpler!
             let sshService = SSHService.shared
             let session = try await sshService.connect(to: server, purpose: .cloudInit)
+            defer { session.disconnect() }
             
             // SSH connection successful
             await MainActor.run {
@@ -1265,26 +1407,30 @@ struct CreateCloudServerView: View {
                 }
             }
             
-            // Run cloud-init status command
-            let output = try await session.execute("sudo cloud-init status")
-            
-            // Parse the output
-            if output.contains("status: done") {
-                return "done"
-            } else if output.contains("status: running") {
-                return "running"
-            } else if output.contains("status: error") {
-                return "error"
-            } else if output.contains("status: disabled") {
-                // Cloud-init is disabled, consider it done
-                return "done"
+            let output = try await session.execute(CloudInitStatus.statusCommand)
+            let status = CloudInitStatus.parse(output)
+            E2EProvisioningDebugLog.append(
+                "cloud-init raw status=\(status) output=\(CloudInitStatus.redacted(output).prefix(1200))"
+            )
+
+            if status == "error" {
+                let diagnostics = (try? await session.execute(CloudInitStatus.diagnosticsCommand)) ?? output
+                let clippedDiagnostics = CloudInitStatus.clippedDiagnostics(diagnostics)
+                E2EProvisioningDebugLog.append("cloud-init diagnostics=\(clippedDiagnostics)")
+                await MainActor.run {
+                    runtimeSetupError = clippedDiagnostics
+                    runtimeSetupLogs = clippedDiagnostics
+                        .split(whereSeparator: \.isNewline)
+                        .suffix(80)
+                        .map(String.init)
+                }
             }
-            
-            // If we can connect but get unexpected output, still in progress
-            return "running"
+
+            return status
             
         } catch {
             print("SSH check failed: \(error)")
+            E2EProvisioningDebugLog.append("cloud-init SSH check failed host=\(host): \(error.localizedDescription)")
             // SSH connection failed, server might not be ready yet
             await MainActor.run {
                 provisioningStatus.sshAccessible = false
@@ -1300,10 +1446,13 @@ struct CreateCloudServerView: View {
         runtimeSetupError = nil
         provisioningStatus.runtimeSetupStatus = "running"
         creationStatus = .verifyingRuntime(serverId: server.providerServerId ?? server.id.uuidString)
+        E2EProvisioningDebugLog.append(
+            "starting OpenCode runtime verification hasAuth=\(KeychainManager.shared.hasOpenCodeServerPassword(for: server.id))"
+        )
 
         runtimeVerificationTask = Task {
             do {
-                try await OpenCodeInstallerService.shared.verifyRuntime(on: server) { line in
+                let status = try await OpenCodeInstallerService.shared.verifyRuntime(on: server) { line in
                     Task { @MainActor in
                         appendRuntimeSetupLog(line)
                     }
@@ -1314,7 +1463,11 @@ struct CreateCloudServerView: View {
                     isProvisioning = false
                     print("OpenCode runtime verified - isProvisioning set to false")
                 }
+                E2EProvisioningDebugLog.append(
+                    "OpenCode runtime verification succeeded state=\(status.state) foregroundBlocked=\(status.blocksForegroundChat)"
+                )
             } catch {
+                E2EProvisioningDebugLog.append("OpenCode runtime verification failed: \(error.localizedDescription)")
                 await MainActor.run {
                     provisioningStatus.runtimeSetupStatus = "error"
                     runtimeSetupError = error.localizedDescription
@@ -1339,10 +1492,43 @@ struct CreateCloudServerView: View {
 
     @MainActor
     private func appendRuntimeSetupLog(_ line: String) {
+        E2EProvisioningDebugLog.append("runtime: \(line)")
         runtimeSetupLogs.append(line)
         let maxLines = 200
         if runtimeSetupLogs.count > maxLines {
             runtimeSetupLogs.removeFirst(runtimeSetupLogs.count - maxLines)
+        }
+    }
+}
+
+extension String {
+    var cloudAccessibilityIdentifierFragment: String {
+        let allowed = CharacterSet.alphanumerics
+        let scalars = unicodeScalars.map { scalar -> Character in
+            allowed.contains(scalar) ? Character(String(scalar).lowercased()) : "-"
+        }
+        let collapsed = String(scalars).split(separator: "-").joined(separator: "-")
+        return collapsed.isEmpty ? "unnamed" : collapsed
+    }
+}
+
+private struct MissingCreatedServerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ContentUnavailableView {
+                Label("Server Unavailable", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text("The new server record is no longer available.")
+            } actions: {
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .navigationTitle("Add Agent")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

@@ -71,6 +71,8 @@ struct ContentView: View {
     private func configureManagers() {
         // Load servers for ServerManager
         serverManager.loadServers(from: modelContext)
+        // Ensure built-in skill marketplaces are available by default.
+        SkillMarketplaceSeedService.shared.ensureBuiltinSourcesExist(in: modelContext)
         // Start cloud-init monitoring for servers that need it
         startCloudInitMonitoring()
         ShortcutSyncService.shared.sync(using: modelContext)

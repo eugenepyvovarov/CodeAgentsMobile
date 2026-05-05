@@ -104,6 +104,7 @@ struct AgentSkillsPickerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                        .accessibilityIdentifier("agent-skills-picker-done-button")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -112,15 +113,18 @@ struct AgentSkillsPickerView: View {
                         } label: {
                             Label("Add from Marketplace", systemImage: "cart")
                         }
+                        .accessibilityIdentifier("agent-skills-picker-add-marketplace-button")
                         Button {
                             showingGitHubInstall = true
                         } label: {
                             Label("Add from GitHub URL", systemImage: "link")
                         }
+                        .accessibilityIdentifier("agent-skills-picker-add-github-button")
                     } label: {
                         Image(systemName: "plus")
                     }
                     .disabled(project == nil)
+                    .accessibilityIdentifier("agent-skills-picker-add-menu-button")
                 }
             }
             .sheet(isPresented: $showingMarketplaceInstall) {

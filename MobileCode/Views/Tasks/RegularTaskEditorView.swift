@@ -126,6 +126,7 @@ struct RegularTaskEditorView: View {
                 Section("Task") {
                     TextField("Title (optional)", text: $title)
                         .textInputAutocapitalization(.words)
+                        .accessibilityIdentifier("regular-task-title-field")
 
                     TaskPromptAttachmentComposer(
                         selectedSkillName: selectedSkillDisplayName,
@@ -170,6 +171,7 @@ struct RegularTaskEditorView: View {
 
                         TextEditor(text: $promptBody)
                             .frame(minHeight: 140)
+                            .accessibilityIdentifier("regular-task-prompt-field")
                     }
                 }
 
@@ -180,6 +182,7 @@ struct RegularTaskEditorView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .accessibilityIdentifier("regular-task-frequency-picker")
 
                     Stepper(value: $interval, in: intervalRange) {
                         HStack {
@@ -246,6 +249,7 @@ struct RegularTaskEditorView: View {
                         saveTask()
                     }
                     .disabled(isSaveDisabled || isSaving || isUploadingAttachments || providerMismatch != nil)
+                    .accessibilityIdentifier("regular-task-save-button")
                 }
             }
             .alert("Delete Task?", isPresented: $showDeleteAlert) {

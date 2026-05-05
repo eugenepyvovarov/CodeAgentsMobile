@@ -678,6 +678,7 @@ private struct ExyteChatInputComposer: View {
                     .lineLimit(1...5)
                     .autocapitalization(.none)
                     .autocorrectionDisabled(true)
+                    .accessibilityIdentifier("chat-composer-input")
                     .focused(isFocused)
                     .onSubmit {
                         if canSend {
@@ -693,6 +694,7 @@ private struct ExyteChatInputComposer: View {
                         .foregroundColor(canSend ? .accentColor : .secondary)
                 }
                 .disabled(!canSend)
+                .accessibilityIdentifier("chat-composer-send-button")
             }
         }
         .padding(.horizontal, 12)

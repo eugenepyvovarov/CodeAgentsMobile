@@ -43,7 +43,7 @@ enum OpenCodeChatMapper {
         let payload = part.payload
 
         switch part {
-        case .text, .reasoning:
+        case .text:
             if let text = payload.text {
                 return text
             }
@@ -52,46 +52,19 @@ enum OpenCodeChatMapper {
             }
             return previous
 
-        case .tool:
-            return toolText(from: payload)
-
-        case .file:
-            return titledText(
-                title: "File",
-                primary: payload.path ?? payload.url ?? payload.title ?? payload.source,
-                body: payload.text
-            )
-
-        case .patch:
-            return titledText(
-                title: "Patch",
-                primary: payload.path ?? payload.title,
-                body: payload.text ?? payload.source
-            )
-
-        case .snapshot:
-            return titledText(title: "Snapshot", primary: payload.title ?? payload.path, body: payload.text)
-
-        case .stepStart:
-            return titledText(title: "Step started", primary: payload.title, body: payload.text)
-
-        case .stepFinish:
-            return titledText(title: "Step finished", primary: payload.title, body: payload.text)
-
-        case .agent:
-            return titledText(title: "Agent", primary: payload.title ?? payload.tool, body: payload.text)
-
-        case .subtask:
-            return titledText(title: "Subtask", primary: payload.title ?? payload.tool, body: payload.text)
-
-        case .retry:
-            return titledText(title: "Retry", primary: payload.title, body: payload.text)
-
-        case .compaction:
-            return titledText(title: "Compaction", primary: payload.title, body: payload.text)
-
-        case .unknown:
-            return titledText(title: "OpenCode \(payload.type)", primary: payload.title, body: payload.text)
+        case .reasoning,
+             .tool,
+             .file,
+             .patch,
+             .snapshot,
+             .stepStart,
+             .stepFinish,
+             .agent,
+             .subtask,
+             .retry,
+             .compaction,
+             .unknown:
+            return nil
         }
     }
 
@@ -135,6 +108,41 @@ enum OpenCodeChatMapper {
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
 
+    static func normalizedPayloadData(
+        type: String,
+        role: String,
+        contentBlocks: [[String: Any]],
+        sessionID: String?,
+        messageID: String?,
+        partIDs: [String],
+        rawEvent: OpenCodeRawEvent?
+    ) -> Data? {
+        var opencode: [String: Any] = [
+            "partIDs": partIDs
+        ]
+        if let sessionID {
+            opencode["sessionID"] = sessionID
+        }
+        if let messageID {
+            opencode["messageID"] = messageID
+        }
+
+        var payload: [String: Any] = [
+            "type": type,
+            "message": [
+                "role": role,
+                "content": contentBlocks
+            ],
+            "opencode": opencode
+        ]
+
+        if let rawEvent {
+            payload["opencodeRawEvent"] = rawEvent.jsonObject
+        }
+
+        return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    }
+
     static func normalizedPayloadString(
         type: String,
         role: String,
@@ -148,6 +156,26 @@ enum OpenCodeChatMapper {
             type: type,
             role: role,
             text: text,
+            sessionID: sessionID,
+            messageID: messageID,
+            partIDs: partIDs,
+            rawEvent: rawEvent
+        ).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    static func normalizedPayloadString(
+        type: String,
+        role: String,
+        contentBlocks: [[String: Any]],
+        sessionID: String?,
+        messageID: String?,
+        partIDs: [String],
+        rawEvent: OpenCodeRawEvent?
+    ) -> String? {
+        normalizedPayloadData(
+            type: type,
+            role: role,
+            contentBlocks: contentBlocks,
             sessionID: sessionID,
             messageID: messageID,
             partIDs: partIDs,
@@ -170,65 +198,6 @@ enum OpenCodeChatMapper {
         }
     }
 
-    private static func toolText(from payload: OpenCodeMessagePartPayload) -> String {
-        let name = payload.tool ?? payload.title ?? payload.callID ?? "tool"
-        let status = payload.state?.status ?? "updated"
-        var lines = ["Tool: \(name) (\(status))"]
-
-        if let input = payload.input, let formatted = formatJSONObject(input.mapValues(\.value)) {
-            lines.append("Input: \(formatted)")
-        } else if let stateInput = payload.state?.input, let formatted = formatJSONObject(stateInput.mapValues(\.value)) {
-            lines.append("Input: \(formatted)")
-        }
-
-        if let output = payload.output, let formatted = formatValue(output.value) {
-            lines.append("Output: \(formatted)")
-        } else if let stateOutput = payload.state?.output, let formatted = formatValue(stateOutput.value) {
-            lines.append("Output: \(formatted)")
-        }
-
-        if let error = payload.error ?? payload.state?.error {
-            lines.append("Error: \(error.message ?? error.name ?? "Tool failed")")
-        }
-
-        return lines.joined(separator: "\n")
-    }
-
-    private static func titledText(title: String, primary: String?, body: String?) -> String {
-        var lines = [title]
-        if let primary, !primary.isEmpty {
-            lines[0] += ": \(primary)"
-        }
-        if let body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append(body)
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private static func formatJSONObject(_ object: [String: Any]) -> String? {
-        formatValue(object)
-    }
-
-    private static func formatValue(_ value: Any) -> String? {
-        if value is NSNull {
-            return nil
-        }
-        if let string = value as? String {
-            return string
-        }
-        if let bool = value as? Bool {
-            return bool ? "true" : "false"
-        }
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-        guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-              let string = String(data: data, encoding: .utf8) else {
-            return String(describing: value)
-        }
-        return string
-    }
 }
 
 struct OpenCodeChatEventAccumulator {
@@ -251,10 +220,10 @@ struct OpenCodeChatEventAccumulator {
             return consumeMessagePartUpdated(properties, raw: raw)
         case .sessionStatus(let properties, let raw):
             guard matches(properties.sessionID), properties.status.type == "idle" else { return [] }
-            return [completionChunk(raw: raw)]
+            return completionChunksIfReady(raw: raw)
         case .sessionIdle(let properties, let raw):
             guard matches(properties.sessionID ?? properties.id) else { return [] }
-            return [completionChunk(raw: raw)]
+            return completionChunksIfReady(raw: raw)
         case .sessionError(let properties, let raw):
             guard matches(properties.sessionID) else { return [] }
             return [errorChunk(message: properties.error.message ?? properties.error.name ?? "OpenCode session error.", raw: raw)]
@@ -283,6 +252,10 @@ struct OpenCodeChatEventAccumulator {
         }
 
         completedMessageIDs.insert(properties.info.id)
+        let content = content(for: properties.info.id)
+        guard !content.isEmpty else {
+            return []
+        }
         return [completionChunk(messageID: properties.info.id, raw: raw)]
     }
 
@@ -313,8 +286,15 @@ struct OpenCodeChatEventAccumulator {
             textByPartID[partID] = rendered
         }
 
+        if case .tool = properties.part {
+            return toolChunks(for: properties.part, raw: raw, messageID: messageID, partID: partID)
+        }
+
         let content = content(for: messageID)
-        guard !content.isEmpty else { return [] }
+        guard !content.isEmpty else {
+            guard let progress = progressText(for: properties.part) else { return [] }
+            return [progressChunk(content: progress, raw: raw, messageID: messageID)]
+        }
 
         return [chunk(
             content: content,
@@ -329,6 +309,17 @@ struct OpenCodeChatEventAccumulator {
         let targetMessageID = messageID ?? latestAssistantMessageID()
         let renderedContent = targetMessageID.map { self.content(for: $0) } ?? ""
         return chunk(content: renderedContent, isComplete: true, isError: false, raw: raw, messageID: targetMessageID)
+    }
+
+    private func completionChunksIfReady(raw: OpenCodeRawEvent) -> [MessageChunk] {
+        guard let messageID = latestAssistantMessageID() else { return [] }
+        let renderedContent = content(for: messageID)
+
+        if !renderedContent.isEmpty || completedMessageIDs.contains(messageID) {
+            return [completionChunk(messageID: messageID, raw: raw)]
+        }
+
+        return []
     }
 
     private func errorChunk(message: String, raw: OpenCodeRawEvent) -> MessageChunk {
@@ -373,6 +364,162 @@ struct OpenCodeChatEventAccumulator {
         return [MessageChunk(content: "", isComplete: false, isError: false, metadata: metadata)]
     }
 
+    private func progressText(for part: OpenCodeMessagePart) -> String? {
+        let payload = part.payload
+
+        switch part {
+        case .reasoning:
+            return "Thinking..."
+        case .tool:
+            let toolName = payload.state?.title ?? payload.title ?? payload.tool
+            if let toolName, !toolName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "Using \(toolName)..."
+            }
+            return "Using tools..."
+        case .file:
+            if let path = payload.path, !path.isEmpty {
+                return "Reading \(URL(fileURLWithPath: path).lastPathComponent)..."
+            }
+            return "Reading files..."
+        case .patch:
+            return "Editing files..."
+        case .stepStart:
+            return payload.title ?? "Working..."
+        case .stepFinish:
+            return "Finishing step..."
+        case .agent, .subtask:
+            return payload.title ?? "Working with a subtask..."
+        case .retry:
+            return "Retrying..."
+        case .compaction:
+            return "Condensing context..."
+        case .snapshot:
+            return "Saving workspace state..."
+        case .text, .unknown:
+            return nil
+        }
+    }
+
+    private func toolChunks(
+        for part: OpenCodeMessagePart,
+        raw: OpenCodeRawEvent,
+        messageID: String,
+        partID: String
+    ) -> [MessageChunk] {
+        let payload = part.payload
+        let toolUseID = payload.callID?.nonEmptyValue ?? payload.id?.nonEmptyValue ?? partID
+        let toolName = payload.state?.title?.nonEmptyValue
+            ?? payload.title?.nonEmptyValue
+            ?? payload.tool?.nonEmptyValue
+            ?? payload.type
+        let input = payload.input?.mapValues(\.value)
+            ?? payload.state?.input?.mapValues(\.value)
+            ?? [:]
+        let status = payload.state?.status.lowercased() ?? "running"
+        let output = payload.output?.value ?? payload.state?.output?.value
+        let errorMessage = payload.error?.message ?? payload.state?.error?.message
+        let isError = errorMessage != nil || ["error", "failed", "failure"].contains(status)
+
+        var blocks: [[String: Any]] = [
+            [
+                "type": "tool_use",
+                "id": toolUseID,
+                "name": toolName,
+                "input": input
+            ]
+        ]
+
+        if let outputText = toolResultText(output: output, errorMessage: errorMessage) {
+            blocks.append([
+                "type": "tool_result",
+                "tool_use_id": toolUseID,
+                "content": outputText,
+                "is_error": isError
+            ])
+        }
+
+        var metadata: [String: Any] = [
+            "type": "opencode_tool",
+            "runtime": CodingAgentRuntimeKind.openCode.rawValue,
+            "opencodeSessionId": sessionID,
+            "opencodeMessageId": messageID,
+            "opencodePartIds": [partID],
+            "toolPartID": partID,
+            "toolCallID": toolUseID,
+            "toolName": toolName,
+            "toolStatus": status,
+            "content": blocks,
+            "opencodeRawEvent": raw.jsonObject
+        ]
+
+        if let provider = providerByMessageID[messageID] {
+            metadata["runtimeProvider"] = provider
+        }
+        if let original = OpenCodeChatMapper.normalizedPayloadString(
+            type: "assistant",
+            role: "assistant",
+            contentBlocks: blocks,
+            sessionID: sessionID,
+            messageID: messageID,
+            partIDs: [partID],
+            rawEvent: raw
+        ) {
+            metadata["originalJSON"] = original
+        }
+
+        let summary = toolSummary(toolName: toolName, status: status, isError: isError, hasOutput: blocks.count > 1)
+        let isComplete = blocks.count > 1 || ["completed", "complete", "done", "success", "error", "failed", "failure"].contains(status)
+        return [MessageChunk(content: summary, isComplete: isComplete, isError: isError, metadata: metadata)]
+    }
+
+    private func toolSummary(toolName: String, status: String, isError: Bool, hasOutput: Bool) -> String {
+        if isError {
+            return "\(toolName) failed"
+        }
+        if hasOutput || ["completed", "complete", "done", "success"].contains(status) {
+            return "\(toolName) completed"
+        }
+        return "Using \(toolName)..."
+    }
+
+    private func toolResultText(output: Any?, errorMessage: String?) -> String? {
+        if let errorMessage, !errorMessage.isEmpty {
+            return errorMessage
+        }
+        guard let output else { return nil }
+        if output is NSNull {
+            return nil
+        }
+        if let string = output as? String {
+            return string.isEmpty ? nil : string
+        }
+        if JSONSerialization.isValidJSONObject(output),
+           let data = try? JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted, .sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return String(describing: output)
+    }
+
+    private func progressChunk(content: String, raw: OpenCodeRawEvent, messageID: String?) -> MessageChunk {
+        var metadata: [String: Any] = [
+            "type": "opencode_progress",
+            "runtime": CodingAgentRuntimeKind.openCode.rawValue,
+            "opencodeSessionId": sessionID,
+            "progress": content
+        ]
+
+        if let messageID {
+            metadata["opencodeMessageId"] = messageID
+        }
+        if let messageID, let provider = providerByMessageID[messageID] {
+            metadata["runtimeProvider"] = provider
+        }
+
+        metadata["opencodeRawEvent"] = raw.jsonObject
+        return MessageChunk(content: content, isComplete: false, isError: false, metadata: metadata)
+    }
+
     private func chunk(
         content: String,
         isComplete: Bool,
@@ -406,7 +553,7 @@ struct OpenCodeChatEventAccumulator {
             metadata["result"] = content
         }
         if let original = OpenCodeChatMapper.normalizedPayloadString(
-            type: isComplete ? "result" : "assistant",
+            type: "assistant",
             role: "assistant",
             text: content,
             sessionID: sessionID,
@@ -440,5 +587,12 @@ private extension OpenCodeRawEvent {
             "type": type,
             "properties": properties.mapValues(\.value)
         ]
+    }
+}
+
+private extension String {
+    var nonEmptyValue: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

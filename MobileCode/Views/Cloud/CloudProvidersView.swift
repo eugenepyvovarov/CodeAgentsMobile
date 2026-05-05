@@ -36,6 +36,7 @@ struct CloudProvidersView: View {
                             displayName: "DigitalOcean",
                             isConnected: false,
                             isSelected: selectedProviderType == "digitalocean",
+                            accessibilityIdentifier: "cloud-provider-select-digitalocean",
                             onTap: {
                                 selectedProviderType = "digitalocean"
                             }
@@ -46,6 +47,7 @@ struct CloudProvidersView: View {
                             displayName: "Hetzner Cloud",
                             isConnected: false,
                             isSelected: selectedProviderType == "hetzner",
+                            accessibilityIdentifier: "cloud-provider-select-hetzner",
                             onTap: {
                                 selectedProviderType = "hetzner"
                             }
@@ -68,6 +70,7 @@ struct CloudProvidersView: View {
                         .cornerRadius(10)
                 }
                 .padding()
+                .accessibilityIdentifier("cloud-provider-selection-continue-button")
             }
             .navigationTitle("Add Cloud Provider")
             .navigationBarTitleDisplayMode(.inline)
@@ -102,6 +105,7 @@ struct ProviderCard: View {
     var displayName: String?
     let isConnected: Bool
     var isSelected: Bool = false
+    var accessibilityIdentifier: String?
     var onTap: (() -> Void)?
     var onDelete: (() -> Void)?
     
@@ -175,6 +179,8 @@ struct ProviderCard: View {
                 onTap()
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(accessibilityIdentifier ?? "cloud-provider-card-\(actualProviderType)")
         .contextMenu {
             if isConnected, let onDelete = onDelete {
                 Button(role: .destructive) {
@@ -299,10 +305,12 @@ struct AddCloudProviderView: View {
                 Section("Configuration") {
                     TextField("Display Name", text: $providerName)
                         .autocapitalization(.none)
+                        .accessibilityIdentifier("cloud-provider-display-name-field")
                     
                     SecureField("API Token", text: $apiToken)
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("cloud-provider-api-token-field")
                     
                     Text(selectedProvider.tokenHelp)
                         .font(.caption)
@@ -323,6 +331,7 @@ struct AddCloudProviderView: View {
                         }
                     }
                     .disabled(apiToken.isEmpty || providerName.isEmpty || isValidating)
+                    .accessibilityIdentifier("cloud-provider-connect-button")
                 }
             }
             .navigationTitle("Add Cloud Provider")

@@ -50,6 +50,7 @@ struct AgentSkillsListView: View {
                                 AgentSkillRow(skill: skill,
                                               usageCount: usageBySkill[skill.slug] ?? 0)
                             }
+                            .accessibilityIdentifier("agent-skill-row-\(skill.slug.cloudAccessibilityIdentifierFragment)")
                         }
                         .onDelete(perform: deleteSkills)
                     }
@@ -60,6 +61,7 @@ struct AgentSkillsListView: View {
                         } label: {
                             Label("Manage Skill Marketplaces", systemImage: "shippingbox")
                         }
+                        .accessibilityIdentifier("agent-skills-marketplaces-link")
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -75,15 +77,18 @@ struct AgentSkillsListView: View {
                     } label: {
                         Label("Add from Marketplace", systemImage: "cart")
                     }
+                    .accessibilityIdentifier("agent-skills-add-marketplace-button")
 
                     Button {
                         showingGitHubInstall = true
                     } label: {
                         Label("Add from GitHub URL", systemImage: "link")
                     }
+                    .accessibilityIdentifier("agent-skills-add-github-button")
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityIdentifier("agent-skills-add-menu-button")
             }
         }
         .sheet(isPresented: $showingMarketplaceInstall) {
@@ -104,10 +109,12 @@ struct AgentSkillsListView: View {
             PrimaryGlassButton(action: { showingMarketplaceInstall = true }) {
                 Label("Browse Marketplaces", systemImage: "cart")
             }
+            .accessibilityIdentifier("agent-skills-browse-marketplaces-button")
 
             PrimaryGlassButton(action: { showingGitHubInstall = true }) {
                 Label("Add from GitHub", systemImage: "link")
             }
+            .accessibilityIdentifier("agent-skills-add-github-empty-button")
         }
     }
 

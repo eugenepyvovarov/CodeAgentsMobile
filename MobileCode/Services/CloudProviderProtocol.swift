@@ -42,6 +42,7 @@ protocol CloudProviderProtocol {
     // Server Management
     func listServers() async throws -> [CloudServer]
     func getServer(id: String) async throws -> CloudServer?
+    func deleteServer(id: String) async throws
     
     // SSH Key Management
     func listSSHKeys() async throws -> [CloudSSHKey]

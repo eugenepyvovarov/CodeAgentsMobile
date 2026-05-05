@@ -153,6 +153,34 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
         case remote
     }
 
+    struct OAuthConfiguration: Codable, Equatable {
+        var value: AnyCodable
+
+        init(_ value: Any) {
+            self.value = AnyCodable(value)
+        }
+
+        init(from decoder: Decoder) throws {
+            self.value = try AnyCodable(from: decoder)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            try value.encode(to: encoder)
+        }
+
+        static func == (lhs: OAuthConfiguration, rhs: OAuthConfiguration) -> Bool {
+            normalizedData(lhs.value.value) == normalizedData(rhs.value.value)
+        }
+
+        private static func normalizedData(_ value: Any) -> Data? {
+            if JSONSerialization.isValidJSONObject(value) {
+                return try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+            }
+
+            return try? JSONEncoder().encode(AnyCodable(value))
+        }
+    }
+
     var type: ServerType
     var command: [String]?
     var environment: [String: String]?
@@ -160,6 +188,7 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
     var timeout: Int?
     var url: String?
     var headers: [String: String]?
+    var oauth: OAuthConfiguration?
 
     init(
         type: ServerType,
@@ -168,7 +197,8 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
         enabled: Bool? = true,
         timeout: Int? = nil,
         url: String? = nil,
-        headers: [String: String]? = nil
+        headers: [String: String]? = nil,
+        oauth: OAuthConfiguration? = nil
     ) {
         self.type = type
         self.command = command
@@ -177,6 +207,7 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
         self.timeout = timeout
         self.url = url
         self.headers = headers
+        self.oauth = oauth
     }
 
     init?(server: MCPServer, enabled: Bool = true) {
@@ -443,6 +474,7 @@ struct OpenCodeMCPConfigDocument {
         baseURL: String,
         modelID: String,
         modelName: String,
+        apiKey: String? = nil,
         headers: [String: String] = [:]
     ) throws {
         let providerID = id.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -453,12 +485,22 @@ struct OpenCodeMCPConfigDocument {
             throw MCPConfigurationError.encodingFailed
         }
 
-        var providerConfig: [String: Any] = [
+        var options: [String: Any] = [
+            "baseURL": endpoint
+        ]
+
+        if let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty {
+            options["apiKey"] = apiKey
+        }
+
+        if !headers.isEmpty {
+            options["headers"] = headers
+        }
+
+        let providerConfig: [String: Any] = [
             "npm": "@ai-sdk/openai-compatible",
             "name": displayName,
-            "options": [
-                "baseURL": endpoint
-            ],
+            "options": options,
             "models": [
                 modelIdentifier: [
                     "name": modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? modelIdentifier : modelName
@@ -466,15 +508,31 @@ struct OpenCodeMCPConfigDocument {
             ]
         ]
 
-        if !headers.isEmpty {
-            providerConfig["options"] = [
-                "baseURL": endpoint,
-                "headers": headers
-            ]
+        var providers = root["provider"] as? [String: Any] ?? [:]
+        providers[providerID] = providerConfig
+        root["provider"] = providers
+        ensureSchema()
+    }
+
+    mutating func setMiniMaxProvider(apiKey: String) throws {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            throw MCPConfigurationError.encodingFailed
         }
 
         var providers = root["provider"] as? [String: Any] ?? [:]
-        providers[providerID] = providerConfig
+        providers["minimax"] = [
+            "npm": "@ai-sdk/anthropic",
+            "options": [
+                "baseURL": "https://api.minimax.io/anthropic/v1",
+                "apiKey": trimmedKey
+            ],
+            "models": [
+                "MiniMax-M2.7": [
+                    "name": "MiniMax-M2.7"
+                ]
+            ]
+        ]
         root["provider"] = providers
         ensureSchema()
     }
@@ -487,6 +545,14 @@ struct OpenCodeMCPConfigDocument {
     }
 
     mutating func setServer(named name: String, configuration: OpenCodeMCPServerConfiguration) throws {
+        var configuration = configuration
+        if configuration.oauth == nil,
+           let existing = serverConfigurations()[name],
+           existing.type == configuration.type,
+           existing.url == configuration.url {
+            configuration.oauth = existing.oauth
+        }
+
         let data = try JSONEncoder().encode(configuration)
         guard let object = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
             throw MCPConfigurationError.encodingFailed

@@ -18,6 +18,7 @@ struct ChatView: View {
     @State private var showingRules = false
     @State private var showingEnvironment = false
     @State private var showingServerSettings = false
+    @State private var showingRuntimeSettings = false
     @State private var openCodeRuntimeStatus: OpenCodeRuntimeSetupStatus?
     @State private var isCheckingOpenCodeRuntime = false
     
@@ -69,18 +70,27 @@ struct ChatView: View {
                         } label: {
                             Label("MCP Servers", systemImage: "server.rack")
                         }
+                        .accessibilityIdentifier("chat-mcp-servers-button")
 
                         Button {
                             showingAgentSkills = true
                         } label: {
                             Label("Agent Skills", systemImage: "sparkles")
                         }
+                        .accessibilityIdentifier("chat-agent-skills-button")
 
                         Button {
                             showingPermissions = true
                         } label: {
                             Label("Permissions", systemImage: "checkmark.shield")
                         }
+
+                        Button {
+                            showingRuntimeSettings = true
+                        } label: {
+                            Label("Agent Runtime", systemImage: "cpu")
+                        }
+                        .accessibilityIdentifier("chat-agent-runtime-settings-button")
 
                         Button {
                             showingRules = true
@@ -116,6 +126,7 @@ struct ChatView: View {
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
+                    .accessibilityIdentifier("chat-more-menu-button")
                 }
             }
         }
@@ -157,16 +168,10 @@ struct ChatView: View {
                        claudeService.claudeInstallationStatus[server.id] == false {
                         _ = await claudeService.checkClaudeInstallation(for: server)
                     }
-                } else if let project = projectContext.activeProject,
-                          activeRuntimeKind(for: project) == .openCode {
-                    await refreshOpenCodeRuntimeStatus()
                 }
             }
         }
         .onDisappear {
-            // Clear loading state when view disappears to prevent stuck UI
-            viewModel.clearLoadingStates()
-            // Clean up resources to prevent retain cycles
             viewModel.cleanup()
         }
         .onChange(of: projectContext.activeProject) { oldValue, newValue in
@@ -209,6 +214,11 @@ struct ChatView: View {
         .sheet(isPresented: $showingEnvironment) {
             AgentEnvironmentVariablesView()
         }
+        .sheet(isPresented: $showingRuntimeSettings) {
+            NavigationStack {
+                AgentRuntimeSettingsView()
+            }
+        }
         .sheet(isPresented: $showingServerSettings) {
             if let server = projectContext.activeServer {
                 EditServerSheet(server: server)
@@ -248,6 +258,7 @@ struct ChatView: View {
             openCodeRuntimeStatus = nil
             return
         }
+        guard !isCheckingOpenCodeRuntime else { return }
 
         isCheckingOpenCodeRuntime = true
         defer {
@@ -311,6 +322,7 @@ struct MessageBubble: View {
             .frame(maxWidth: .infinity, alignment: message.role == MessageRole.user ? .trailing : .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 2)
+            .accessibilityIdentifier("chat-message-\(message.role == MessageRole.user ? "user" : "assistant")-\(message.id.uuidString)")
         }
     }
     
@@ -322,6 +334,8 @@ struct MessageBubble: View {
                 VStack(spacing: 8) {
                     streamingBlocksView
                 }
+            } else if !message.content.isEmpty {
+                PlainMessageBubble(message: message)
             } else {
                 StreamingPlaceholderBubble(isUser: message.role == MessageRole.user)
             }

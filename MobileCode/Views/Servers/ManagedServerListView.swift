@@ -27,8 +27,7 @@ struct ManagedServerListView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showError = false
-    @State private var selectedServer: CloudServer?
-    @State private var showAttachSheet = false
+    @State private var serverToAttach: CloudServer?
     @State private var showCreateServer = false
     @State private var isServerProvisioning = false
     @State private var shouldRefreshList = true
@@ -50,6 +49,7 @@ struct ManagedServerListView: View {
                             Label("Create New Server", systemImage: "plus.circle")
                         }
                         .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("managed-create-cloud-server-button")
                     }
                 } else {
                     List {
@@ -79,6 +79,7 @@ struct ManagedServerListView: View {
                                 }
                                 .padding(.vertical, 4)
                             }
+                            .accessibilityIdentifier("managed-create-cloud-server-button")
                         }
                     }
                 }
@@ -103,20 +104,17 @@ struct ManagedServerListView: View {
             .onAppear {
                 loadServers()
             }
-            .sheet(isPresented: $showAttachSheet) {
-                if let server = selectedServer {
-                    AttachServerSheet(
-                        cloudServer: server,
-                        provider: provider,
-                        onComplete: { attachedServer in
-                            modelContext.insert(attachedServer)
-                            try? modelContext.save()
-                            showAttachSheet = false
-                            selectedServer = nil
-                            loadServers()
-                        }
-                    )
-                }
+            .sheet(item: $serverToAttach) { server in
+                AttachServerSheet(
+                    cloudServer: server,
+                    provider: provider,
+                    onComplete: { attachedServer in
+                        modelContext.insert(attachedServer)
+                        try? modelContext.save()
+                        serverToAttach = nil
+                        loadServers()
+                    }
+                )
             }
             .sheet(isPresented: $showCreateServer) {
                 CreateCloudServerView(
@@ -191,8 +189,7 @@ struct ManagedServerListView: View {
     }
     
     private func attachServer(_ cloudServer: CloudServer) {
-        selectedServer = cloudServer
-        showAttachSheet = true
+        serverToAttach = cloudServer
     }
 }
 

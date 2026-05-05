@@ -80,17 +80,10 @@ users:
         // Add the rest of the configuration
         script += """
 
-package_update: true
-package_upgrade: true
+vendor_data: {enabled: false}
 
-packages:
-  - nodejs
-  - npm
-  - curl
-  - ca-certificates
-  - tar
-  - build-essential
-  - git
+package_update: false
+package_upgrade: false
 
 write_files:
   - path: \(OpenCodeServerProvisioning.serviceFilePath)

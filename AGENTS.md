@@ -21,6 +21,8 @@
   `xcodebuild -scheme CodeAgentsMobile -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 15' build`
 - Run all tests (unit + UI):
   `xcodebuild test -scheme CodeAgentsMobile -destination 'platform=iOS Simulator,name=iPhone 15'`
+- Verified run command for iPhone 17 Pro on iOS 26.2:
+  `xcodebuild test -scheme CodeAgentsMobile -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2' -skip-testing:CodeAgentsMobileUITests -skip-testing:CodeAgentsMobileTests/DirectSSHTest -skip-testing:CodeAgentsMobileTests/SSHClaudeIntegrationTest`
 - Scope/skip tests:
   `-only-testing:CodeAgentsMobileTests/ShortcutPromptBuilderTests` or `-skip-testing:CodeAgentsMobileTests/DirectSSHTest`
 - Clean: `xcodebuild -scheme CodeAgentsMobile clean`
@@ -68,3 +70,4 @@ Local proxy repo: `~/Projects/mobilecode.swift/MobileCode/server/claude-proxy`
 - Never commit secrets or API keys; use Keychain at runtime (see `KeychainManager`).
 - Don’t commit local build artifacts or `*.xcuser*`; keep `.gitignore` intact.
 - Review `PRIVACY_POLICY.md` and relevant docs in `specs/` when changing data flows.
+- If using XcodeBuildMCP, use the installed XcodeBuildMCP skill before calling XcodeBuildMCP tools.

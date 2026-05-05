@@ -30,6 +30,7 @@ struct GenerateSSHKeySheet: View {
                     TextField("Key Name", text: $keyName)
                         .autocorrectionDisabled()
                         .autocapitalization(.none)
+                        .accessibilityIdentifier("ssh-key-name-field")
                 }
                 
                 Section {
@@ -65,6 +66,7 @@ struct GenerateSSHKeySheet: View {
                         generateKey()
                     }
                     .disabled(!isFormValid || isGenerating)
+                    .accessibilityIdentifier("ssh-key-generate-button")
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -97,6 +99,7 @@ struct GenerateSSHKeySheet: View {
                 Button("Done") {
                     dismiss()
                 }
+                .accessibilityIdentifier("ssh-key-generation-done-button")
             } message: {
                 Text("Your SSH key has been generated and saved. Would you like to export it?")
             }
@@ -279,7 +282,11 @@ struct GenerateSSHKeySheet: View {
             generatedKeyData = (privateKeyPEM, publicKeyString)
             
             // Show save options
-            showSaveOptions = true
+            if ProcessInfo.processInfo.environment["MOBILECODE_E2E_AUTODISMISS_SSH_KEY_GENERATION"] == "1" {
+                dismiss()
+            } else {
+                showSaveOptions = true
+            }
         } catch {
             errorMessage = "Failed to generate key: \(error.localizedDescription)"
             showError = true

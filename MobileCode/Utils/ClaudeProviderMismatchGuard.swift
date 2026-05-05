@@ -40,9 +40,9 @@ enum ClaudeProviderMismatchGuard {
         userDefaults: UserDefaults = .standard
     ) -> ClaudeProviderMismatch? {
         guard let project else { return nil }
+        guard CodingAgentRuntimeResolver.runtimeKind(for: project) == .claudeProxy else { return nil }
         let current = currentProvider(userDefaults: userDefaults)
         let previous = project.lastSuccessfulClaudeProviderRawValue.flatMap { ClaudeModelProvider(rawValue: $0) }
         return mismatch(lastSuccessfulProvider: previous, currentProvider: current)
     }
 }
-

@@ -151,6 +151,9 @@ Temporary Items
 .env
 .env.local
 .env.*.local
+.mobilecode-e2e.env
+mobilecode-e2e.env
+scripts/e2e/.mobilecode-e2e.generated.env
 
 # Debug logs
 *.log
@@ -196,3 +199,6 @@ MobileCode/GoogleService-Info.plist
 
 # Local Xcode project backups
 *.pbxproj.backup
+
+# Local cloud E2E generated credentials
+scripts/e2e/.generated/

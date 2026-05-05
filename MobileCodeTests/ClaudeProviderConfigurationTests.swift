@@ -37,5 +37,11 @@ final class ClaudeProviderConfigurationTests: XCTestCase {
         XCTAssertEqual(overrides.defaultOpusModel, "GLM-4.7")
         XCTAssertEqual(overrides.defaultHaikuModel, "GLM-4.5-Air")
     }
-}
 
+    func testMiniMaxDefaultsUseCurrentModel() throws {
+        let overrides = ClaudeProviderOverrides.defaults(for: .miniMax)
+        XCTAssertEqual(overrides.model, "MiniMax-M2.7")
+        XCTAssertEqual(overrides.smallFastModel, "MiniMax-M2.7")
+        XCTAssertEqual(overrides.defaultSonnetModel, "MiniMax-M2.7")
+    }
+}

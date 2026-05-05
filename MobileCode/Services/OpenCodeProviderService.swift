@@ -19,6 +19,13 @@ struct OpenCodeProviderStatus: Equatable {
         }
     }
 
+    var apiKeyProviderChoices: [OpenCodeAPIKeyProviderChoice] {
+        let discovered = apiKeyProviders.map { provider in
+            OpenCodeAPIKeyProviderChoice(id: provider.id, name: provider.name)
+        }
+        return OpenCodeAPIKeyProviderChoice.merging(discovered, with: OpenCodeAPIKeyProviderChoice.preferred)
+    }
+
     var modelChoices: [OpenCodeModelChoice] {
         providers.flatMap { provider in
             provider.models.values.map { model in
@@ -33,6 +40,62 @@ struct OpenCodeProviderStatus: Equatable {
         .sorted { lhs, rhs in
             lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
         }
+    }
+}
+
+struct OpenCodeAPIKeyProviderChoice: Identifiable, Hashable {
+    let id: String
+    let name: String
+
+    static let preferred: [OpenCodeAPIKeyProviderChoice] = [
+        OpenCodeAPIKeyProviderChoice(id: "anthropic", name: "Anthropic"),
+        OpenCodeAPIKeyProviderChoice(id: "openai", name: "OpenAI"),
+        OpenCodeAPIKeyProviderChoice(id: "google", name: "Google"),
+        OpenCodeAPIKeyProviderChoice(id: "xai", name: "xAI"),
+        OpenCodeAPIKeyProviderChoice(id: "groq", name: "Groq"),
+        OpenCodeAPIKeyProviderChoice(id: "openrouter", name: "OpenRouter"),
+        OpenCodeAPIKeyProviderChoice(id: "minimax", name: "MiniMax")
+    ]
+
+    static func merging(
+        _ discovered: [OpenCodeAPIKeyProviderChoice],
+        with preferred: [OpenCodeAPIKeyProviderChoice]
+    ) -> [OpenCodeAPIKeyProviderChoice] {
+        var seen = Set<String>()
+        var merged: [OpenCodeAPIKeyProviderChoice] = []
+
+        for choice in discovered + preferred {
+            let normalizedID = choice.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalizedID.isEmpty, !seen.contains(normalizedID) else { continue }
+            seen.insert(normalizedID)
+            merged.append(choice)
+        }
+
+        return merged
+    }
+}
+
+enum OpenCodeProviderConnectionDefaults {
+    static func suggestedModelID(providerID: String, status: OpenCodeProviderStatus?) -> String? {
+        let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProviderID.isEmpty else { return nil }
+
+        if let defaultModel = status?.defaultModels.first(where: { key, _ in
+            key.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        })?.value.nilIfEmpty {
+            return "\(normalizedProviderID)/\(defaultModel)"
+        }
+
+        switch normalizedProviderID.lowercased() {
+        case "minimax":
+            return "minimax/MiniMax-M2.7"
+        default:
+            return nil
+        }
+    }
+
+    static func suggestedSmallModelID(providerID: String, status: OpenCodeProviderStatus?) -> String? {
+        suggestedModelID(providerID: providerID, status: status)
     }
 }
 
@@ -119,6 +182,11 @@ final class OpenCodeProviderService: ObservableObject {
 
         try KeychainManager.shared.storeOpenCodeAPIKey(trimmedKey, providerID: trimmedProviderID)
 
+        if trimmedProviderID.caseInsensitiveCompare("minimax") == .orderedSame {
+            try await saveMiniMaxAPIKeyToProjectConfiguration(trimmedKey, for: project)
+            return
+        }
+
         let session = try await sshService.getConnection(for: project, purpose: .opencode)
         let client = client(for: project)
         _ = try await client.setProviderAPIKey(
@@ -181,21 +249,13 @@ final class OpenCodeProviderService: ObservableObject {
             name: input.name,
             baseURL: input.baseURL,
             modelID: input.modelID,
-            modelName: input.modelName
+            modelName: input.modelName,
+            apiKey: apiKey
         )
         loaded.document.setModelSelection(modelID: "\(providerID)/\(input.modelID)", smallModelID: loaded.document.selectedSmallModelID)
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
 
         try KeychainManager.shared.storeOpenCodeAPIKey(apiKey, providerID: providerID)
-
-        let openCodeSession = try await sshService.getConnection(for: project, purpose: .opencode)
-        let client = client(for: project)
-        _ = try await client.setProviderAPIKey(
-            sshSession: openCodeSession,
-            providerID: providerID,
-            apiKey: apiKey,
-            directory: project.path
-        )
     }
 }
 
@@ -286,5 +346,24 @@ private extension OpenCodeProviderService {
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "$", with: "\\$")
             .replacingOccurrences(of: "`", with: "\\`")
+    }
+
+    func saveMiniMaxAPIKeyToProjectConfiguration(_ apiKey: String, for project: RemoteProject) async throws {
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        var loaded = try await loadConfiguration(for: project, scope: .project, session: session)
+        try loaded.document.setMiniMaxProvider(apiKey: apiKey)
+        if loaded.document.selectedModelID == nil {
+            loaded.document.setModelSelection(
+                modelID: "minimax/MiniMax-M2.7",
+                smallModelID: loaded.document.selectedSmallModelID
+            )
+        }
+        try await writeConfiguration(loaded.document, to: loaded.path, session: session)
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

@@ -10,8 +10,7 @@ final class ChatMessageAdapterTests: XCTestCase {
         message.originalJSON = jsonLine.data(using: .utf8)
 
         let adapter = ChatMessageAdapter(messages: [message], streamingMessageId: nil)
-        XCTAssertEqual(adapter.exyteMessages.count, 1)
-        XCTAssertEqual(adapter.exyteMessages[0].text, "Session Info")
+        XCTAssertEqual(adapter.exyteMessages.count, 0)
     }
 
     func testToolUseOnlyMessageGetsNonEmptyExyteText() throws {
@@ -23,8 +22,9 @@ final class ChatMessageAdapterTests: XCTestCase {
 
         let adapter = ChatMessageAdapter(messages: [message], streamingMessageId: nil)
         XCTAssertEqual(adapter.exyteMessages.count, 1)
-        XCTAssertTrue(adapter.exyteMessages[0].text.contains("Tool:"))
-        XCTAssertTrue(adapter.exyteMessages[0].text.contains("Glob"))
+        let firstMessage = try XCTUnwrap(adapter.exyteMessages.first, "Expected one adapter message")
+        XCTAssertTrue(firstMessage.text.contains("Tool:"))
+        XCTAssertTrue(firstMessage.text.contains("Glob"))
     }
 
     func testStreamingPlaceholderMessageUsesEllipsisText() throws {
@@ -32,7 +32,7 @@ final class ChatMessageAdapterTests: XCTestCase {
 
         let adapter = ChatMessageAdapter(messages: [message], streamingMessageId: message.id)
         XCTAssertEqual(adapter.exyteMessages.count, 1)
-        XCTAssertEqual(adapter.exyteMessages[0].text, "...")
+        let firstMessage = try XCTUnwrap(adapter.exyteMessages.first, "Expected one adapter message")
+        XCTAssertEqual(firstMessage.text, "...")
     }
 }
-

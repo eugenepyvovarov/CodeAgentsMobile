@@ -9,15 +9,30 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         ))
 
         XCTAssertTrue(cloudInit.contains("ssh-ed25519 AAAAFixture test@example.com"))
-        XCTAssertTrue(cloudInit.contains("curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"))
+        XCTAssertTrue(
+            cloudInit.contains(
+                "curl --connect-timeout 20 --retry 3 --retry-delay 2 -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+            )
+        )
         XCTAssertTrue(cloudInit.contains("opencode serve --hostname 127.0.0.1 --port 4096"))
         XCTAssertTrue(cloudInit.contains("systemctl enable --now opencode"))
         XCTAssertTrue(cloudInit.contains("http://127.0.0.1:4096/global/health"))
         XCTAssertTrue(cloudInit.contains("OPENCODE_SERVER_PASSWORD=\"fixture_password\""))
+        XCTAssertTrue(cloudInit.contains("vendor_data: {enabled: false}"))
+        XCTAssertTrue(cloudInit.contains("package_update: false"))
+        XCTAssertTrue(cloudInit.contains("package_upgrade: false"))
+        XCTAssertTrue(cloudInit.contains("Acquire::ForceIPv4=true"))
+        XCTAssertTrue(cloudInit.contains("timeout --kill-after=10 180 apt-get"))
+        XCTAssertFalse(cloudInit.contains("package_upgrade: true"))
+        XCTAssertFalse(cloudInit.contains("package_update: true"))
+        XCTAssertFalse(cloudInit.contains("set -eux"))
+        XCTAssertTrue(cloudInit.contains("Installing CodeAgents daemon..."))
+        XCTAssertTrue(cloudInit.contains("timeout --kill-after=15 300 bash -lc"))
         XCTAssertTrue(cloudInit.contains("SERVICE_NAME=codeagents-daemon"))
         XCTAssertTrue(cloudInit.contains("INSTALL_DIR=/opt/codeagents-daemon"))
         XCTAssertTrue(cloudInit.contains("INSTALL_CLAUDE_CLI=0"))
         XCTAssertTrue(cloudInit.contains("http://127.0.0.1:8787/healthz"))
+        XCTAssertTrue(cloudInit.contains("foreground OpenCode chat is still available"))
         XCTAssertFalse(cloudInit.contains("@anthropic-ai/claude-code"))
         XCTAssertFalse(cloudInit.contains("{{"))
     }
@@ -36,7 +51,11 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         )
 
         XCTAssertTrue(script.contains("useradd -m -s /bin/bash codeagent"))
-        XCTAssertTrue(script.contains("curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"))
+        XCTAssertTrue(
+            script.contains(
+                "curl --connect-timeout 20 --retry 3 --retry-delay 2 -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+            )
+        )
         XCTAssertTrue(script.contains("cat > /etc/opencode-server.env"))
         XCTAssertTrue(script.contains("OPENCODE_SERVER_USERNAME=\"mobile\""))
         XCTAssertTrue(script.contains("OPENCODE_SERVER_PASSWORD=\"fixture_password\""))
@@ -47,6 +66,29 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         XCTAssertTrue(script.contains("INSTALL_DIR=/opt/codeagents-daemon"))
         XCTAssertTrue(script.contains("INSTALL_CLAUDE_CLI=0"))
         XCTAssertTrue(script.contains("http://127.0.0.1:8787/healthz"))
+        XCTAssertTrue(script.contains("foreground OpenCode chat is still available"))
+    }
+
+    func testCloudInitStatusCommandCapturesErrorsWithoutFailingSSHCommand() {
+        XCTAssertTrue(CloudInitStatus.statusCommand.contains("cloud-init status --long"))
+        XCTAssertTrue(CloudInitStatus.statusCommand.contains("|| true"))
+        XCTAssertEqual(CloudInitStatus.parse("status: done"), "done")
+        XCTAssertEqual(CloudInitStatus.parse("status: error"), "error")
+        XCTAssertEqual(CloudInitStatus.parse("status: running"), "running")
+        XCTAssertEqual(CloudInitStatus.parse("status: disabled"), "done")
+    }
+
+    func testCloudInitDiagnosticsRedactsOpenCodePassword() {
+        let diagnostics = """
+        + OPENCODE_SERVER_PASSWORD="super_secret"
+        OPENCODE_SERVER_PASSWORD=another_secret
+        """
+
+        let redacted = CloudInitStatus.redacted(diagnostics)
+
+        XCTAssertFalse(redacted.contains("super_secret"))
+        XCTAssertFalse(redacted.contains("another_secret"))
+        XCTAssertTrue(redacted.contains("OPENCODE_SERVER_PASSWORD"))
     }
 
     func testGeneratedOpenCodePasswordIsEnvironmentSafe() throws {

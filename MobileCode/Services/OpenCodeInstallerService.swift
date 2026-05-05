@@ -107,14 +107,25 @@ final class OpenCodeInstallerService {
 
     private init() {}
 
-    func verifyRuntime(on server: Server, onOutput: @escaping (String) -> Void) async throws {
+    func verifyRuntime(on server: Server, onOutput: @escaping (String) -> Void) async throws -> OpenCodeRuntimeSetupStatus {
         let session = try await SSHService.shared.connect(to: server, purpose: .opencode)
         defer {
             session.disconnect()
         }
 
         onOutput("Checking OpenCode health at \(OpenCodeServerProvisioning.host):\(OpenCodeServerProvisioning.port)...")
-        let health = try await OpenCodeClientFactory.client(for: server.id).health(session: session)
+        let health: OpenCodeHealth
+        do {
+            health = try await OpenCodeClientFactory.client(for: server.id).health(session: session)
+        } catch {
+            let diagnostics = (try? await session.execute(Self.diagnosticsCommand)) ?? ""
+            let status = Self.status(from: diagnostics, healthError: error)
+            onOutput(status.message)
+            guard !status.blocksForegroundChat else {
+                throw OpenCodeInstallerError.setupFailed(status.message)
+            }
+            return status
+        }
 
         guard health.healthy else {
             throw OpenCodeInstallerError.unhealthy
@@ -122,8 +133,18 @@ final class OpenCodeInstallerService {
 
         onOutput("OpenCode \(health.version) is healthy.")
         onOutput("Checking CodeAgents daemon health at \(CodeAgentsDaemonProvisioning.host):\(CodeAgentsDaemonProvisioning.port)...")
-        try await verifyDaemonHealth(using: session)
-        onOutput("CodeAgents daemon is healthy.")
+        do {
+            try await verifyDaemonHealth(using: session)
+            onOutput("CodeAgents daemon is healthy.")
+            return .available(version: health.version)
+        } catch {
+            let status = OpenCodeRuntimeSetupStatus.daemonUnavailable(
+                version: health.version,
+                reason: error.localizedDescription
+            )
+            onOutput(status.message)
+            return status
+        }
     }
 
     func checkRuntimeStatus(on server: Server) async -> OpenCodeRuntimeSetupStatus {
@@ -183,7 +204,7 @@ final class OpenCodeInstallerService {
         }
 
         let status = await checkRuntimeStatus(session: session, serverID: server.id)
-        guard status.isReady else {
+        guard status.isReady || !status.blocksForegroundChat else {
             throw OpenCodeInstallerError.setupFailed(status.message)
         }
         return status

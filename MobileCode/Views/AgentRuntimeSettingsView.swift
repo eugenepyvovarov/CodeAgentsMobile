@@ -9,6 +9,7 @@ import SwiftUI
 
 struct AgentRuntimeSettingsView: View {
     @StateObject private var projectContext = ProjectContext.shared
+    @Environment(\.dismiss) private var dismiss
     @AppStorage(CodingAgentRuntimeSelectionStore.selectedRuntimeKey) private var selectedRuntimeRawValue = CodingAgentRuntimeSelectionStore.defaultRuntime.rawValue
 
     @StateObject private var providerService = OpenCodeProviderService.shared
@@ -27,8 +28,10 @@ struct AgentRuntimeSettingsView: View {
     @State private var customProviderAPIKey = ""
     @State private var isLoadingStatus = false
     @State private var isSavingAPIKey = false
+    @State private var isSavingProviderConnection = false
     @State private var isSavingModelConfiguration = false
     @State private var isSavingCustomProvider = false
+    @State private var providerStatusWarning: String?
     @State private var errorMessage: String?
     @State private var showError = false
 
@@ -45,6 +48,17 @@ struct AgentRuntimeSettingsView: View {
 
     private var activeProject: RemoteProject? {
         projectContext.activeProject
+    }
+
+    private var apiKeyProviderChoices: [OpenCodeAPIKeyProviderChoice] {
+        providerStatus?.apiKeyProviderChoices ?? OpenCodeAPIKeyProviderChoice.preferred
+    }
+
+    private var selectedProviderModelChoices: [OpenCodeModelChoice] {
+        guard let providerStatus else { return [] }
+        return providerStatus.modelChoices.filter {
+            $0.providerID.caseInsensitiveCompare(apiProviderID) == .orderedSame
+        }
     }
 
     var body: some View {
@@ -109,7 +123,16 @@ struct AgentRuntimeSettingsView: View {
         }
         .navigationTitle("Agent Runtime")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") {
+                    dismiss()
+                }
+                .accessibilityIdentifier("agent-runtime-done-button")
+            }
+        }
         .task {
+            applyUITestAIProviderAutofillIfNeeded()
             if let activeProject {
                 await refreshStatus(for: activeProject)
             }
@@ -166,9 +189,94 @@ struct AgentRuntimeSettingsView: View {
                     .font(.footnote)
                     .foregroundColor(.secondary)
             }
+
+            if let providerStatusWarning {
+                Text(providerStatusWarning)
+                    .font(.footnote)
+                    .foregroundColor(.orange)
+            }
         }
 
-        Section("OpenCode Models") {
+        Section("OpenCode Connection") {
+            Picker("Provider", selection: $apiProviderID) {
+                ForEach(apiKeyProviderChoices) { provider in
+                    Text(provider.name).tag(provider.id)
+                }
+            }
+            .accessibilityIdentifier("opencode-api-provider-picker")
+            .onChange(of: apiProviderID) { _, _ in
+                applySuggestedModelsForSelectedProvider(overwriteExisting: false)
+            }
+
+            SecureField("API Key", text: $apiKey)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("opencode-api-key-field")
+
+            TextField("Default Model", text: $selectedModelID)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("opencode-connection-model-field")
+
+            TextField("Small Model", text: $selectedSmallModelID)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("opencode-connection-small-model-field")
+
+            if !selectedProviderModelChoices.isEmpty {
+                Menu {
+                    ForEach(selectedProviderModelChoices) { choice in
+                        Button(choice.modelName) {
+                            selectedModelID = choice.id
+                            if selectedSmallModelID.isEmpty {
+                                selectedSmallModelID = choice.id
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Choose \(selectedProviderDisplayName) Model", systemImage: "list.bullet")
+                }
+                .accessibilityIdentifier("opencode-connection-model-suggestions-menu")
+            } else if let suggestedModelID = suggestedModelIDForSelectedProvider {
+                Button {
+                    selectedModelID = suggestedModelID
+                    selectedSmallModelID = suggestedSmallModelIDForSelectedProvider ?? suggestedModelID
+                } label: {
+                    Label("Use \(suggestedModelID)", systemImage: "wand.and.stars")
+                }
+                .accessibilityIdentifier("opencode-connection-use-suggested-model-button")
+            }
+
+            HStack {
+                Button("Load Stored") {
+                    loadStoredOpenCodeAPIKey()
+                }
+
+                Spacer()
+
+                Button {
+                    Task { await saveProviderConnection(project: project) }
+                } label: {
+                    if isSavingProviderConnection {
+                        ProgressView()
+                    } else {
+                        Text("Save Connection")
+                    }
+                }
+                .disabled(
+                    isSavingProviderConnection
+                        || apiProviderID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+                .accessibilityIdentifier("opencode-save-provider-connection-button")
+            }
+
+            Text("Choose a provider, paste its API key, and save. MobileCode writes the matching OpenCode provider and model config for this agent.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+
+        Section("Advanced OpenCode Models") {
             Picker("Apply To", selection: $modelConfigScope) {
                 ForEach(OpenCodeConfigurationScope.allCases) { scope in
                     Text(scope.displayName).tag(scope)
@@ -209,51 +317,9 @@ struct AgentRuntimeSettingsView: View {
                 }
             }
             .disabled(isSavingModelConfiguration)
+            .accessibilityIdentifier("opencode-save-model-selection-button")
 
-            Text("Model ids are written to OpenCode config as provider/model, for example anthropic/claude-sonnet-4-5.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-
-        Section("OpenCode API Key") {
-            if let providerStatus, !providerStatus.apiKeyProviders.isEmpty {
-                Picker("Provider", selection: $apiProviderID) {
-                    ForEach(providerStatus.apiKeyProviders, id: \.id) { provider in
-                        Text(provider.name).tag(provider.id)
-                    }
-                }
-            } else {
-                TextField("Provider ID", text: $apiProviderID)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            }
-
-            SecureField("API Key", text: $apiKey)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("opencode-api-key-field")
-
-            HStack {
-                Button("Load Stored") {
-                    loadStoredOpenCodeAPIKey()
-                }
-
-                Spacer()
-
-                Button {
-                    Task { await saveOpenCodeAPIKey(project: project) }
-                } label: {
-                    if isSavingAPIKey {
-                        ProgressView()
-                    } else {
-                        Text("Save to OpenCode")
-                    }
-                }
-                .disabled(isSavingAPIKey || apiProviderID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || apiKey.isEmpty)
-                .accessibilityIdentifier("opencode-save-api-key-button")
-            }
-
-            Text("OpenCode owns provider configuration on the server. MobileCode stores this key under an OpenCode-specific keychain entry and sends it to the selected server.")
+            Text("Model ids are written to OpenCode config as provider/model, for example minimax/MiniMax-M2.7.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -335,11 +401,15 @@ struct AgentRuntimeSettingsView: View {
 
         do {
             providerStatus = try await providerService.status(for: project)
+            providerStatusWarning = nil
             await loadModelConfiguration(project: project)
+            applyUITestAIProviderAutofillIfNeeded()
+            applySuggestedModelsForSelectedProvider(overwriteExisting: false)
         } catch {
             providerStatus = nil
-            errorMessage = "Failed to load OpenCode providers: \(error.localizedDescription)"
-            showError = true
+            providerStatusWarning = "OpenCode provider status is unavailable. You can still enter a provider ID, save API keys, and configure models manually."
+            applyUITestAIProviderAutofillIfNeeded()
+            applySuggestedModelsForSelectedProvider(overwriteExisting: false)
         }
     }
 
@@ -353,6 +423,37 @@ struct AgentRuntimeSettingsView: View {
             await refreshStatus(for: project)
         } catch {
             errorMessage = "Failed to save OpenCode API key: \(error.localizedDescription)"
+            showError = true
+        }
+    }
+
+    private func saveProviderConnection(project: RemoteProject) async {
+        isSavingProviderConnection = true
+        defer { isSavingProviderConnection = false }
+
+        let trimmedProviderID = apiProviderID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModelID = selectedModelID.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            ?? suggestedModelIDForSelectedProvider
+        let resolvedSmallModelID = selectedSmallModelID.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            ?? suggestedSmallModelIDForSelectedProvider
+            ?? resolvedModelID
+
+        do {
+            if !trimmedAPIKey.isEmpty {
+                try await providerService.saveAPIKey(trimmedAPIKey, providerID: trimmedProviderID, for: project)
+                apiKey = ""
+            }
+
+            try await providerService.saveModelConfiguration(
+                modelID: resolvedModelID,
+                smallModelID: resolvedSmallModelID,
+                scope: modelConfigScope,
+                for: project
+            )
+            await refreshStatus(for: project)
+        } catch {
+            errorMessage = "Failed to save OpenCode provider connection: \(error.localizedDescription)"
             showError = true
         }
     }
@@ -413,10 +514,71 @@ struct AgentRuntimeSettingsView: View {
         }
     }
 
+    @discardableResult
+    private func applyUITestAIProviderAutofillIfNeeded(
+        processInfo: ProcessInfo = .processInfo
+    ) -> Bool {
+        guard processInfo.arguments.contains("--ui-testing"),
+              processInfo.environment["MOBILECODE_E2E_AUTOFILL_AI_API_KEY"] == "1" else {
+            return false
+        }
+
+        var didApply = false
+        let environment = processInfo.environment
+        if let providerID = environment["MOBILECODE_E2E_AI_PROVIDER_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerID.isEmpty {
+            apiProviderID = providerID
+            didApply = true
+        }
+        if let e2eAPIKey = environment["MOBILECODE_E2E_AI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !e2eAPIKey.isEmpty {
+            apiKey = e2eAPIKey
+            didApply = true
+        }
+        if let modelID = environment["MOBILECODE_E2E_AI_MODEL_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !modelID.isEmpty {
+            selectedModelID = modelID
+            didApply = true
+        }
+        if let smallModelID = environment["MOBILECODE_E2E_AI_SMALL_MODEL_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !smallModelID.isEmpty {
+            selectedSmallModelID = smallModelID
+            didApply = true
+        }
+
+        return didApply
+    }
+
+    private var selectedProviderDisplayName: String {
+        apiKeyProviderChoices.first { $0.id.caseInsensitiveCompare(apiProviderID) == .orderedSame }?.name
+            ?? apiProviderID
+    }
+
+    private var suggestedModelIDForSelectedProvider: String? {
+        OpenCodeProviderConnectionDefaults.suggestedModelID(providerID: apiProviderID, status: providerStatus)
+    }
+
+    private var suggestedSmallModelIDForSelectedProvider: String? {
+        OpenCodeProviderConnectionDefaults.suggestedSmallModelID(providerID: apiProviderID, status: providerStatus)
+    }
+
+    private func applySuggestedModelsForSelectedProvider(overwriteExisting: Bool) {
+        guard let suggestedModelID = suggestedModelIDForSelectedProvider else { return }
+        if overwriteExisting || selectedModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            selectedModelID = suggestedModelID
+        }
+        if overwriteExisting || selectedSmallModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            selectedSmallModelID = suggestedSmallModelIDForSelectedProvider ?? suggestedModelID
+        }
+    }
+
     private func loadStoredOpenCodeAPIKey() {
         do {
             apiKey = try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: apiProviderID)
         } catch {
+            if applyUITestAIProviderAutofillIfNeeded() {
+                return
+            }
             apiKey = ""
             errorMessage = "No stored key found for \(apiProviderID)."
             showError = true
@@ -438,5 +600,11 @@ struct AgentRuntimeSettingsView: View {
 #Preview {
     NavigationStack {
         AgentRuntimeSettingsView()
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

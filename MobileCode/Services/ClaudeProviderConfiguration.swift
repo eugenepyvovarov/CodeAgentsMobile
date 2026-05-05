@@ -92,11 +92,11 @@ struct ClaudeProviderOverrides: Codable, Equatable {
                 baseURL: provider.defaultBaseURL,
                 apiTimeoutMs: 3_000_000,
                 disableNonessentialTraffic: false,
-                model: "MiniMax-M2.1",
-                smallFastModel: "MiniMax-M2.1",
-                defaultOpusModel: "MiniMax-M2.1",
-                defaultSonnetModel: "MiniMax-M2.1",
-                defaultHaikuModel: "MiniMax-M2.1"
+                model: "MiniMax-M2.7",
+                smallFastModel: "MiniMax-M2.7",
+                defaultOpusModel: "MiniMax-M2.7",
+                defaultSonnetModel: "MiniMax-M2.7",
+                defaultHaikuModel: "MiniMax-M2.7"
             )
         case .moonshot:
             return ClaudeProviderOverrides(

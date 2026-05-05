@@ -124,18 +124,18 @@ class CloudInitMonitor: ObservableObject {
             let session = try await sshService.connect(to: server, purpose: .cloudInit)
             
             // Check cloud-init status
-            let output = try await session.execute("sudo cloud-init status")
+            let output = try await session.execute(CloudInitStatus.statusCommand)
             
             // Disconnect after checking
             session.disconnect()
             
-            // Parse the output
-            if output.contains("status: done") {
+            let status = CloudInitStatus.parse(output)
+            if status == "done" {
                 SSHLogger.log("Cloud-init complete for server: \(server.name)", level: .info)
                 return "done"
-            } else if output.contains("status: running") {
+            } else if status == "running" {
                 return "running"
-            } else if output.contains("status: error") {
+            } else if status == "error" {
                 SSHLogger.log("Cloud-init error for server: \(server.name)", level: .error)
                 return "error"
             } else {

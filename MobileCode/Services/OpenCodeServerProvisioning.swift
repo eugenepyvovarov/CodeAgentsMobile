@@ -55,10 +55,22 @@ enum OpenCodeServerProvisioning {
 
     static func runcmdScript(host: String = Self.host, port: Int = Self.port) -> String {
         """
-        set -eux
+        set -eu
+        export DEBIAN_FRONTEND=noninteractive
+        echo "Refreshing apt package metadata..."
+        if ! timeout --kill-after=10 180 apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2 update; then
+          echo "WARNING: apt-get update did not complete; continuing with existing package indexes."
+        fi
+        echo "Ensuring provisioning dependencies..."
+        if ! timeout --kill-after=10 180 apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2 install -y --no-install-recommends curl ca-certificates tar git; then
+          echo "WARNING: dependency install did not complete; validating existing tools."
+          command -v curl >/dev/null
+          command -v tar >/dev/null
+        fi
         mkdir -p /home/codeagent/projects
         chown -R codeagent:codeagent /home/codeagent
-        su - codeagent -c "curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+        echo "Installing OpenCode..."
+        su - codeagent -c "bash -lc 'set -euo pipefail; curl --connect-timeout 20 --retry 3 --retry-delay 2 -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'"
         systemctl daemon-reload
         systemctl enable --now opencode
         set -a
@@ -86,8 +98,18 @@ enum OpenCodeServerProvisioning {
           exit 1
         fi
 
-        \(CodeAgentsDaemonProvisioning.installCommand())
-        \(CodeAgentsDaemonProvisioning.waitForHealthScript())
+        echo "Installing CodeAgents daemon..."
+        if (
+          timeout --kill-after=15 \(CodeAgentsDaemonProvisioning.installTimeoutSeconds) \(CodeAgentsDaemonProvisioning.installCommand())
+          echo "Waiting for CodeAgents daemon health..."
+          \(CodeAgentsDaemonProvisioning.waitForHealthScript(maxAttempts: 15))
+        ); then
+          echo "CodeAgents daemon is healthy."
+        else
+          echo "WARNING: CodeAgents daemon setup did not complete; foreground OpenCode chat is still available." >&2
+          systemctl status \(CodeAgentsDaemonProvisioning.serviceName) --no-pager -l || true
+          journalctl -u \(CodeAgentsDaemonProvisioning.serviceName) --no-pager -n 80 || true
+        fi
         """
     }
 
@@ -114,7 +136,7 @@ enum OpenCodeServerProvisioning {
         chown root:root \(environmentFilePath)
 
         echo "Installing or updating OpenCode..."
-        su - codeagent -c "curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path"
+        su - codeagent -c "bash -lc 'set -euo pipefail; curl --connect-timeout 20 --retry 3 --retry-delay 2 -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'"
 
         echo "Writing OpenCode systemd service..."
         cat > \(serviceFilePath) <<'OPENCODE_SERVICE'
@@ -155,9 +177,13 @@ enum OpenCodeServerProvisioning {
         fi
 
         echo "Installing or updating CodeAgents daemon..."
-        \(CodeAgentsDaemonProvisioning.installCommand())
-        echo "Waiting for CodeAgents daemon health..."
-        \(CodeAgentsDaemonProvisioning.waitForHealthScript())
+        if ! (
+          \(CodeAgentsDaemonProvisioning.installCommand())
+          echo "Waiting for CodeAgents daemon health..."
+          \(CodeAgentsDaemonProvisioning.waitForHealthScript(maxAttempts: 15))
+        ); then
+          echo "CodeAgents daemon setup failed; foreground OpenCode chat is still available." >&2
+        fi
         """
     }
 
@@ -193,6 +219,7 @@ enum OpenCodeServerProvisioning {
 enum CodeAgentsDaemonProvisioning {
     static let host = "127.0.0.1"
     static let port = 8787
+    static let installTimeoutSeconds = 300
     static let installScriptURL = "https://raw.githubusercontent.com/eugenepyvovarov/codeagents-server-cc-proxy/HEAD/install.sh"
     static let serviceName = "codeagents-daemon"
     static let installDirectory = "/opt/codeagents-daemon"
@@ -213,7 +240,7 @@ enum CodeAgentsDaemonProvisioning {
             "SERVICE_NAME=\(serviceName)",
             "INSTALL_CLAUDE_CLI=0"
         ].joined(separator: " ")
-        return "curl -fsSL \(installScriptURL) | \(environment) bash"
+        return "bash -lc 'set -euo pipefail; curl --connect-timeout 20 --retry 3 --retry-delay 2 -fsSL \(installScriptURL) | \(environment) bash'"
     }
 
     static func healthCheckCommand() -> String {

@@ -11,9 +11,11 @@ class HetznerCloudService: CloudProviderProtocol {
     let providerType = "hetzner"
     var apiToken: String
     private let baseURL = "https://api.hetzner.cloud/v1"
+    private let session: URLSession
     
-    init(apiToken: String) {
+    init(apiToken: String, session: URLSession = .shared) {
         self.apiToken = apiToken
+        self.session = session
     }
     
     // MARK: - Authentication
@@ -24,7 +26,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -52,7 +54,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -94,7 +96,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -137,7 +139,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -176,7 +178,7 @@ class HetznerCloudService: CloudProviderProtocol {
         let body = ["name": name, "public_key": publicKey]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -212,7 +214,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -231,6 +233,39 @@ class HetznerCloudService: CloudProviderProtocol {
     }
     
     // MARK: - Server Creation
+
+    func deleteServer(id: String) async throws {
+        let url = URL(string: "\(baseURL)/servers/\(id)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse {
+            switch httpResponse.statusCode {
+            case 200, 204:
+                return
+            case 401:
+                throw CloudProviderError.invalidToken
+            case 403:
+                throw CloudProviderError.insufficientPermissions
+            case 404:
+                throw CloudProviderError.serverNotFound
+            case 429:
+                throw CloudProviderError.rateLimitExceeded
+            default:
+                if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let error = errorData["error"] as? [String: Any],
+                   let message = error["message"] as? String {
+                    throw CloudProviderError.apiError(statusCode: httpResponse.statusCode, message: message)
+                }
+                throw CloudProviderError.apiError(statusCode: httpResponse.statusCode, message: "Failed to delete server")
+            }
+        }
+
+        throw CloudProviderError.unknownError
+    }
     
     func createServer(name: String, region: String, size: String, image: String, sshKeyIds: [String], userData: String? = nil) async throws -> CloudServer {
         let url = URL(string: "\(baseURL)/servers")!
@@ -268,7 +303,7 @@ class HetznerCloudService: CloudProviderProtocol {
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -318,7 +353,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -351,7 +386,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {
@@ -396,7 +431,7 @@ class HetznerCloudService: CloudProviderProtocol {
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
             switch httpResponse.statusCode {

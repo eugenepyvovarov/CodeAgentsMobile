@@ -50,11 +50,69 @@ final class OpenCodeChatMapperTests: XCTestCase {
 
         XCTAssertEqual(chunks.count, 1)
         XCTAssertTrue(chunks[0].isComplete)
-        XCTAssertEqual(chunks[0].content, "thinking\ndone")
+        XCTAssertEqual(chunks[0].content, "done")
         XCTAssertEqual(chunks[0].metadata?["opencodePartIds"] as? [String], ["prt_reasoning", "prt_text"])
+
+        let original = try XCTUnwrap(chunks[0].metadata?["originalJSON"] as? String)
+        let originalData = try XCTUnwrap(original.data(using: .utf8))
+        let structured = try JSONDecoder().decode(StructuredMessageContent.self, from: originalData)
+        XCTAssertEqual(structured.type, "assistant")
     }
 
-    func testAccumulatorYieldsToolPatchAndFilePlaceholders() throws {
+    func testAccumulatorDoesNotCompleteOnEarlyIdleBeforeAnswerText() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"reasoning","text":"thinking","id":"prt_reasoning","messageID":"msg_assistant","sessionID":"ses_fixture"},"time":2}}
+        """))
+
+        let idleChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"session.status","properties":{"sessionID":"ses_fixture","status":{"type":"idle"}}}
+        """))
+
+        XCTAssertTrue(idleChunks.isEmpty)
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1,"completed":4}}}}
+        """))
+        let textChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","text":"late answer","id":"prt_text","messageID":"msg_assistant","sessionID":"ses_fixture"},"time":5}}
+        """))
+
+        XCTAssertEqual(textChunks.last?.content, "late answer")
+        XCTAssertEqual(textChunks.last?.isComplete, true)
+    }
+
+    func testAccumulatorYieldsProgressForReasoningWithoutAddingToFinalAnswer() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let progressChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"reasoning","text":"private reasoning text","id":"prt_reasoning","messageID":"msg_assistant","sessionID":"ses_fixture"},"time":2}}
+        """))
+
+        XCTAssertEqual(progressChunks.count, 1)
+        XCTAssertEqual(progressChunks[0].content, "Thinking...")
+        XCTAssertEqual(progressChunks[0].metadata?["type"] as? String, "opencode_progress")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","text":"final answer","id":"prt_text","messageID":"msg_assistant","sessionID":"ses_fixture"},"time":3}}
+        """))
+
+        let chunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"session.idle","properties":{"sessionID":"ses_fixture"}}
+        """))
+
+        XCTAssertEqual(chunks.last?.content, "final answer")
+    }
+
+    func testAccumulatorIgnoresNonAnswerPartsInMainAssistantText() throws {
         var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
 
         _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
@@ -64,23 +122,102 @@ final class OpenCodeChatMapperTests: XCTestCase {
         let toolChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
         {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"tool","id":"prt_tool","messageID":"msg_assistant","sessionID":"ses_fixture","tool":"bash","state":{"status":"running","input":{"command":"ls"}}},"time":2}}
         """))
-        XCTAssertEqual(toolChunks.last?.content, "Tool: bash (running)\nInput: {\"command\":\"ls\"}")
+        XCTAssertEqual(toolChunks.last?.metadata?["type"] as? String, "opencode_tool")
+        XCTAssertEqual(toolChunks.last?.content, "Using bash...")
+        let toolOriginal = try XCTUnwrap(toolChunks.last?.metadata?["originalJSON"] as? String)
+        let toolData = try XCTUnwrap(toolOriginal.data(using: .utf8))
+        let toolStructured = try JSONDecoder().decode(StructuredMessageContent.self, from: toolData)
+        guard case .blocks(let toolBlocks) = try XCTUnwrap(toolStructured.message?.content),
+              case .toolUse(let toolUse) = try XCTUnwrap(toolBlocks.first) else {
+            return XCTFail("Expected a structured tool_use block")
+        }
+        XCTAssertEqual(toolUse.name, "bash")
+        XCTAssertEqual(toolUse.input["command"] as? String, "ls")
 
         let patchChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
         {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"patch","id":"prt_patch","messageID":"msg_assistant","sessionID":"ses_fixture","path":"Sources/App.swift","text":"+ let value = true"},"time":3}}
         """))
-        XCTAssertEqual(
-            patchChunks.last?.content,
-            "Tool: bash (running)\nInput: {\"command\":\"ls\"}\nPatch: Sources/App.swift\n+ let value = true"
-        )
+        XCTAssertEqual(patchChunks.last?.metadata?["type"] as? String, "opencode_progress")
+        XCTAssertEqual(patchChunks.last?.content, "Editing files...")
 
         let fileChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
         {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"file","id":"prt_file","messageID":"msg_assistant","sessionID":"ses_fixture","path":"README.md"},"time":4}}
         """))
-        XCTAssertEqual(
-            fileChunks.last?.content,
-            "Tool: bash (running)\nInput: {\"command\":\"ls\"}\nPatch: Sources/App.swift\n+ let value = true\nFile: README.md"
-        )
+        XCTAssertEqual(fileChunks.last?.metadata?["type"] as? String, "opencode_progress")
+        XCTAssertEqual(fileChunks.last?.content, "Reading README.md...")
+
+        let textChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","id":"prt_text","messageID":"msg_assistant","sessionID":"ses_fixture","text":"visible answer"},"time":5}}
+        """))
+        XCTAssertEqual(textChunks.last?.content, "visible answer")
+    }
+
+    func testAccumulatorMapsCompletedToolOutputToToolUseAndResultBlocks() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let chunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"tool","id":"prt_tool","messageID":"msg_assistant","sessionID":"ses_fixture","callID":"call_1","tool":"bash","state":{"status":"completed","input":{"command":"pwd"},"output":"/tmp/project"}},"time":2}}
+        """))
+
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks[0].metadata?["type"] as? String, "opencode_tool")
+        XCTAssertTrue(chunks[0].isComplete)
+        XCTAssertEqual(chunks[0].content, "bash completed")
+
+        let original = try XCTUnwrap(chunks[0].metadata?["originalJSON"] as? String)
+        let originalData = try XCTUnwrap(original.data(using: .utf8))
+        let structured = try JSONDecoder().decode(StructuredMessageContent.self, from: originalData)
+        guard case .blocks(let blocks) = try XCTUnwrap(structured.message?.content) else {
+            return XCTFail("Expected structured content blocks")
+        }
+        XCTAssertEqual(blocks.count, 2)
+
+        guard case .toolUse(let toolUse) = blocks[0],
+              case .toolResult(let toolResult) = blocks[1] else {
+            return XCTFail("Expected tool_use followed by tool_result")
+        }
+        XCTAssertEqual(toolUse.id, "call_1")
+        XCTAssertEqual(toolUse.name, "bash")
+        XCTAssertEqual(toolUse.input["command"] as? String, "pwd")
+        XCTAssertEqual(toolResult.toolUseId, "call_1")
+        XCTAssertEqual(toolResult.content, "/tmp/project")
+        XCTAssertFalse(toolResult.isError)
+    }
+
+    func testAccumulatorPreservesCodeAgentsUIWidgetBlocks() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let widgetText = """
+        Here is the table widget.
+
+        ```codeagents-ui
+        { "type": "codeagents_ui", "version": 1, "elements": [
+          { "type": "table", "id": "runs", "columns": ["Run", "Status"], "rows": [["1", "ok"], ["2", "fail"]] }
+        ] }
+        ```
+        """
+        let encodedWidgetText = try XCTUnwrap(String(data: try JSONEncoder().encode(widgetText), encoding: .utf8))
+        let chunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","id":"prt_text","messageID":"msg_assistant","sessionID":"ses_fixture","text":\(encodedWidgetText)},"time":2}}
+        """))
+
+        let content = try XCTUnwrap(chunks.last?.content)
+        let segments = CodeAgentsUIBlockExtractor.segments(from: content)
+        XCTAssertEqual(segments.count, 2)
+        guard case .ui(let block) = segments[1],
+              case .table(let table) = block.elements.first else {
+            return XCTFail("Expected a rendered CodeAgents UI table block")
+        }
+        XCTAssertEqual(table.columns, ["Run", "Status"])
+        XCTAssertEqual(table.rows.count, 2)
     }
 
     func testAccumulatorMapsPermissionUpdatedToToolPermissionChunk() throws {
@@ -143,7 +280,37 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertNotNil(hydrated[1].originalPayload)
     }
 
-    func testHydratedMessagesIncludeNonTextParts() throws {
+    func testHydratedMessagesPreserveCodeAgentsUIWidgetBlocks() throws {
+        let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [
+          {
+            "info": {"role":"assistant","id":"msg_assistant","sessionID":"ses_fixture","time":{"created":1}},
+            "parts": [
+              {
+                "type":"text",
+                "text":"```codeagents-ui\\n{ \\"type\\": \\"codeagents_ui\\", \\"version\\": 1, \\"elements\\": [{ \\"type\\": \\"markdown\\", \\"id\\": \\"m1\\", \\"text\\": \\"Hydrated widget\\" }] }\\n```",
+                "id":"prt_text",
+                "messageID":"msg_assistant",
+                "sessionID":"ses_fixture"
+              }
+            ]
+          }
+        ]
+        """.utf8))
+
+        let hydrated = OpenCodeChatMapper.hydratedMessages(from: messages)
+
+        XCTAssertEqual(hydrated.count, 1)
+        let segments = CodeAgentsUIBlockExtractor.segments(from: hydrated[0].text)
+        XCTAssertEqual(segments.count, 1)
+        guard case .ui(let block) = segments[0],
+              case .markdown(let element) = block.elements.first else {
+            return XCTFail("Expected a hydrated CodeAgents UI markdown block")
+        }
+        XCTAssertEqual(element.text, "Hydrated widget")
+    }
+
+    func testHydratedMessagesIgnoreNonAnswerParts() throws {
         let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
         [
           {
@@ -158,8 +325,6 @@ final class OpenCodeChatMapperTests: XCTestCase {
 
         let hydrated = OpenCodeChatMapper.hydratedMessages(from: messages)
 
-        XCTAssertEqual(hydrated.count, 1)
-        XCTAssertEqual(hydrated[0].text, "Tool: write (completed)\nOutput: ok\nFile: README.md")
-        XCTAssertEqual(hydrated[0].runtimePartIDs, ["prt_tool", "prt_file"])
+        XCTAssertTrue(hydrated.isEmpty)
     }
 }

@@ -44,6 +44,7 @@ struct RegularTasksView: View {
                                 Label("Add Task", systemImage: "plus")
                             }
                             .disabled(isLocked)
+                            .accessibilityIdentifier("regular-tasks-add-empty-button")
                         }
                     }
                     .padding(.horizontal, 16)
@@ -55,6 +56,7 @@ struct RegularTasksView: View {
                                                isEnabled: binding(for: task)) {
                                     editingTask = task
                                 }
+                                .accessibilityIdentifier("regular-task-row-\(task.id.uuidString)")
                                 .disabled(isLocked)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     if !isLocked {
@@ -85,6 +87,7 @@ struct RegularTasksView: View {
                         Image(systemName: "plus")
                     }
                     .disabled(isLocked)
+                    .accessibilityIdentifier("regular-tasks-add-button")
                 }
             }
         }

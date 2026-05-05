@@ -7,17 +7,10 @@ users:
     ssh_authorized_keys:
 {{SSH_KEYS_PLACEHOLDER}}
 
-package_update: true
-package_upgrade: true
+vendor_data: {enabled: false}
 
-packages:
-  - nodejs
-  - npm
-  - curl
-  - ca-certificates
-  - tar
-  - build-essential
-  - git
+package_update: false
+package_upgrade: false
 
 write_files:
   - path: /etc/systemd/system/opencode.service

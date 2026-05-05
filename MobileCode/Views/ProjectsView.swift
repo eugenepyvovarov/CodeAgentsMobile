@@ -329,6 +329,7 @@ struct AddProjectSheet: View {
                 Section("Agent Details") {
                     TextField("Agent Name", text: $projectDisplayName)
                         .textInputAutocapitalization(.words)
+                        .accessibilityIdentifier("add-agent-display-name-field")
 
                     Text("Shown in the app. Leave blank to use the folder name.")
                         .font(.caption)
@@ -414,6 +415,7 @@ struct AddProjectSheet: View {
                         TextField("Folder Name", text: $projectName)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("add-agent-folder-name-field")
 
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
@@ -473,6 +475,7 @@ struct AddProjectSheet: View {
                         }
                     }
                     .disabled(!canCreate)
+                    .accessibilityIdentifier("add-agent-create-button")
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -577,6 +580,7 @@ struct AddProjectSheet: View {
             modelContext.insert(project)
             
             try modelContext.save()
+            ProjectContext.shared.setActiveProject(project)
             ShortcutSyncService.shared.sync(using: modelContext)
             
             // Call the completion handler if provided

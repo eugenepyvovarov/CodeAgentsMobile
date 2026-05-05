@@ -18,6 +18,32 @@ final class OpenCodePromptBuilderTests: XCTestCase {
         XCTAssertEqual(result.payload.parts[0].text, "Hello OpenCode")
     }
 
+    func testBuildInjectsCodeAgentsUIRulesByDefault() throws {
+        let result = try OpenCodePromptBuilder.build(
+            messageID: nil,
+            composedPrompt: "Show a chart of the last three runs.",
+            projectPath: "/workspace/app"
+        )
+
+        let system = try XCTUnwrap(result.payload.system)
+        XCTAssertTrue(system.contains("FORCE-WIDGETS"))
+        XCTAssertTrue(system.contains("codeagents-ui is NOT a tool"))
+        XCTAssertTrue(system.contains("fenced code blocks"))
+    }
+
+    func testBuildOmitsAppUUIDMessageIDBecauseOpenCodeRequiresNativeIDs() throws {
+        let result = try OpenCodePromptBuilder.build(
+            messageID: UUID().uuidString,
+            composedPrompt: "Hello OpenCode",
+            projectPath: "/workspace/app",
+            systemRules: "CodeAgents rules"
+        )
+
+        XCTAssertNil(result.payload.messageID)
+        let body = try OpenCodeSessionJSON.encode(result.payload)
+        XCTAssertFalse(body.contains("messageID"))
+    }
+
     func testBuildConvertsFileReferencesToFileParts() throws {
         let prompt = """
         @README.txt

@@ -15,6 +15,7 @@ final class CodingAgentMCPService: ObservableObject {
     private let openCodeService: OpenCodeMCPService
     private let schedulerProvisionService: MCPTaskSchedulerProvisionService
     private let runtimeSelectionStore: CodingAgentRuntimeSelectionStore
+    private var schedulerProvisionTasks: [UUID: Task<Void, Error>] = [:]
 
     init(
         claudeService: MCPService? = nil,
@@ -115,6 +116,22 @@ final class CodingAgentMCPService: ObservableObject {
     }
 
     func ensureManagedSchedulerServerIfNeeded(for project: RemoteProject) async throws {
+        if let existingTask = schedulerProvisionTasks[project.id] {
+            try await existingTask.value
+            return
+        }
+
+        let task = Task { @MainActor in
+            try await ensureManagedSchedulerServer(for: project)
+        }
+        schedulerProvisionTasks[project.id] = task
+        defer {
+            schedulerProvisionTasks.removeValue(forKey: project.id)
+        }
+        try await task.value
+    }
+
+    private func ensureManagedSchedulerServer(for project: RemoteProject) async throws {
         switch runtimeKind(for: project) {
         case .claudeProxy:
             try await schedulerProvisionService.ensureManagedSchedulerServer(for: project)

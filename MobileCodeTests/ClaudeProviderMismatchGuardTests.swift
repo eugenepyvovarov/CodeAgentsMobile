@@ -14,6 +14,7 @@ final class ClaudeProviderMismatchGuardTests: XCTestCase {
         ClaudeProviderConfigurationStore.save(config, userDefaults: defaults)
 
         let project = RemoteProject(name: "Test", serverId: UUID())
+        project.selectedAgentRuntime = .claudeProxy
         project.lastSuccessfulClaudeProviderRawValue = nil
 
         XCTAssertNil(ClaudeProviderMismatchGuard.mismatch(for: project, userDefaults: defaults))
@@ -26,6 +27,7 @@ final class ClaudeProviderMismatchGuardTests: XCTestCase {
         ClaudeProviderConfigurationStore.save(config, userDefaults: defaults)
 
         let project = RemoteProject(name: "Test", serverId: UUID())
+        project.selectedAgentRuntime = .claudeProxy
         project.lastSuccessfulClaudeProviderRawValue = ClaudeModelProvider.zAI.rawValue
 
         XCTAssertNil(ClaudeProviderMismatchGuard.mismatch(for: project, userDefaults: defaults))
@@ -38,6 +40,7 @@ final class ClaudeProviderMismatchGuardTests: XCTestCase {
         ClaudeProviderConfigurationStore.save(config, userDefaults: defaults)
 
         let project = RemoteProject(name: "Test", serverId: UUID())
+        project.selectedAgentRuntime = .claudeProxy
         project.lastSuccessfulClaudeProviderRawValue = ClaudeModelProvider.miniMax.rawValue
 
         let mismatch = ClaudeProviderMismatchGuard.mismatch(for: project, userDefaults: defaults)
@@ -45,5 +48,17 @@ final class ClaudeProviderMismatchGuardTests: XCTestCase {
         XCTAssertEqual(mismatch?.current, .anthropic)
         XCTAssertEqual(mismatch?.title, "Provider changed: MiniMax → Anthropic")
     }
-}
 
+    func testMismatchIsIgnoredForOpenCodeProjects() throws {
+        let defaults = makeIsolatedDefaults()
+        var config = ClaudeProviderConfiguration.defaults()
+        config.selectedProvider = .anthropic
+        ClaudeProviderConfigurationStore.save(config, userDefaults: defaults)
+
+        let project = RemoteProject(name: "Test", serverId: UUID())
+        project.selectedAgentRuntime = .openCode
+        project.lastSuccessfulClaudeProviderRawValue = ClaudeModelProvider.miniMax.rawValue
+
+        XCTAssertNil(ClaudeProviderMismatchGuard.mismatch(for: project, userDefaults: defaults))
+    }
+}

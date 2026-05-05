@@ -39,6 +39,33 @@ final class OpenCodeClientTests: XCTestCase {
         XCTAssertTrue(session.sentInput.contains("Authorization: Basic Y3VzdG9tOnNlY3JldA=="))
     }
 
+    func testClientFactoryUsesStoredManagedServerAuthCredentials() async throws {
+        let serverID = UUID()
+        defer {
+            try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: serverID)
+        }
+        try KeychainManager.shared.storeOpenCodeServerCredentials(
+            username: OpenCodeServerProvisioning.username,
+            password: "fixture_password",
+            for: serverID
+        )
+
+        let response = [
+            "HTTP/1.1 200 OK",
+            "Content-Type: application/json",
+            "Content-Length: 35",
+            "",
+            "{\"healthy\":true,\"version\":\"1.2.3\"}"
+        ].joined(separator: "\r\n")
+        let session = FakeSSHSession(responseChunks: [response])
+
+        _ = try await OpenCodeClientFactory.client(for: serverID).health(session: session)
+
+        let encodedCredentials = Data("\(OpenCodeServerProvisioning.username):fixture_password".utf8)
+            .base64EncodedString()
+        XCTAssertTrue(session.sentInput.contains("Authorization: Basic \(encodedCredentials)"))
+    }
+
     func testRequestEncodesJSONBody() async throws {
         let response = [
             "HTTP/1.1 204 No Content",
@@ -147,6 +174,29 @@ final class OpenCodeClientTests: XCTestCase {
         }
     }
 
+    func testRequestReturnsWhenContentLengthBodyIsCompleteBeforeStreamCloses() async throws {
+        let response = [
+            "HTTP/1.1 200 OK",
+            "Content-Length: 4",
+            "",
+            "true"
+        ].joined(separator: "\r\n")
+        let session = FakeSSHSession(
+            responseChunks: [response, "late data that should not be awaited"],
+            chunkDelaysNanoseconds: [0, 1_000_000_000]
+        )
+        let configuration = OpenCodeClientConfiguration(requestTimeoutSeconds: 5)
+        let client = OpenCodeClient(configuration: configuration)
+
+        let start = Date()
+        let result = try await client.request(session: session, method: .put, path: "/auth/minimax", body: "{\"key\":\"value\"}")
+        let duration = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(result.body, "true")
+        XCTAssertLessThan(duration, 0.5)
+        XCTAssertTrue(session.didTerminateProcess)
+    }
+
     func testEventStreamDecodesChunkedSSE() async throws {
         let body = """
         data: {"type":"server.connected","properties":{}}
@@ -227,10 +277,15 @@ private final class FakeSSHSession: SSHSession {
         processHandle.terminated
     }
 
-    init(responseChunks: [String], chunkDelayNanoseconds: UInt64? = nil) {
+    init(
+        responseChunks: [String],
+        chunkDelayNanoseconds: UInt64? = nil,
+        chunkDelaysNanoseconds: [UInt64]? = nil
+    ) {
         self.processHandle = FakeProcessHandle(
             responseChunks: responseChunks,
-            chunkDelayNanoseconds: chunkDelayNanoseconds
+            chunkDelayNanoseconds: chunkDelayNanoseconds,
+            chunkDelaysNanoseconds: chunkDelaysNanoseconds
         )
     }
 
@@ -278,6 +333,7 @@ private final class FakeSSHSession: SSHSession {
 private final class FakeProcessHandle: ProcessHandle {
     private let responseChunks: [String]
     private let chunkDelayNanoseconds: UInt64?
+    private let chunkDelaysNanoseconds: [UInt64]?
     private(set) var sentInput = ""
     private(set) var terminated = false
 
@@ -285,9 +341,14 @@ private final class FakeProcessHandle: ProcessHandle {
         !terminated
     }
 
-    init(responseChunks: [String], chunkDelayNanoseconds: UInt64? = nil) {
+    init(
+        responseChunks: [String],
+        chunkDelayNanoseconds: UInt64? = nil,
+        chunkDelaysNanoseconds: [UInt64]? = nil
+    ) {
         self.responseChunks = responseChunks
         self.chunkDelayNanoseconds = chunkDelayNanoseconds
+        self.chunkDelaysNanoseconds = chunkDelaysNanoseconds
     }
 
     func sendInput(_ text: String) async throws {
@@ -301,10 +362,11 @@ private final class FakeProcessHandle: ProcessHandle {
     func outputStream() -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let chunks = responseChunks
-            let delay = chunkDelayNanoseconds
+            let uniformDelay = chunkDelayNanoseconds
+            let perChunkDelays = chunkDelaysNanoseconds
             Task {
-                for chunk in chunks {
-                    if let delay {
+                for (index, chunk) in chunks.enumerated() {
+                    if let delay = perChunkDelays?[safe: index] ?? uniformDelay {
                         try? await Task.sleep(nanoseconds: delay)
                     }
                     if Task.isCancelled {
@@ -320,5 +382,11 @@ private final class FakeProcessHandle: ProcessHandle {
 
     func terminate() {
         terminated = true
+    }
+}
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

@@ -45,12 +45,13 @@ final class OpenCodeMCPService: ObservableObject {
 
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         var loaded = try await loadConfiguration(for: project, scope: scope, session: session)
+        let previousJSON = try loaded.document.toJSONString()
         let previousEnabled = loaded.document.serverConfigurations()[server.name]?.enabled
         guard let configuration = OpenCodeMCPServerConfiguration(server: server, enabled: previousEnabled ?? true) else {
             throw MCPServiceError.invalidConfiguration("Cannot convert MCP server to OpenCode configuration")
         }
         try loaded.document.setServer(named: server.name, configuration: configuration)
-        try await writeConfiguration(loaded.document, to: loaded.path, session: session)
+        try await writeConfigurationIfChanged(loaded.document, previousJSON: previousJSON, to: loaded.path, session: session)
         await addLiveServer(name: server.name, configuration: configuration, for: project)
     }
 
@@ -66,8 +67,9 @@ final class OpenCodeMCPService: ObservableObject {
 
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         var loaded = try await loadConfiguration(for: project, scope: scope ?? .project, session: session)
+        let previousJSON = try loaded.document.toJSONString()
         loaded.document.removeServer(named: name)
-        try await writeConfiguration(loaded.document, to: loaded.path, session: session)
+        try await writeConfigurationIfChanged(loaded.document, previousJSON: previousJSON, to: loaded.path, session: session)
         await disconnectLiveServer(name: name, for: project)
     }
 
@@ -85,13 +87,14 @@ final class OpenCodeMCPService: ObservableObject {
 
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         var loaded = try await loadConfiguration(for: project, scope: scope, session: session)
+        let previousJSON = try loaded.document.toJSONString()
         let previousEnabled = loaded.document.serverConfigurations()[oldName]?.enabled
         guard let configuration = OpenCodeMCPServerConfiguration(server: newServer, enabled: previousEnabled ?? true) else {
             throw MCPServiceError.invalidConfiguration("Cannot convert MCP server to OpenCode configuration")
         }
         loaded.document.removeServer(named: oldName)
         try loaded.document.setServer(named: newServer.name, configuration: configuration)
-        try await writeConfiguration(loaded.document, to: loaded.path, session: session)
+        try await writeConfigurationIfChanged(loaded.document, previousJSON: previousJSON, to: loaded.path, session: session)
 
         if oldName != newServer.name {
             await disconnectLiveServer(name: oldName, for: project)
@@ -241,12 +244,19 @@ final class OpenCodeMCPService: ObservableObject {
         }
     }
 
-    private func writeConfiguration(
+    private func writeConfigurationIfChanged(
         _ document: OpenCodeMCPConfigDocument,
+        previousJSON: String,
         to path: String,
         session: SSHSession
     ) async throws {
-        guard let data = try document.toJSONString().data(using: .utf8) else {
+        let nextJSON = try document.toJSONString()
+        guard nextJSON != previousJSON else {
+            SSHLogger.log("Skipping unchanged OpenCode MCP configuration write: \(path)", level: .debug)
+            return
+        }
+
+        guard let data = nextJSON.data(using: .utf8) else {
             throw MCPConfigurationError.encodingFailed
         }
         let base64 = data.base64EncodedString()

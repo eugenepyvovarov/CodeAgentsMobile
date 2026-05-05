@@ -109,4 +109,68 @@ final class OpenCodeMCPConfigurationTests: XCTestCase {
         XCTAssertEqual(OpenCodeMCPStatus(status: "needs_auth", error: nil).mcpStatus, .disconnected)
         XCTAssertEqual(OpenCodeMCPStatus(status: "future", error: nil).mcpStatus, .unknown)
     }
+
+    @MainActor
+    func testManagedSchedulerServerEncodesAsOpenCodeRemoteMCPServer() {
+        let project = RemoteProject(name: "demo", serverId: UUID(), basePath: "/home/codeagent/projects")
+        project.path = "/home/codeagent/projects/demo"
+        project.proxyAgentId = "agent-demo"
+        project.proxyConversationId = "session-demo"
+
+        let server = MCPTaskSchedulerProvisionService.shared.managedSchedulerServer(for: project)
+        let configuration = OpenCodeMCPServerConfiguration(server: server)
+
+        XCTAssertEqual(configuration?.type, .remote)
+        XCTAssertEqual(configuration?.url, "http://127.0.0.1:8787/mcp")
+        XCTAssertEqual(configuration?.headers?["x-codeagents-agent-id"], "agent-demo")
+        XCTAssertEqual(configuration?.headers?["x-codeagents-project-path"], "/home/codeagent/projects/demo")
+        XCTAssertEqual(configuration?.enabled, true)
+    }
+
+    func testRemoteMCPAppOAuthConfigurationRoundTrips() throws {
+        let json = """
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "mcp": {
+            "sentry": {
+              "type": "remote",
+              "url": "https://mcp.sentry.dev/mcp",
+              "oauth": {
+                "clientId": "{env:SENTRY_CLIENT_ID}",
+                "scope": "tools:read tools:execute"
+              }
+            },
+            "context7": {
+              "type": "remote",
+              "url": "https://mcp.context7.com/mcp",
+              "oauth": false,
+              "headers": {
+                "CONTEXT7_API_KEY": "{env:CONTEXT7_API_KEY}"
+              }
+            }
+          }
+        }
+        """
+
+        var document = try OpenCodeMCPConfigDocument(jsonString: json)
+        let configurations = document.serverConfigurations()
+
+        XCTAssertEqual(configurations["sentry"]?.oauth, .init([
+            "clientId": "{env:SENTRY_CLIENT_ID}",
+            "scope": "tools:read tools:execute"
+        ]))
+        XCTAssertEqual(configurations["context7"]?.oauth, .init(false))
+
+        try document.setServer(MCPServer(
+            name: "context7",
+            command: nil,
+            args: nil,
+            env: nil,
+            url: "https://mcp.context7.com/mcp",
+            headers: ["CONTEXT7_API_KEY": "{env:CONTEXT7_API_KEY}"]
+        ))
+
+        let updated = try OpenCodeMCPConfigDocument(jsonString: document.toJSONString())
+        XCTAssertEqual(updated.serverConfigurations()["context7"]?.oauth, .init(false))
+    }
 }
