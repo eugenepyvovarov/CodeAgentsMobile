@@ -207,6 +207,7 @@ struct OpenCodeChatEventAccumulator {
     private var textByPartID: [String: String] = [:]
     private var typeByPartID: [String: String] = [:]
     private var partOrderByMessageID: [String: [String]] = [:]
+    private var assistantMessageOrder: [String] = []
     private var completedMessageIDs: Set<String> = []
 
     init(sessionID: String) {
@@ -244,6 +245,10 @@ struct OpenCodeChatEventAccumulator {
     ) -> [MessageChunk] {
         guard matches(properties.sessionID ?? properties.info.sessionID) else { return [] }
         rolesByMessageID[properties.info.id] = properties.info.role
+        if properties.info.role != "user",
+           !assistantMessageOrder.contains(properties.info.id) {
+            assistantMessageOrder.append(properties.info.id)
+        }
 
         if let provider = OpenCodeChatMapper.providerMarker(from: properties.info) {
             providerByMessageID[properties.info.id] = provider
@@ -255,11 +260,7 @@ struct OpenCodeChatEventAccumulator {
         }
 
         completedMessageIDs.insert(properties.info.id)
-        let content = content(for: properties.info.id)
-        guard !content.isEmpty else {
-            return []
-        }
-        return [completionChunk(messageID: properties.info.id, raw: raw)]
+        return []
     }
 
     private mutating func consumeMessagePartUpdated(
@@ -302,7 +303,7 @@ struct OpenCodeChatEventAccumulator {
 
         return [chunk(
             content: content,
-            isComplete: completedMessageIDs.contains(messageID),
+            isComplete: false,
             isError: false,
             raw: raw,
             messageID: messageID
@@ -351,7 +352,7 @@ struct OpenCodeChatEventAccumulator {
 
         return [chunk(
             content: content,
-            isComplete: completedMessageIDs.contains(messageID),
+            isComplete: false,
             isError: false,
             raw: raw,
             messageID: messageID
@@ -365,10 +366,10 @@ struct OpenCodeChatEventAccumulator {
     }
 
     private func completionChunksIfReady(raw: OpenCodeRawEvent) -> [MessageChunk] {
-        guard let messageID = latestAssistantMessageID() else { return [] }
+        guard let messageID = latestAssistantMessageIDWithContent() else { return [] }
         let renderedContent = content(for: messageID)
 
-        if !renderedContent.isEmpty || completedMessageIDs.contains(messageID) {
+        if !renderedContent.isEmpty {
             return [completionChunk(messageID: messageID, raw: raw)]
         }
 
@@ -630,7 +631,12 @@ struct OpenCodeChatEventAccumulator {
     }
 
     private func latestAssistantMessageID() -> String? {
-        partOrderByMessageID.keys.sorted().last
+        assistantMessageOrder.last ?? partOrderByMessageID.keys.sorted().last
+    }
+
+    private func latestAssistantMessageIDWithContent() -> String? {
+        assistantMessageOrder.reversed().first { !content(for: $0).isEmpty }
+            ?? partOrderByMessageID.keys.sorted().reversed().first { !content(for: $0).isEmpty }
     }
 }
 

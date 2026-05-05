@@ -83,7 +83,7 @@ final class OpenCodeChatMapperTests: XCTestCase {
         """))
 
         XCTAssertEqual(textChunks.last?.content, "late answer")
-        XCTAssertEqual(textChunks.last?.isComplete, true)
+        XCTAssertEqual(textChunks.last?.isComplete, false)
     }
 
     func testAccumulatorBuildsAnswerFromPartDeltas() throws {
@@ -133,6 +133,38 @@ final class OpenCodeChatMapperTests: XCTestCase {
 
         XCTAssertTrue(reasoningDelta.isEmpty)
         XCTAssertEqual(textDelta.last?.content, "Final answer")
+    }
+
+    func testAccumulatorWaitsForIdleBeforeCompletingAfterMultipleAssistantMessages() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_first","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+        let firstText = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","id":"prt_first","messageID":"msg_first","sessionID":"ses_fixture","text":"Let me load the skill."},"time":2}}
+        """))
+        let completedFirst = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_first","role":"assistant","sessionID":"ses_fixture","time":{"created":1,"completed":3}}}}
+        """))
+
+        XCTAssertEqual(firstText.last?.content, "Let me load the skill.")
+        XCTAssertEqual(firstText.last?.isComplete, false)
+        XCTAssertTrue(completedFirst.isEmpty)
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_second","role":"assistant","sessionID":"ses_fixture","time":{"created":4}}}}
+        """))
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","id":"prt_second","messageID":"msg_second","sessionID":"ses_fixture","text":"Let's start the setup wizard."},"time":5}}
+        """))
+        let idleChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"session.status","properties":{"sessionID":"ses_fixture","status":{"type":"idle"}}}
+        """))
+
+        XCTAssertEqual(idleChunks.last?.content, "Let's start the setup wizard.")
+        XCTAssertEqual(idleChunks.last?.isComplete, true)
+        XCTAssertEqual(idleChunks.last?.metadata?["opencodeMessageId"] as? String, "msg_second")
     }
 
     func testAccumulatorYieldsProgressForReasoningWithoutAddingToFinalAnswer() throws {
