@@ -175,6 +175,44 @@ final class OpenCodeSessionAPITests: XCTestCase {
         XCTAssertEqual(body["response"] as? String, "always")
     }
 
+    func testQuestionEndpointsUseOpenCodeQuestionRoutes() async throws {
+        let listResponse = try httpResponse(status: "200 OK", body: """
+        [{"id":"question_fixture","sessionID":"ses_fixture","questions":[{"header":"Scope","question":"Which setup?","options":[{"label":"Default","description":"Use defaults."}]}]}]
+        """)
+        let client = OpenCodeClient()
+
+        let listSession = SessionAPIFakeSSHSession(responseChunks: [listResponse])
+        let questions = try await client.listQuestions(sshSession: listSession, directory: "/workspace/MobileCode")
+        XCTAssertEqual(questions.first?.id, "question_fixture")
+        XCTAssertTrue(listSession.sentInput.contains("GET /question?directory=/workspace/MobileCode HTTP/1.1"))
+
+        let replySession = SessionAPIFakeSSHSession(responseChunks: [try httpResponse(status: "204 No Content", body: "")])
+        let reply = try await client.replyQuestion(
+            sshSession: replySession,
+            requestID: "question fixture",
+            answers: [["Default"], ["custom answer"]],
+            directory: "/workspace/MobileCode"
+        )
+        XCTAssertEqual(reply.statusCode, 204)
+        XCTAssertTrue(replySession.sentInput.contains(
+            "POST /question/question%20fixture/reply?directory=/workspace/MobileCode HTTP/1.1"
+        ))
+
+        let body = try replySession.sentJSONObject()
+        XCTAssertEqual(body["answers"] as? [[String]], [["Default"], ["custom answer"]])
+
+        let rejectSession = SessionAPIFakeSSHSession(responseChunks: [try httpResponse(status: "204 No Content", body: "")])
+        let reject = try await client.rejectQuestion(
+            sshSession: rejectSession,
+            requestID: "question fixture",
+            directory: "/workspace/MobileCode"
+        )
+        XCTAssertEqual(reject.statusCode, 204)
+        XCTAssertTrue(rejectSession.sentInput.contains(
+            "POST /question/question%20fixture/reject?directory=/workspace/MobileCode HTTP/1.1"
+        ))
+    }
+
     func testMCPStatusDecodesStatusMap() async throws {
         let body = """
         {"filesystem":{"status":"connected"},"remote":{"status":"needs_auth"}}

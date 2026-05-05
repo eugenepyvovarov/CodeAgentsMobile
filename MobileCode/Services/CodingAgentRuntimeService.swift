@@ -122,6 +122,7 @@ struct CodingAgentRuntimeHydratedMessage: Equatable {
     let runtimePartIDs: [String]
     let role: MessageRole
     let text: String
+    let createdAt: Date?
     let originalPayload: Data?
 }
 
@@ -194,6 +195,8 @@ protocol CodingAgentRuntimeService: AnyObject {
         scope: ToolApprovalScope,
         message: String?
     ) async throws
+    func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws
+    func rejectQuestion(project: RemoteProject, questionId: String) async throws
     func reset(project: RemoteProject) async throws
 }
 
@@ -202,6 +205,14 @@ extension CodingAgentRuntimeService {
 
     func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState {
         .idle(runtime: kind)
+    }
+
+    func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws {
+        throw CodingAgentRuntimeError.unsupported("This runtime does not support interactive questions.")
+    }
+
+    func rejectQuestion(project: RemoteProject, questionId: String) async throws {
+        throw CodingAgentRuntimeError.unsupported("This runtime does not support interactive questions.")
     }
 }
 
@@ -450,6 +461,35 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         )
     }
 
+    func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws {
+        guard sanitizedSessionID(project.openCodeSessionId) != nil else {
+            throw CodingAgentRuntimeError.missingSession
+        }
+
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
+        try await client.replyQuestion(
+            sshSession: sshSession,
+            requestID: questionId,
+            answers: answers,
+            directory: project.path
+        )
+    }
+
+    func rejectQuestion(project: RemoteProject, questionId: String) async throws {
+        guard sanitizedSessionID(project.openCodeSessionId) != nil else {
+            throw CodingAgentRuntimeError.missingSession
+        }
+
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
+        try await client.rejectQuestion(
+            sshSession: sshSession,
+            requestID: questionId,
+            directory: project.path
+        )
+    }
+
     func reset(project: RemoteProject) async throws {
         project.resetOpenCodeRuntimeState()
     }
@@ -649,6 +689,7 @@ enum OpenCodeStreamCompletionPolicy {
         return type != "opencode_tool"
             && type != "opencode_progress"
             && type != "tool_permission"
+            && type != "opencode_question"
     }
 }
 

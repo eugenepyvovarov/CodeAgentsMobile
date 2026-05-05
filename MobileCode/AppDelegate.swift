@@ -15,16 +15,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        if FirebaseApp.app() == nil {
-            if let options = FirebaseOptions.defaultOptions() {
-                FirebaseApp.configure(options: options)
-            } else {
-                NSLog("Firebase not configured: missing GoogleService-Info.plist")
-            }
-        }
+        let firebaseConfigured = FirebaseBootstrap.configureIfNeeded()
 
         UNUserNotificationCenter.current().delegate = PushNotificationsManager.shared
-        Messaging.messaging().delegate = PushNotificationsManager.shared
+        if firebaseConfigured {
+            Messaging.messaging().delegate = PushNotificationsManager.shared
+        }
 
         Task {
             let settings = await UNUserNotificationCenter.current().notificationSettings()
@@ -46,6 +42,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        guard FirebaseBootstrap.configureIfNeeded() else { return }
         Messaging.messaging().apnsToken = deviceToken
         #if DEBUG
         NSLog("APNs device token received (\(deviceToken.count) bytes)")
@@ -57,5 +54,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         NSLog("APNs registration failed: \(error.localizedDescription)")
+    }
+}
+
+enum FirebaseBootstrap {
+    @discardableResult
+    static func configureIfNeeded() -> Bool {
+        if FirebaseApp.app() != nil {
+            return true
+        }
+
+        guard let options = FirebaseOptions.defaultOptions() else {
+            NSLog("Firebase not configured: missing GoogleService-Info.plist")
+            return false
+        }
+
+        FirebaseApp.configure(options: options)
+        return true
     }
 }

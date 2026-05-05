@@ -100,7 +100,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    private func redactedTokenDescription(_ token: String) -> String {
+    private nonisolated static func redactedTokenDescription(_ token: String) -> String {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return "<empty>"
@@ -139,7 +139,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             )
             #if DEBUG
             SSHLogger.log(
-                "Push subscription registered (cwd=\(cwd), token=\(redactedTokenDescription(token)))",
+                "Push subscription registered (cwd=\(cwd), token=\(Self.redactedTokenDescription(token)))",
                 level: .info
             )
             #endif
@@ -149,10 +149,14 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     }
 
     private func fetchFCMToken() async -> String? {
+        guard FirebaseBootstrap.configureIfNeeded() else {
+            return nil
+        }
+
         if let token = Messaging.messaging().fcmToken, !token.isEmpty {
             currentFCMToken = token
             #if DEBUG
-            SSHLogger.log("Using cached FCM token: \(redactedTokenDescription(token))", level: .info)
+            SSHLogger.log("Using cached FCM token: \(Self.redactedTokenDescription(token))", level: .info)
             #endif
             return token
         }
@@ -168,7 +172,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
                         self.currentFCMToken = resolved
                     }
                     #if DEBUG
-                    SSHLogger.log("Fetched FCM token: \(self.redactedTokenDescription(resolved))", level: .info)
+                    SSHLogger.log("Fetched FCM token: \(Self.redactedTokenDescription(resolved))", level: .info)
                     #endif
                 }
                 continuation.resume(returning: resolved)
@@ -446,7 +450,7 @@ extension PushNotificationsManager: @preconcurrency MessagingDelegate {
         Task { @MainActor in
             self.currentFCMToken = token
             #if DEBUG
-            SSHLogger.log("FCM token updated: \(redactedTokenDescription(token))", level: .info)
+            SSHLogger.log("FCM token updated: \(Self.redactedTokenDescription(token))", level: .info)
             #endif
             await self.reregisterAllStoredSubscriptionsIfPossible()
         }

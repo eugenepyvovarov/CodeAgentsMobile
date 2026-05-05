@@ -157,6 +157,49 @@ extension OpenCodeClient {
             body: OpenCodeSessionJSON.encode(OpenCodePermissionReplyPayload(response: response))
         )
     }
+
+    func listQuestions(sshSession: SSHSession, directory: String? = nil) async throws -> [OpenCodeQuestionRequest] {
+        try await jsonRequest(
+            session: sshSession,
+            method: .get,
+            path: OpenCodeSessionPath.path("/question", directory: directory),
+            responseType: [OpenCodeQuestionRequest].self
+        )
+    }
+
+    @discardableResult
+    func replyQuestion(
+        sshSession: SSHSession,
+        requestID: String,
+        answers: [[String]],
+        directory: String? = nil
+    ) async throws -> OpenCodeHTTPResponse {
+        try await request(
+            session: sshSession,
+            method: .post,
+            path: OpenCodeSessionPath.path(
+                "/question/\(OpenCodeSessionPath.escape(requestID))/reply",
+                directory: directory
+            ),
+            body: OpenCodeSessionJSON.encode(OpenCodeQuestionReplyPayload(answers: answers))
+        )
+    }
+
+    @discardableResult
+    func rejectQuestion(
+        sshSession: SSHSession,
+        requestID: String,
+        directory: String? = nil
+    ) async throws -> OpenCodeHTTPResponse {
+        try await request(
+            session: sshSession,
+            method: .post,
+            path: OpenCodeSessionPath.path(
+                "/question/\(OpenCodeSessionPath.escape(requestID))/reject",
+                directory: directory
+            )
+        )
+    }
 }
 
 struct OpenCodeCreateSessionPayload: Encodable {
@@ -166,6 +209,10 @@ struct OpenCodeCreateSessionPayload: Encodable {
 
 struct OpenCodePermissionReplyPayload: Encodable {
     let response: String
+}
+
+struct OpenCodeQuestionReplyPayload: Encodable {
+    let answers: [[String]]
 }
 
 struct OpenCodeSessionMessage: Decodable {

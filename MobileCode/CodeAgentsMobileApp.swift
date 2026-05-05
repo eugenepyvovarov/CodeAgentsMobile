@@ -7,7 +7,6 @@
 
 import SwiftUI
 import SwiftData
-import FirebaseCore
 
 @main
 struct CodeAgentsMobileApp: App {
@@ -35,18 +34,13 @@ struct CodeAgentsMobileApp: App {
     }()
 
     init() {
+        FirebaseBootstrap.configureIfNeeded()
+
         if Self.shouldResetUITestDefaults,
            let bundleIdentifier = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
         }
 
-        if FirebaseApp.app() == nil {
-            if let options = FirebaseOptions.defaultOptions() {
-                FirebaseApp.configure(options: options)
-            } else {
-                NSLog("Firebase not configured: missing GoogleService-Info.plist")
-            }
-        }
         PushNotificationsManager.shared.configure(modelContainer: sharedModelContainer)
     }
 

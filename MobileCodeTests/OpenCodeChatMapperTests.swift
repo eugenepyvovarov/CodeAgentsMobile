@@ -233,6 +233,38 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(textChunks.last?.content, "visible answer")
     }
 
+    func testAccumulatorKeepsTextPartsSeparatedAroundTools() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let introChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","id":"prt_intro","messageID":"msg_assistant","sessionID":"ses_fixture","text":"I will check it."},"time":2}}
+        """))
+        XCTAssertEqual(introChunks.last?.content, "I will check it.")
+        XCTAssertEqual(introChunks.last?.metadata?["opencodeCurrentPartId"] as? String, "prt_intro")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"tool","id":"prt_tool","messageID":"msg_assistant","sessionID":"ses_fixture","callID":"call_1","tool":"bash","state":{"status":"completed","input":{"command":"pwd"},"output":"/tmp/project"}},"time":3}}
+        """))
+
+        let finalChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","id":"prt_final","messageID":"msg_assistant","sessionID":"ses_fixture","text":"All checks pass."},"time":4}}
+        """))
+        XCTAssertEqual(finalChunks.last?.content, "All checks pass.")
+        XCTAssertEqual(finalChunks.last?.metadata?["opencodeCurrentPartId"] as? String, "prt_final")
+        XCTAssertEqual(finalChunks.last?.metadata?["opencodePartIds"] as? [String], ["prt_intro", "prt_tool", "prt_final"])
+
+        let idleChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"session.status","properties":{"sessionID":"ses_fixture","status":{"type":"idle"}}}
+        """))
+        XCTAssertEqual(idleChunks.last?.content, "All checks pass.")
+        XCTAssertTrue(idleChunks.last?.isComplete == true)
+        XCTAssertEqual(idleChunks.last?.metadata?["opencodeCurrentPartId"] as? String, "prt_final")
+    }
+
     func testAccumulatorMapsCompletedToolOutputToToolUseAndResultBlocks() throws {
         var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
 
@@ -321,6 +353,23 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(input["callID"] as? String, "call_fixture")
     }
 
+    func testAccumulatorMapsQuestionAskedToQuestionChunk() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        let chunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"question.asked","properties":{"id":"question_fixture","sessionID":"ses_fixture","questions":[{"header":"Scope","question":"Which setup should I use?","options":[{"label":"Default","description":"Use the standard setup."}],"custom":true}],"tool":{"messageID":"msg_fixture","callID":"call_fixture"}}}
+        """))
+
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks[0].metadata?["type"] as? String, "opencode_question")
+        XCTAssertEqual(chunks[0].metadata?["questionId"] as? String, "question_fixture")
+        XCTAssertEqual(chunks[0].content, "Which setup should I use?")
+        XCTAssertFalse(chunks[0].isComplete)
+
+        let request = try XCTUnwrap(chunks[0].metadata?["questionRequest"] as? OpenCodeQuestionRequest)
+        XCTAssertEqual(request.questions.first?.options.first?.label, "Default")
+    }
+
     func testAccumulatorDropsEventsWithoutMatchingSessionID() throws {
         var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
 
@@ -359,6 +408,25 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(hydrated[1].role, .assistant)
         XCTAssertEqual(hydrated[1].text, "reply")
         XCTAssertNotNil(hydrated[1].originalPayload)
+
+        XCTAssertEqual(try XCTUnwrap(hydrated[0].createdAt).timeIntervalSince1970, 1, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(hydrated[1].createdAt).timeIntervalSince1970, 2, accuracy: 0.001)
+    }
+
+    func testHydratedMessagesConvertOpenCodeMillisecondTimestamps() throws {
+        let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [
+          {
+            "info": {"role":"user","id":"msg_user","sessionID":"ses_fixture","time":{"created":1777647761114}},
+            "parts": [{"type":"text","text":"old prompt","id":"prt_user","messageID":"msg_user","sessionID":"ses_fixture"}]
+          }
+        ]
+        """.utf8))
+
+        let hydrated = OpenCodeChatMapper.hydratedMessages(from: messages)
+
+        XCTAssertEqual(hydrated.count, 1)
+        XCTAssertEqual(try XCTUnwrap(hydrated[0].createdAt).timeIntervalSince1970, 1_777_647_761.114, accuracy: 0.001)
     }
 
     func testHydratedMessagesPreserveCodeAgentsUIWidgetBlocks() throws {

@@ -95,6 +95,17 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         XCTAssertTrue(OpenCodeStreamCompletionPolicy.shouldFinish(after: finalAnswerChunk))
     }
 
+    func testOpenCodeQuestionChunkDoesNotFinishRuntimeStream() {
+        let questionChunk = MessageChunk(
+            content: "Which setup?",
+            isComplete: false,
+            isError: false,
+            metadata: ["type": "opencode_question"]
+        )
+
+        XCTAssertFalse(OpenCodeStreamCompletionPolicy.shouldFinish(after: questionChunk))
+    }
+
     @MainActor
     func testRuntimeRegistryReturnsRuntimeForKind() {
         let claude = StubRuntime(kind: .claudeProxy)

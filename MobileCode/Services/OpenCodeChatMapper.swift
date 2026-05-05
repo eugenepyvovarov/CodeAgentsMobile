@@ -12,19 +12,21 @@ enum OpenCodeChatMapper {
         messages.compactMap { message in
             let text = renderedText(from: message.parts)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let partIDs = message.parts.compactMap(\.payload.id)
 
             return CodingAgentRuntimeHydratedMessage(
                 runtimeMessageID: message.info.id,
-                runtimePartIDs: message.parts.compactMap(\.payload.id),
+                runtimePartIDs: partIDs,
                 role: role(from: message.info.role),
                 text: text,
+                createdAt: date(fromOpenCodeTimestamp: message.info.time?.created),
                 originalPayload: normalizedPayloadData(
                     type: message.info.role == "user" ? "user" : "assistant",
                     role: message.info.role ?? "assistant",
                     text: text,
                     sessionID: message.info.sessionID,
                     messageID: message.info.id,
-                    partIDs: message.parts.compactMap(\.payload.id),
+                    partIDs: partIDs,
                     rawEvent: nil
                 )
             )
@@ -198,6 +200,14 @@ enum OpenCodeChatMapper {
         }
     }
 
+    static func date(fromOpenCodeTimestamp timestamp: Int?) -> Date? {
+        guard let timestamp else { return nil }
+        let seconds = timestamp > 10_000_000_000
+            ? TimeInterval(timestamp) / 1_000
+            : TimeInterval(timestamp)
+        return Date(timeIntervalSince1970: seconds)
+    }
+
 }
 
 struct OpenCodeChatEventAccumulator {
@@ -234,6 +244,9 @@ struct OpenCodeChatEventAccumulator {
         case .permissionUpdated(let properties, let raw):
             guard matches(properties.sessionID) else { return [] }
             return permissionChunks(properties, raw: raw)
+        case .questionAsked(let request, let raw):
+            guard matches(request.sessionID), !request.id.isEmpty, !request.questions.isEmpty else { return [] }
+            return questionChunks(request, raw: raw)
         default:
             return []
         }
@@ -283,6 +296,7 @@ struct OpenCodeChatEventAccumulator {
             partOrderByMessageID[messageID, default: []].append(partID)
         }
 
+        let isTextPart = payload.type == "text"
         if let rendered = OpenCodeChatMapper.renderedText(
             from: properties.part,
             delta: properties.delta,
@@ -295,10 +309,10 @@ struct OpenCodeChatEventAccumulator {
             return toolChunks(for: properties.part, raw: raw, messageID: messageID, partID: partID)
         }
 
-        let content = content(for: messageID)
+        let content = isTextPart ? (textByPartID[partID] ?? "") : content(for: messageID)
         guard !content.isEmpty else {
             guard let progress = progressText(for: properties.part) else { return [] }
-            return [progressChunk(content: progress, raw: raw, messageID: messageID)]
+            return [progressChunk(content: progress, raw: raw, messageID: messageID, partID: partID)]
         }
 
         return [chunk(
@@ -306,7 +320,8 @@ struct OpenCodeChatEventAccumulator {
             isComplete: false,
             isError: false,
             raw: raw,
-            messageID: messageID
+            messageID: messageID,
+            currentPartID: isTextPart ? partID : nil
         )]
     }
 
@@ -347,7 +362,7 @@ struct OpenCodeChatEventAccumulator {
         guard !delta.isEmpty else { return [] }
         textByPartID[partID] = (textByPartID[partID] ?? "") + delta
 
-        let content = content(for: messageID)
+        let content = textByPartID[partID] ?? ""
         guard !content.isEmpty else { return [] }
 
         return [chunk(
@@ -355,14 +370,25 @@ struct OpenCodeChatEventAccumulator {
             isComplete: false,
             isError: false,
             raw: raw,
-            messageID: messageID
+            messageID: messageID,
+            currentPartID: partID
         )]
     }
 
     private func completionChunk(messageID: String? = nil, raw: OpenCodeRawEvent) -> MessageChunk {
         let targetMessageID = messageID ?? latestAssistantMessageID()
-        let renderedContent = targetMessageID.map { self.content(for: $0) } ?? ""
-        return chunk(content: renderedContent, isComplete: true, isError: false, raw: raw, messageID: targetMessageID)
+        let currentPartID = targetMessageID.flatMap { latestTextPartIDWithContent(for: $0) }
+        let renderedContent = currentPartID.flatMap { textByPartID[$0] }
+            ?? targetMessageID.map { self.content(for: $0) }
+            ?? ""
+        return chunk(
+            content: renderedContent,
+            isComplete: true,
+            isError: false,
+            raw: raw,
+            messageID: targetMessageID,
+            currentPartID: currentPartID
+        )
     }
 
     private func completionChunksIfReady(raw: OpenCodeRawEvent) -> [MessageChunk] {
@@ -416,6 +442,25 @@ struct OpenCodeChatEventAccumulator {
         }
 
         return [MessageChunk(content: "", isComplete: false, isError: false, metadata: metadata)]
+    }
+
+    private func questionChunks(_ request: OpenCodeQuestionRequest, raw: OpenCodeRawEvent) -> [MessageChunk] {
+        var metadata: [String: Any] = [
+            "type": "opencode_question",
+            "runtime": CodingAgentRuntimeKind.openCode.rawValue,
+            "questionId": request.id,
+            "questionRequest": request,
+            "opencodeSessionId": request.sessionID ?? sessionID,
+            "opencodeRawEvent": raw.jsonObject
+        ]
+        if let tool = request.tool {
+            metadata["opencodeMessageId"] = tool.messageID
+            metadata["toolCallID"] = tool.callID
+        }
+
+        let firstQuestion = request.questions.first?.question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = firstQuestion?.isEmpty == false ? firstQuestion! : "OpenCode needs input to continue."
+        return [MessageChunk(content: content, isComplete: false, isError: false, metadata: metadata)]
     }
 
     private func progressText(for part: OpenCodeMessagePart) -> String? {
@@ -555,7 +600,7 @@ struct OpenCodeChatEventAccumulator {
         return String(describing: output)
     }
 
-    private func progressChunk(content: String, raw: OpenCodeRawEvent, messageID: String?) -> MessageChunk {
+    private func progressChunk(content: String, raw: OpenCodeRawEvent, messageID: String?, partID: String?) -> MessageChunk {
         var metadata: [String: Any] = [
             "type": "opencode_progress",
             "runtime": CodingAgentRuntimeKind.openCode.rawValue,
@@ -565,6 +610,9 @@ struct OpenCodeChatEventAccumulator {
 
         if let messageID {
             metadata["opencodeMessageId"] = messageID
+        }
+        if let partID {
+            metadata["opencodeCurrentPartId"] = partID
         }
         if let messageID, let provider = providerByMessageID[messageID] {
             metadata["runtimeProvider"] = provider
@@ -579,7 +627,8 @@ struct OpenCodeChatEventAccumulator {
         isComplete: Bool,
         isError: Bool,
         raw: OpenCodeRawEvent,
-        messageID: String?
+        messageID: String?,
+        currentPartID: String? = nil
     ) -> MessageChunk {
         let partIDs = messageID.flatMap { partOrderByMessageID[$0] } ?? []
         var metadata: [String: Any] = [
@@ -599,6 +648,9 @@ struct OpenCodeChatEventAccumulator {
         }
         if !partIDs.isEmpty {
             metadata["opencodePartIds"] = partIDs
+        }
+        if let currentPartID {
+            metadata["opencodeCurrentPartId"] = currentPartID
         }
         if let messageID, let provider = providerByMessageID[messageID] {
             metadata["runtimeProvider"] = provider
@@ -637,6 +689,12 @@ struct OpenCodeChatEventAccumulator {
     private func latestAssistantMessageIDWithContent() -> String? {
         assistantMessageOrder.reversed().first { !content(for: $0).isEmpty }
             ?? partOrderByMessageID.keys.sorted().reversed().first { !content(for: $0).isEmpty }
+    }
+
+    private func latestTextPartIDWithContent(for messageID: String) -> String? {
+        partOrderByMessageID[messageID]?.reversed().first { partID in
+            typeByPartID[partID] == "text" && textByPartID[partID]?.isEmpty == false
+        }
     }
 }
 

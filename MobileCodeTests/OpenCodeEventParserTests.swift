@@ -172,6 +172,38 @@ final class OpenCodeEventParserTests: XCTestCase {
         XCTAssertEqual(repliedProperties.response, "once")
     }
 
+    func testQuestionEventsDecode() throws {
+        let asked = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"question.asked","properties":{"id":"question_fixture","sessionID":"ses_fixture","questions":[{"header":"Scope","question":"Which setup should I use?","options":[{"label":"Default","description":"Use the standard setup."}],"multiple":false,"custom":true}],"tool":{"messageID":"msg_fixture","callID":"call_fixture"}}}
+        """)
+
+        guard case .questionAsked(let request, _) = asked else {
+            return XCTFail("Expected question.asked")
+        }
+        XCTAssertEqual(request.id, "question_fixture")
+        XCTAssertEqual(request.sessionID, "ses_fixture")
+        XCTAssertEqual(request.questions.first?.header, "Scope")
+        XCTAssertEqual(request.questions.first?.options.first?.label, "Default")
+        XCTAssertEqual(request.tool?.callID, "call_fixture")
+
+        let replied = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"question.replied","properties":{"sessionID":"ses_fixture","requestID":"question_fixture","answers":[["Default"]]}}
+        """)
+        guard case .questionReplied(let reply, _) = replied else {
+            return XCTFail("Expected question.replied")
+        }
+        XCTAssertEqual(reply.requestID, "question_fixture")
+        XCTAssertEqual(reply.answers, [["Default"]])
+
+        let rejected = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"question.rejected","properties":{"sessionID":"ses_fixture","requestID":"question_fixture"}}
+        """)
+        guard case .questionRejected(let rejection, _) = rejected else {
+            return XCTFail("Expected question.rejected")
+        }
+        XCTAssertEqual(rejection.requestID, "question_fixture")
+    }
+
     private func parseFixtureEvents(named name: String) throws -> [OpenCodeEvent] {
         let fixture = try loadOpenCodeFixture(named: name)
         let parser = OpenCodeSSEStreamParser()

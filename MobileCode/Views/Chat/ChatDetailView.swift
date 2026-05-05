@@ -297,6 +297,20 @@ struct ChatDetailView: View {
                 } message: {
                     Text(attachmentErrorMessage)
                 }
+                .sheet(item: Binding(
+                    get: { viewModel.activeOpenCodeQuestion },
+                    set: { _ in }
+                )) { pendingRequest in
+                    OpenCodeQuestionSheet(
+                        pendingRequest: pendingRequest,
+                        onSubmit: { answers in
+                            viewModel.respondToOpenCodeQuestion(pendingRequest, answers: answers)
+                        },
+                        onReject: {
+                            viewModel.rejectOpenCodeQuestion(pendingRequest)
+                        }
+                    )
+                }
         )
 
         return chatAlerts
@@ -421,6 +435,9 @@ struct ChatDetailView: View {
         if viewModel.isAwaitingToolApproval {
             return false
         }
+        if viewModel.isAwaitingOpenCodeQuestion {
+            return false
+        }
         let hasCompletedSession = viewModel.messages.last?.structuredMessages?.contains { $0.type == "result" } ?? false
         return !hasCompletedSession
     }
@@ -439,6 +456,9 @@ struct ChatDetailView: View {
         }
         if viewModel.isAwaitingToolApproval {
             lines.append("Tool approval required")
+        }
+        if viewModel.isAwaitingOpenCodeQuestion {
+            lines.append("Answer required")
         }
         if viewModel.showSyncRetryIndicator {
             lines.append("Reconnecting...")

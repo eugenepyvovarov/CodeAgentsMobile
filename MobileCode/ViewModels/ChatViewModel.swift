@@ -125,6 +125,15 @@ class ChatViewModel {
     /// Track handled tool permission IDs to avoid duplicate prompts
     private var handledToolPermissionIds: Set<String> = []
 
+    /// Active OpenCode question request awaiting user input
+    var activeOpenCodeQuestion: PendingOpenCodeQuestionRequest?
+
+    /// Queue for additional OpenCode question requests
+    private var pendingOpenCodeQuestions: [PendingOpenCodeQuestionRequest] = []
+
+    /// Track handled OpenCode question IDs to avoid duplicate prompts
+    private var handledOpenCodeQuestionIds: Set<String> = []
+
     private let toolApprovalStore = ToolApprovalStore.shared
 
     private var pendingSaveTask: Task<Void, Never>?
@@ -133,6 +142,10 @@ class ChatViewModel {
 
     var isAwaitingToolApproval: Bool {
         activeToolApproval != nil
+    }
+
+    var isAwaitingOpenCodeQuestion: Bool {
+        activeOpenCodeQuestion != nil
     }
     
     // MARK: - Lifecycle
@@ -202,6 +215,9 @@ class ChatViewModel {
             activeToolApproval = nil
             pendingToolApprovals = []
             handledToolPermissionIds = []
+            activeOpenCodeQuestion = nil
+            pendingOpenCodeQuestions = []
+            handledOpenCodeQuestionIds = []
             toolApprovalStore.ensureDefaults(for: projectId)
         }
         
@@ -661,12 +677,21 @@ class ChatViewModel {
             var didReceiveAnswerText = false
             var didReceiveProgress = false
             var toolMessagesByPartID: [String: Message] = [:]
+            var textMessagesByPartID: [String: Message] = [:]
+            var lastProgressMessage: Message?
+            var lastProgressContent: String?
 
             for try await chunk in stream {
                 let chunkType = chunk.metadata?["type"] as? String
 
                 if chunkType == "tool_permission" {
                     handleToolPermissionChunk(chunk, project: project)
+                    continue
+                }
+
+                if chunkType == "opencode_question" {
+                    didReceiveProgress = true
+                    handleOpenCodeQuestionChunk(chunk, project: project)
                     continue
                 }
 
@@ -685,6 +710,7 @@ class ChatViewModel {
                         )
                         toolMessagesByPartID[partID] = toolMessage
                     }
+                    project.activeStreamingMessageId = toolMessage.id
 
                     let originalJSON = (chunk.metadata?["originalJSON"] as? String)?.data(using: .utf8)
                     updateMessageWithJSON(
@@ -704,9 +730,25 @@ class ChatViewModel {
 
                 if chunkType == "opencode_progress" {
                     didReceiveProgress = true
-                    if !didReceiveAnswerText {
-                        updateMessage(assistantMessage, with: chunk.content)
+                    let progressMessage: Message
+                    if !didReceiveAnswerText && assistantMessage.content.isEmpty {
+                        progressMessage = assistantMessage
+                    } else if lastProgressContent == chunk.content, let existing = lastProgressMessage {
+                        progressMessage = existing
+                    } else {
+                        progressMessage = createMessage(
+                            content: "",
+                            role: .assistant,
+                            isComplete: false,
+                            isStreaming: true
+                        )
                     }
+                    updateMessage(progressMessage, with: chunk.content)
+                    progressMessage.isStreaming = true
+                    progressMessage.isComplete = false
+                    project.activeStreamingMessageId = progressMessage.id
+                    lastProgressMessage = progressMessage
+                    lastProgressContent = chunk.content
                     if let provider = chunk.metadata?["runtimeProvider"] as? String {
                         project.lastSuccessfulRuntimeProviderRawValue = provider
                     }
@@ -723,7 +765,25 @@ class ChatViewModel {
                 }
 
                 if !chunk.content.isEmpty {
-                    updateOpenCodeMessage(assistantMessage, with: chunk)
+                    let partID = chunk.metadata?["opencodeCurrentPartId"] as? String
+                    let targetMessage: Message
+                    if let partID, let existing = textMessagesByPartID[partID] {
+                        targetMessage = existing
+                    } else if !didReceiveAnswerText && !didReceiveProgress && assistantMessage.content.isEmpty {
+                        targetMessage = assistantMessage
+                    } else {
+                        targetMessage = createMessage(
+                            content: "",
+                            role: .assistant,
+                            isComplete: false,
+                            isStreaming: true
+                        )
+                    }
+                    if let partID {
+                        textMessagesByPartID[partID] = targetMessage
+                    }
+                    updateOpenCodeMessage(targetMessage, with: chunk)
+                    project.activeStreamingMessageId = targetMessage.id
                     didReceiveAnswerText = true
                 }
 
@@ -732,8 +792,14 @@ class ChatViewModel {
                 }
 
                 if chunk.isComplete {
-                    assistantMessage.isStreaming = false
-                    assistantMessage.isComplete = true
+                    if let partID = chunk.metadata?["opencodeCurrentPartId"] as? String,
+                       let completedTextMessage = textMessagesByPartID[partID] {
+                        completedTextMessage.isStreaming = false
+                        completedTextMessage.isComplete = true
+                    } else {
+                        assistantMessage.isStreaming = false
+                        assistantMessage.isComplete = true
+                    }
                     break
                 }
             }
@@ -749,6 +815,12 @@ class ChatViewModel {
                 toolMessage.isStreaming = false
                 toolMessage.isComplete = true
             }
+            for textMessage in textMessagesByPartID.values {
+                textMessage.isStreaming = false
+                textMessage.isComplete = true
+            }
+            lastProgressMessage?.isStreaming = false
+            lastProgressMessage?.isComplete = true
             assistantMessage.isStreaming = false
             assistantMessage.isComplete = true
             project.activeStreamingMessageId = nil
@@ -827,6 +899,9 @@ class ChatViewModel {
         activeToolApproval = nil
         pendingToolApprovals = []
         handledToolPermissionIds = []
+        activeOpenCodeQuestion = nil
+        pendingOpenCodeQuestions = []
+        handledOpenCodeQuestionIds = []
         proxySyncRetryCount = 0
         proxySyncNextAttemptAt = .distantPast
         showSyncRetryIndicator = false
@@ -893,6 +968,9 @@ class ChatViewModel {
         activeToolApproval = nil
         pendingToolApprovals = []
         handledToolPermissionIds = []
+        activeOpenCodeQuestion = nil
+        pendingOpenCodeQuestions = []
+        handledOpenCodeQuestionIds = []
         print("📝 clearLoadingStates: Cleared all loading states and cancelled pending tasks")
     }
     
@@ -916,6 +994,9 @@ class ChatViewModel {
         activeToolApproval = nil
         pendingToolApprovals = []
         handledToolPermissionIds = []
+        activeOpenCodeQuestion = nil
+        pendingOpenCodeQuestions = []
+        handledOpenCodeQuestionIds = []
         
         print("📝 cleanup: Cleaned up all resources")
     }
@@ -1156,12 +1237,15 @@ class ChatViewModel {
         role: MessageRole,
         isComplete: Bool = true,
         isStreaming: Bool = false,
-        proxyEventId: Int? = nil
+        proxyEventId: Int? = nil,
+        timestamp: Date? = nil
     ) -> Message {
         let message = Message(content: content, role: role, projectId: projectId, originalJSON: nil, isComplete: isComplete, isStreaming: isStreaming)
         message.proxyEventId = proxyEventId
 
-        if role == .assistant {
+        if let timestamp {
+            message.timestamp = timestamp
+        } else if role == .assistant {
             // For assistant messages, add a small time offset to ensure they come after user messages
             message.timestamp = Date().addingTimeInterval(0.001) // 1 millisecond later
         }
@@ -1262,7 +1346,7 @@ class ChatViewModel {
                     continue
                 }
 
-                let message = createMessage(content: hydrated.text, role: hydrated.role)
+                let message = createMessage(content: hydrated.text, role: hydrated.role, timestamp: hydrated.createdAt)
                 if let originalPayload = hydrated.originalPayload {
                     updateMessageWithJSON(message, content: hydrated.text, originalJSON: originalPayload)
                 }
@@ -1504,6 +1588,17 @@ class ChatViewModel {
         enqueueToolApproval(request, announce: true)
     }
 
+    private func handleOpenCodeQuestionChunk(_ chunk: MessageChunk, project: RemoteProject) {
+        guard let request = openCodeQuestionRequest(from: chunk) else { return }
+        guard !handledOpenCodeQuestionIds.contains(request.id) else { return }
+        handledOpenCodeQuestionIds.insert(request.id)
+
+        enqueueOpenCodeQuestion(
+            PendingOpenCodeQuestionRequest(request: request, agentId: project.id),
+            announce: true
+        )
+    }
+
     func respondToToolApproval(
         _ request: ToolApprovalRequest,
         decision: ToolApprovalDecision,
@@ -1539,6 +1634,23 @@ class ChatViewModel {
         for pendingRequest in pending where pendingRequest.agentId == request.agentId {
             Task { await sendToolApprovalDecision(request: pendingRequest, decision: decision, scope: .agent) }
         }
+    }
+
+    func respondToOpenCodeQuestion(
+        _ pendingRequest: PendingOpenCodeQuestionRequest,
+        answers: [[String]]
+    ) {
+        activeOpenCodeQuestion = nil
+        dequeueNextOpenCodeQuestion()
+
+        Task { await sendOpenCodeQuestionReply(pendingRequest: pendingRequest, answers: answers) }
+    }
+
+    func rejectOpenCodeQuestion(_ pendingRequest: PendingOpenCodeQuestionRequest) {
+        activeOpenCodeQuestion = nil
+        dequeueNextOpenCodeQuestion()
+
+        Task { await sendOpenCodeQuestionReject(pendingRequest: pendingRequest) }
     }
 
     private func sendToolApprovalDecision(
@@ -1613,6 +1725,29 @@ class ChatViewModel {
         )
     }
 
+    private func openCodeQuestionRequest(from chunk: MessageChunk) -> OpenCodeQuestionRequest? {
+        guard let metadata = chunk.metadata else { return nil }
+        if let request = metadata["questionRequest"] as? OpenCodeQuestionRequest {
+            return request.id.isEmpty || request.questions.isEmpty ? nil : request
+        }
+
+        guard let questionId = metadata["questionId"] as? String, !questionId.isEmpty else { return nil }
+        let questionText = chunk.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !questionText.isEmpty else { return nil }
+        return OpenCodeQuestionRequest(
+            id: questionId,
+            sessionID: metadata["opencodeSessionId"] as? String,
+            questions: [
+                OpenCodeQuestion(
+                    header: "Question",
+                    question: questionText,
+                    options: [],
+                    custom: true
+                )
+            ]
+        )
+    }
+
     private func enqueueToolApproval(
         _ request: ToolApprovalRequest,
         announce: Bool,
@@ -1631,9 +1766,74 @@ class ChatViewModel {
         }
     }
 
+    private func enqueueOpenCodeQuestion(
+        _ pendingRequest: PendingOpenCodeQuestionRequest,
+        announce: Bool,
+        atFront: Bool = false
+    ) {
+        if activeOpenCodeQuestion == nil {
+            activeOpenCodeQuestion = pendingRequest
+        } else if atFront {
+            pendingOpenCodeQuestions.insert(pendingRequest, at: 0)
+        } else {
+            pendingOpenCodeQuestions.append(pendingRequest)
+        }
+
+        if announce,
+           let question = pendingRequest.request.questions.first?.question.trimmingCharacters(in: .whitespacesAndNewlines),
+           !question.isEmpty {
+            _ = createMessage(content: "Question required: \(question)", role: .assistant)
+        }
+    }
+
     private func dequeueNextToolApproval() {
         guard activeToolApproval == nil, !pendingToolApprovals.isEmpty else { return }
         activeToolApproval = pendingToolApprovals.removeFirst()
+    }
+
+    private func dequeueNextOpenCodeQuestion() {
+        guard activeOpenCodeQuestion == nil, !pendingOpenCodeQuestions.isEmpty else { return }
+        activeOpenCodeQuestion = pendingOpenCodeQuestions.removeFirst()
+    }
+
+    private func sendOpenCodeQuestionReply(
+        pendingRequest: PendingOpenCodeQuestionRequest,
+        answers: [[String]]
+    ) async {
+        guard let project = ProjectContext.shared.activeProject,
+              project.id == pendingRequest.agentId else { return }
+
+        do {
+            try await runtimeRegistry.runtime(for: .openCode).replyToQuestion(
+                project: project,
+                questionId: pendingRequest.request.id,
+                answers: answers
+            )
+        } catch {
+            await MainActor.run {
+                addErrorMessage("Failed to answer OpenCode question: \(error.localizedDescription)")
+                enqueueOpenCodeQuestion(pendingRequest, announce: false, atFront: true)
+            }
+        }
+    }
+
+    private func sendOpenCodeQuestionReject(
+        pendingRequest: PendingOpenCodeQuestionRequest
+    ) async {
+        guard let project = ProjectContext.shared.activeProject,
+              project.id == pendingRequest.agentId else { return }
+
+        do {
+            try await runtimeRegistry.runtime(for: .openCode).rejectQuestion(
+                project: project,
+                questionId: pendingRequest.request.id
+            )
+        } catch {
+            await MainActor.run {
+                addErrorMessage("Failed to skip OpenCode question: \(error.localizedDescription)")
+                enqueueOpenCodeQuestion(pendingRequest, announce: false, atFront: true)
+            }
+        }
     }
     
     /// Remove a message from the chat
@@ -2597,6 +2797,9 @@ class ChatViewModel {
         activeToolApproval = nil
         pendingToolApprovals = []
         handledToolPermissionIds = []
+        activeOpenCodeQuestion = nil
+        pendingOpenCodeQuestions = []
+        handledOpenCodeQuestionIds = []
 
         project.activeStreamingMessageId = nil
         project.proxyLastEventId = nil

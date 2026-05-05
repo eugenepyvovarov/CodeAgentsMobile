@@ -118,6 +118,9 @@ enum OpenCodeEvent {
     case sessionDeleted(OpenCodeSessionIDProperties, raw: OpenCodeRawEvent)
     case permissionUpdated(OpenCodePermissionProperties, raw: OpenCodeRawEvent)
     case permissionReplied(OpenCodePermissionProperties, raw: OpenCodeRawEvent)
+    case questionAsked(OpenCodeQuestionRequest, raw: OpenCodeRawEvent)
+    case questionReplied(OpenCodeQuestionReplyProperties, raw: OpenCodeRawEvent)
+    case questionRejected(OpenCodeQuestionRejectedProperties, raw: OpenCodeRawEvent)
     case fileEdited(OpenCodeRawEvent)
     case todoUpdated(OpenCodeRawEvent)
     case commandExecuted(OpenCodeRawEvent)
@@ -146,7 +149,10 @@ enum OpenCodeEvent {
              .sessionUpdated(_, let raw),
              .sessionDeleted(_, let raw),
              .permissionUpdated(_, let raw),
-             .permissionReplied(_, let raw):
+             .permissionReplied(_, let raw),
+             .questionAsked(_, let raw),
+             .questionReplied(_, let raw),
+             .questionRejected(_, let raw):
             return raw
         }
     }
@@ -255,6 +261,12 @@ enum OpenCodeEventMapper {
             return .permissionUpdated(try decodeProperties(rawEvent, as: OpenCodePermissionProperties.self), raw: rawEvent)
         case "permission.replied":
             return .permissionReplied(try decodeProperties(rawEvent, as: OpenCodePermissionProperties.self), raw: rawEvent)
+        case "question.asked":
+            return .questionAsked(try decodeProperties(rawEvent, as: OpenCodeQuestionRequest.self), raw: rawEvent)
+        case "question.replied":
+            return .questionReplied(try decodeProperties(rawEvent, as: OpenCodeQuestionReplyProperties.self), raw: rawEvent)
+        case "question.rejected":
+            return .questionRejected(try decodeProperties(rawEvent, as: OpenCodeQuestionRejectedProperties.self), raw: rawEvent)
         case "file.edited":
             return .fileEdited(rawEvent)
         case "todo.updated":
@@ -593,6 +605,17 @@ struct OpenCodePermissionProperties: Decodable {
     let metadata: [String: AnyCodable]?
     let response: String?
     let time: OpenCodeTimeInfo?
+}
+
+struct OpenCodeQuestionReplyProperties: Decodable {
+    let sessionID: String?
+    let requestID: String?
+    let answers: [[String]]?
+}
+
+struct OpenCodeQuestionRejectedProperties: Decodable {
+    let sessionID: String?
+    let requestID: String?
 }
 
 enum OpenCodePermissionPattern: Decodable {
