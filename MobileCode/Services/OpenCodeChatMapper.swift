@@ -218,6 +218,8 @@ struct OpenCodeChatEventAccumulator {
             return consumeMessageUpdated(properties, raw: raw)
         case .messagePartUpdated(let properties, let raw):
             return consumeMessagePartUpdated(properties, raw: raw)
+        case .messagePartDelta(let properties, let raw):
+            return consumeMessagePartDelta(properties, raw: raw)
         case .sessionStatus(let properties, let raw):
             guard matches(properties.sessionID), properties.status.type == "idle" else { return [] }
             return completionChunksIfReady(raw: raw)
@@ -295,6 +297,50 @@ struct OpenCodeChatEventAccumulator {
             guard let progress = progressText(for: properties.part) else { return [] }
             return [progressChunk(content: progress, raw: raw, messageID: messageID)]
         }
+
+        return [chunk(
+            content: content,
+            isComplete: completedMessageIDs.contains(messageID),
+            isError: false,
+            raw: raw,
+            messageID: messageID
+        )]
+    }
+
+    private mutating func consumeMessagePartDelta(
+        _ properties: OpenCodeMessagePartDeltaProperties,
+        raw: OpenCodeRawEvent
+    ) -> [MessageChunk] {
+        if let part = properties.part {
+            let updated = OpenCodeMessagePartUpdatedProperties(
+                sessionID: properties.sessionID,
+                part: part,
+                time: properties.time,
+                delta: properties.delta ?? properties.text
+            )
+            return consumeMessagePartUpdated(updated, raw: raw)
+        }
+
+        guard matches(properties.sessionID),
+              let messageID = properties.messageID else {
+            return []
+        }
+
+        if rolesByMessageID[messageID] == "user" {
+            return []
+        }
+
+        let partID = properties.partID ?? properties.id ?? "\(messageID):text"
+        if partOrderByMessageID[messageID]?.contains(partID) != true {
+            partOrderByMessageID[messageID, default: []].append(partID)
+        }
+
+        let delta = properties.delta ?? properties.text ?? ""
+        guard !delta.isEmpty else { return [] }
+        textByPartID[partID] = (textByPartID[partID] ?? "") + delta
+
+        let content = content(for: messageID)
+        guard !content.isEmpty else { return [] }
 
         return [chunk(
             content: content,

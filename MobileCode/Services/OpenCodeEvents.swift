@@ -105,6 +105,7 @@ enum OpenCodeEvent {
     case serverHeartbeat(OpenCodeRawEvent)
     case messageUpdated(OpenCodeMessageUpdatedProperties, raw: OpenCodeRawEvent)
     case messagePartUpdated(OpenCodeMessagePartUpdatedProperties, raw: OpenCodeRawEvent)
+    case messagePartDelta(OpenCodeMessagePartDeltaProperties, raw: OpenCodeRawEvent)
     case messagePartRemoved(OpenCodeMessagePartRemovedProperties, raw: OpenCodeRawEvent)
     case messageRemoved(OpenCodeMessageRemovedProperties, raw: OpenCodeRawEvent)
     case sessionStatus(OpenCodeSessionStatusProperties, raw: OpenCodeRawEvent)
@@ -133,6 +134,7 @@ enum OpenCodeEvent {
             return raw
         case .messageUpdated(_, let raw),
              .messagePartUpdated(_, let raw),
+             .messagePartDelta(_, let raw),
              .messagePartRemoved(_, let raw),
              .messageRemoved(_, let raw),
              .sessionStatus(_, let raw),
@@ -227,6 +229,8 @@ enum OpenCodeEventMapper {
             return .messageUpdated(try decodeProperties(rawEvent, as: OpenCodeMessageUpdatedProperties.self), raw: rawEvent)
         case "message.part.updated":
             return .messagePartUpdated(try decodeProperties(rawEvent, as: OpenCodeMessagePartUpdatedProperties.self), raw: rawEvent)
+        case "message.part.delta":
+            return .messagePartDelta(try decodeProperties(rawEvent, as: OpenCodeMessagePartDeltaProperties.self), raw: rawEvent)
         case "message.part.removed":
             return .messagePartRemoved(try decodeProperties(rawEvent, as: OpenCodeMessagePartRemovedProperties.self), raw: rawEvent)
         case "message.removed":
@@ -335,6 +339,18 @@ struct OpenCodeMessagePartUpdatedProperties: Decodable {
     let part: OpenCodeMessagePart
     let time: Int?
     let delta: String?
+}
+
+struct OpenCodeMessagePartDeltaProperties: Decodable {
+    let sessionID: String?
+    let messageID: String?
+    let partID: String?
+    let id: String?
+    let type: String?
+    let delta: String?
+    let text: String?
+    let part: OpenCodeMessagePart?
+    let time: Int?
 }
 
 struct OpenCodeMessagePartRemovedProperties: Decodable {

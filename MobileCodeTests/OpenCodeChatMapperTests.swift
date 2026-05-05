@@ -86,6 +86,34 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(textChunks.last?.isComplete, true)
     }
 
+    func testAccumulatorBuildsAnswerFromPartDeltas() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let firstDelta = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.delta","properties":{"sessionID":"ses_fixture","messageID":"msg_assistant","partID":"prt_text","delta":"Hello"}}
+        """))
+        let secondDelta = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.delta","properties":{"sessionID":"ses_fixture","messageID":"msg_assistant","partID":"prt_text","delta":" from OpenCode"}}
+        """))
+
+        XCTAssertEqual(firstDelta.last?.content, "Hello")
+        XCTAssertEqual(secondDelta.last?.content, "Hello from OpenCode")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1,"completed":4}}}}
+        """))
+        let idleChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"session.status","properties":{"sessionID":"ses_fixture","status":{"type":"idle"}}}
+        """))
+
+        XCTAssertEqual(idleChunks.last?.content, "Hello from OpenCode")
+        XCTAssertEqual(idleChunks.last?.isComplete, true)
+    }
+
     func testAccumulatorYieldsProgressForReasoningWithoutAddingToFinalAnswer() throws {
         var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
 
