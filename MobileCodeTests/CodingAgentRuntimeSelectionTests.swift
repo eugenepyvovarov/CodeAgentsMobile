@@ -77,6 +77,24 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         )
     }
 
+    func testOpenCodeCompletedToolChunkDoesNotFinishRuntimeStream() {
+        let completedToolChunk = MessageChunk(
+            content: "skill completed",
+            isComplete: true,
+            isError: false,
+            metadata: ["type": "opencode_tool"]
+        )
+        let finalAnswerChunk = MessageChunk(
+            content: "Done",
+            isComplete: true,
+            isError: false,
+            metadata: ["type": "result"]
+        )
+
+        XCTAssertFalse(OpenCodeStreamCompletionPolicy.shouldFinish(after: completedToolChunk))
+        XCTAssertTrue(OpenCodeStreamCompletionPolicy.shouldFinish(after: finalAnswerChunk))
+    }
+
     @MainActor
     func testRuntimeRegistryReturnsRuntimeForKind() {
         let claude = StubRuntime(kind: .claudeProxy)

@@ -114,6 +114,27 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(idleChunks.last?.isComplete, true)
     }
 
+    func testAccumulatorIgnoresReasoningPartDeltas() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"reasoning","id":"prt_reasoning","messageID":"msg_assistant","sessionID":"ses_fixture"},"time":2}}
+        """))
+
+        let reasoningDelta = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.delta","properties":{"sessionID":"ses_fixture","messageID":"msg_assistant","partID":"prt_reasoning","delta":"The user wants to load a skill."}}
+        """))
+        let textDelta = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.delta","properties":{"sessionID":"ses_fixture","messageID":"msg_assistant","partID":"prt_text","type":"text","delta":"Final answer"}}
+        """))
+
+        XCTAssertTrue(reasoningDelta.isEmpty)
+        XCTAssertEqual(textDelta.last?.content, "Final answer")
+    }
+
     func testAccumulatorYieldsProgressForReasoningWithoutAddingToFinalAnswer() throws {
         var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
 

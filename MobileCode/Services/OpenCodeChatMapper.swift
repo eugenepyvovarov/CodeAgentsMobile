@@ -205,6 +205,7 @@ struct OpenCodeChatEventAccumulator {
     private var rolesByMessageID: [String: String] = [:]
     private var providerByMessageID: [String: String] = [:]
     private var textByPartID: [String: String] = [:]
+    private var typeByPartID: [String: String] = [:]
     private var partOrderByMessageID: [String: [String]] = [:]
     private var completedMessageIDs: Set<String> = []
 
@@ -276,6 +277,7 @@ struct OpenCodeChatEventAccumulator {
         }
 
         let partID = payload.id ?? "\(messageID):\(payload.type)"
+        typeByPartID[partID] = payload.type
         if partOrderByMessageID[messageID]?.contains(partID) != true {
             partOrderByMessageID[messageID, default: []].append(partID)
         }
@@ -331,6 +333,11 @@ struct OpenCodeChatEventAccumulator {
         }
 
         let partID = properties.partID ?? properties.id ?? "\(messageID):text"
+        let partType = properties.type ?? typeByPartID[partID]
+        if let partType, partType != "text" {
+            return []
+        }
+
         if partOrderByMessageID[messageID]?.contains(partID) != true {
             partOrderByMessageID[messageID, default: []].append(partID)
         }

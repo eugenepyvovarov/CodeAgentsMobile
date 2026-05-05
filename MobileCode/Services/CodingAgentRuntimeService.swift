@@ -339,7 +339,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         let chunks = accumulator.consume(event)
                         for chunk in chunks {
                             continuation.yield(chunk)
-                            if chunk.isComplete {
+                            if chunk.isComplete, OpenCodeStreamCompletionPolicy.shouldFinish(after: chunk) {
                                 try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
                                 continuation.finish()
                                 return true
@@ -637,6 +637,19 @@ private enum OpenCodeTimedEvent {
     case event(OpenCodeEvent)
     case ended
     case timedOut
+}
+
+enum OpenCodeStreamCompletionPolicy {
+    static func shouldFinish(after chunk: MessageChunk) -> Bool {
+        if chunk.isError {
+            return true
+        }
+
+        let type = chunk.metadata?["type"] as? String
+        return type != "opencode_tool"
+            && type != "opencode_progress"
+            && type != "tool_permission"
+    }
 }
 
 private actor OpenCodeEventIterator {
