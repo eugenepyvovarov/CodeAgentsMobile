@@ -1,0 +1,237 @@
+name: OpenCode Final Demo Media
+
+"on":
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Merged pull request number to finalize demo media from the retained preview
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      controller_repository: ${{ steps.managed-config.outputs.controller_repository }}
+      setup_branch: ${{ steps.managed-config.outputs.setup_branch }}
+      project_key: ${{ steps.managed-config.outputs.project_key }}
+      preview_supported: ${{ steps.managed-config.outputs.preview_supported }}
+      demo_supported: ${{ steps.managed-config.outputs.demo_supported }}
+      demo_provider: ${{ steps.managed-config.outputs.demo_provider }}
+      demo_platform: ${{ steps.managed-config.outputs.demo_platform }}
+      demo_evidence_supported: ${{ steps.managed-config.outputs.demo_evidence_supported }}
+      demo_playwright_web_supported: ${{ steps.managed-config.outputs.demo_playwright_web_supported }}
+      demo_native_macos_supported: ${{ steps.managed-config.outputs.demo_native_macos_supported }}
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load managed demo settings
+        id: managed-config
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+          assert config["schema_version"] == 1
+          controller = config["controller"]
+          assert controller["repository"]
+          assert controller["setup_branch"]
+          review = config["review"]
+          assert review["persona"]
+          assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
+          validation = config["validation"]
+          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
+          preview = config["preview"]
+          assert isinstance(preview["supported"], bool)
+          demo = config["demo"]
+          assert demo["workflow"] == ".gitea/workflows/demo-evidence.yml"
+          assert isinstance(demo["supported"], bool)
+          assert demo["provider"]
+          assert demo["platform"]
+          assert demo["record_video"] is True
+          demo_provider = str(demo["provider"]).strip()
+          demo_platform = str(demo["platform"]).strip()
+          demo_playwright_web = demo_provider == "playwright" and demo_platform == "web"
+          demo_native_macos = demo_provider in {"native-macos", "native", "macos"} and demo_platform in {"macos", "native-macos"}
+          demo_evidence_supported = demo["supported"] is True and (demo_playwright_web or demo_native_macos)
+          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
+          repo = os.environ["OPENCODE_REPO_NAME"].strip()
+          raw = f"{owner}-{repo}".lower()
+          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+          project_key = re.sub(r"-{2,}", "-", project_key)
+          if not project_key:
+              raise SystemExit("Unable to derive project key from repository owner/name")
+          github_output = os.environ["GITHUB_OUTPUT"]
+          with open(github_output, "a", encoding="utf-8") as handle:
+              handle.write(f"controller_repository={controller['repository']}\n")
+              handle.write(f"setup_branch={controller['setup_branch']}\n")
+              handle.write(f"project_key={project_key}\n")
+              handle.write(f"preview_supported={'true' if preview['supported'] else 'false'}\n")
+              handle.write(f"demo_supported={'true' if demo['supported'] else 'false'}\n")
+              handle.write(f"demo_provider={demo_provider}\n")
+              handle.write(f"demo_platform={demo_platform}\n")
+              handle.write(f"demo_evidence_supported={'true' if demo_evidence_supported else 'false'}\n")
+              handle.write(f"demo_playwright_web_supported={'true' if demo['supported'] is True and demo_playwright_web else 'false'}\n")
+              handle.write(f"demo_native_macos_supported={'true' if demo['supported'] is True and demo_native_macos else 'false'}\n")
+          print("managed demo config ok")
+          PY
+
+  demo-evidence-playwright:
+    needs: preflight
+    if: ${{ github.ref_name != needs.preflight.outputs.setup_branch && needs.preflight.outputs.preview_supported == 'true' && needs.preflight.outputs.demo_playwright_web_supported == 'true' }}
+    runs-on: ubuntu-latest
+    container:
+      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1
+      credentials:
+        username: review-bot
+        password: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    timeout-minutes: 10
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        run: |
+          PYTHON_BIN="$(command -v python3)"
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Check out controller repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.preflight.outputs.controller_repository }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Run retained-preview final demo media worker
+        run: |
+          cat > .opencode-demo-project.json <<EOF
+          {
+            "project_key": "${{ needs.preflight.outputs.project_key }}",
+            "repo_owner": "$OPENCODE_REPO_OWNER",
+            "repo_name": "$OPENCODE_REPO_NAME"
+          }
+          EOF
+          "$PYTHON_BIN" controller/scripts/demo_evidence_worker.py \
+            --repo-root "$PWD" \
+            --config "$PWD/.opencode-demo-project.json" \
+            --automation-config "$PWD/controller/automation.json" \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --event-path "$GITHUB_EVENT_PATH"
+
+  demo-evidence-native-macos:
+    needs: preflight
+    if: ${{ github.ref_name != needs.preflight.outputs.setup_branch && needs.preflight.outputs.demo_native_macos_supported == 'true' }}
+    runs-on: macos-ultramac
+    timeout-minutes: 20
+    env:
+      GIT_SSL_NO_VERIFY: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+    steps:
+      - name: Allow internal self-signed Git over HTTPS
+        run: git config --global http.sslVerify false
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        run: |
+          HOST_HOME="$(eval echo "~$(whoami)")"
+          echo "HOST_HOME=$HOST_HOME" >> "$GITHUB_ENV"
+          echo "$HOST_HOME/.opencode/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="$HOST_HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
+          resolve_python_bin() {
+            local resolved=""
+            local candidate
+
+            if [[ -n "${OPENCODE_PYTHON_BIN:-}" ]]; then
+              if [[ ! -x "${OPENCODE_PYTHON_BIN}" ]]; then
+                echo "Configured OPENCODE_PYTHON_BIN is not executable: ${OPENCODE_PYTHON_BIN}" >&2
+                exit 1
+              fi
+              printf '%s\n' "${OPENCODE_PYTHON_BIN}"
+              return 0
+            fi
+
+            for candidate in python3.14 python3.13 python3.12 /usr/bin/python3 python3; do
+              resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+              if [[ -n "${resolved}" ]]; then
+                printf '%s\n' "${resolved}"
+                return 0
+              fi
+            done
+
+            echo "No supported Python interpreter found in PATH." >&2
+            exit 1
+          }
+          PYTHON_BIN="$(resolve_python_bin)"
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
+      - name: Check out controller repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.preflight.outputs.controller_repository }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
+
+      - name: Run native final demo media worker
+        run: |
+          export HOME="$HOST_HOME"
+          export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
+          cat > .opencode-demo-project.json <<EOF
+          {
+            "project_key": "${{ needs.preflight.outputs.project_key }}",
+            "repo_owner": "$OPENCODE_REPO_OWNER",
+            "repo_name": "$OPENCODE_REPO_NAME"
+          }
+          EOF
+          "$PYTHON_BIN" controller/scripts/demo_evidence_worker.py \
+            --repo-root "$PWD" \
+            --config "$PWD/.opencode-demo-project.json" \
+            --automation-config "$PWD/controller/automation.json" \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --event-path "$GITHUB_EVENT_PATH"

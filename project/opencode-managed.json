@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "managed_by": "opencode-gitea-automation",
+  "controller": {
+    "repository": "eugene/opencode-gitea-automation",
+    "setup_branch": "opencode/bootstrap-managed"
+  },
+  "review": {
+    "persona": "review-bot",
+    "persona_token_secret": "OPENCODE_PERSONA_REVIEW_BOT_TOKEN"
+  },
+  "pr_prep": {
+    "workflow": ".gitea/workflows/pr-prep.yml",
+    "authoritative": true,
+    "stages": [
+      "validation"
+    ],
+    "handoff": {
+      "review_workflow": ".gitea/workflows/review-bot.yml"
+    }
+  },
+  "validation": {
+    "workflow": ".gitea/workflows/pr-tests.yml",
+    "runner": "swift-xcode",
+    "command": "/bin/bash ./scripts/ci.sh"
+  },
+  "coverage": {
+    "command": "/bin/bash ./scripts/coverage.sh"
+  },
+  "deployment": {
+    "command": "/bin/bash ./scripts/deploy.sh"
+  },
+  "production_artifact": {
+    "workflow": ".gitea/workflows/production-artifact.yml",
+    "supported": false,
+    "command": "/bin/bash ./scripts/artifact.sh",
+    "phase": {
+      "enabled": false,
+      "app_id": "",
+      "env": "prod",
+      "path": "/"
+    },
+    "result": {
+      "format": "json",
+      "transport": "stdout",
+      "required_fields": ["published_artifacts"],
+      "optional_fields": ["summary"]
+    }
+  },
+  "preview": {
+    "supported": false,
+    "artifact": {
+      "command": "/bin/bash ./scripts/artifact.sh"
+    },
+    "preview": {
+      "command": "/bin/bash ./scripts/preview.sh"
+    },
+    "destroy": {
+      "command": "/bin/bash ./scripts/destroy-preview.sh"
+    },
+    "result": {
+      "format": "json",
+      "transport": "stdout",
+      "required_fields": ["backend_url"],
+      "optional_fields": ["health_url", "reviewer_notes"]
+    }
+  },
+  "demo": {
+    "workflow": ".gitea/workflows/demo-evidence.yml",
+    "supported": false,
+    "provider": "playwright",
+    "platform": "web",
+    "record_video": true
+  },
+  "visual_validation": {
+    "workflow": ".gitea/workflows/visual-validation.yml",
+    "supported": false,
+    "provider": "playwright",
+    "platform": "web",
+    "full_page": true
+  },
+  "playwright_smoke": {
+    "workflow": ".gitea/workflows/playwright-smoke.yml",
+    "supported": false,
+    "provider": "playwright",
+    "platform": "web",
+    "command": "/bin/bash ./scripts/playwright-smoke.sh"
+  }
+}
