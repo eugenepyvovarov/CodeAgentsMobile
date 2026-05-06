@@ -75,6 +75,13 @@ struct SettingsView: View {
                         }
                     }
                     .accessibilityIdentifier("settings-agent-runtime-link")
+
+                    NavigationLink {
+                        OpenCodeAIProviderSettingsView()
+                    } label: {
+                        Label("OpenCode AI Providers", systemImage: "sparkles")
+                    }
+                    .accessibilityIdentifier("settings-opencode-ai-providers-link")
                 }
                 
                 Section("Cloud Providers") {

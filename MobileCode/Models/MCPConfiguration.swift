@@ -474,14 +474,15 @@ struct OpenCodeMCPConfigDocument {
         baseURL: String,
         modelID: String,
         modelName: String,
-        apiKey: String? = nil,
+        npmPackage: String = "@ai-sdk/openai-compatible",
         headers: [String: String] = [:]
     ) throws {
         let providerID = id.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelIdentifier = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !providerID.isEmpty, !displayName.isEmpty, !endpoint.isEmpty, !modelIdentifier.isEmpty else {
+        let npm = npmPackage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !providerID.isEmpty, !displayName.isEmpty, !endpoint.isEmpty, !modelIdentifier.isEmpty, !npm.isEmpty else {
             throw MCPConfigurationError.encodingFailed
         }
 
@@ -489,16 +490,12 @@ struct OpenCodeMCPConfigDocument {
             "baseURL": endpoint
         ]
 
-        if let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty {
-            options["apiKey"] = apiKey
-        }
-
         if !headers.isEmpty {
             options["headers"] = headers
         }
 
         let providerConfig: [String: Any] = [
-            "npm": "@ai-sdk/openai-compatible",
+            "npm": npm,
             "name": displayName,
             "options": options,
             "models": [
@@ -514,18 +511,12 @@ struct OpenCodeMCPConfigDocument {
         ensureSchema()
     }
 
-    mutating func setMiniMaxProvider(apiKey: String) throws {
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
-            throw MCPConfigurationError.encodingFailed
-        }
-
+    mutating func setMiniMaxProvider() {
         var providers = root["provider"] as? [String: Any] ?? [:]
         providers["minimax"] = [
             "npm": "@ai-sdk/anthropic",
             "options": [
-                "baseURL": "https://api.minimax.io/anthropic/v1",
-                "apiKey": trimmedKey
+                "baseURL": "https://api.minimax.io/anthropic/v1"
             ],
             "models": [
                 "MiniMax-M2.7": [

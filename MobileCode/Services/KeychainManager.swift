@@ -138,6 +138,12 @@ class KeychainManager {
         try store(data: data, for: Self.openCodeAPIKeyAccount(for: providerID))
     }
 
+    /// Store an OpenCode provider API key scoped to a specific server override.
+    func storeOpenCodeAPIKey(_ apiKey: String, providerID: String, serverID: UUID) throws {
+        let data = apiKey.data(using: .utf8)!
+        try store(data: data, for: Self.openCodeAPIKeyAccount(for: providerID, serverID: serverID))
+    }
+
     /// Retrieve an OpenCode provider API key, falling back to matching legacy Claude provider keys.
     func retrieveOpenCodeAPIKey(providerID: String) throws -> String {
         do {
@@ -154,15 +160,43 @@ class KeychainManager {
         }
     }
 
+    /// Retrieve a server-scoped OpenCode provider API key, falling back to the global key.
+    func retrieveOpenCodeAPIKey(providerID: String, serverID: UUID) throws -> String {
+        do {
+            let data = try retrieve(for: Self.openCodeAPIKeyAccount(for: providerID, serverID: serverID))
+            guard let apiKey = String(data: data, encoding: .utf8) else {
+                throw KeychainError.invalidData
+            }
+            return apiKey
+        } catch KeychainError.itemNotFound {
+            return try retrieveOpenCodeAPIKey(providerID: providerID)
+        }
+    }
+
     /// Delete an OpenCode provider API key from the runtime-specific namespace.
     func deleteOpenCodeAPIKey(providerID: String) throws {
         try delete(for: Self.openCodeAPIKeyAccount(for: providerID))
+    }
+
+    /// Delete a server-scoped OpenCode provider API key.
+    func deleteOpenCodeAPIKey(providerID: String, serverID: UUID) throws {
+        try delete(for: Self.openCodeAPIKeyAccount(for: providerID, serverID: serverID))
     }
 
     /// Check if an OpenCode provider API key exists in the new namespace or a compatible legacy key.
     func hasOpenCodeAPIKey(providerID: String) -> Bool {
         do {
             _ = try retrieveOpenCodeAPIKey(providerID: providerID)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Check if a server-scoped or global OpenCode provider API key exists.
+    func hasOpenCodeAPIKey(providerID: String, serverID: UUID) -> Bool {
+        do {
+            _ = try retrieveOpenCodeAPIKey(providerID: providerID, serverID: serverID)
             return true
         } catch {
             return false
@@ -417,6 +451,10 @@ class KeychainManager {
                 character.isLetter || character.isNumber || character == "_" || character == "-" ? character : "_"
             }
         return "opencode_provider_api_key_\(String(sanitized))"
+    }
+
+    static func openCodeAPIKeyAccount(for providerID: String, serverID: UUID) -> String {
+        "\(openCodeAPIKeyAccount(for: providerID))_server_\(serverID.uuidString)"
     }
 
     static func openCodeServerPasswordAccount(for serverId: UUID) -> String {

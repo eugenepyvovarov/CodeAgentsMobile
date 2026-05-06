@@ -86,6 +86,28 @@ struct AgentRuntimeSettingsView: View {
                 Text("New agents use OpenCode by default. Existing legacy agents stay on Claude Proxy until you switch them here.")
             }
 
+            Section {
+                NavigationLink {
+                    OpenCodeAIProviderSettingsView()
+                } label: {
+                    Label("Global Provider & Models", systemImage: "sparkles")
+                }
+                .accessibilityIdentifier("agent-runtime-opencode-global-ai-link")
+
+                if let activeServer = projectContext.activeServer {
+                    NavigationLink {
+                        OpenCodeAIProviderSettingsView(server: activeServer)
+                    } label: {
+                        Label("This Server Override", systemImage: "server.rack")
+                    }
+                    .accessibilityIdentifier("agent-runtime-opencode-server-ai-link")
+                }
+            } header: {
+                Text("OpenCode AI Defaults")
+            } footer: {
+                Text("Store provider credentials on this device and sync the selected provider/model profile to each OpenCode server.")
+            }
+
             if let activeProject {
                 Section("Status") {
                     Button {
@@ -360,7 +382,7 @@ struct AgentRuntimeSettingsView: View {
             )
             .accessibilityIdentifier("opencode-save-custom-provider-button")
 
-            Text("First pass supports API-key OpenAI-compatible providers only. OAuth, subscription, and browser-login providers are intentionally out of scope.")
+            Text("Project-level custom providers still support API-key OpenAI-compatible endpoints. Use OpenCode AI Defaults above for global/server settings and OpenAI ChatGPT Plus/Pro mode.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

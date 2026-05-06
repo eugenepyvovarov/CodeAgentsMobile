@@ -110,7 +110,8 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
             name: "OpenRouter",
             baseURL: "https://openrouter.ai/api/v1",
             modelID: "anthropic/claude-3.5-sonnet",
-            modelName: "Claude Sonnet"
+            modelName: "Claude Sonnet",
+            npmPackage: "@ai-sdk/openai"
         )
 
         let output = try document.toJSONString()
@@ -120,16 +121,69 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         let options = try XCTUnwrap(openRouter["options"] as? [String: Any])
         let models = try XCTUnwrap(openRouter["models"] as? [String: Any])
 
-        XCTAssertEqual(openRouter["npm"] as? String, "@ai-sdk/openai-compatible")
+        XCTAssertEqual(openRouter["npm"] as? String, "@ai-sdk/openai")
         XCTAssertEqual(openRouter["name"] as? String, "OpenRouter")
         XCTAssertEqual(options["baseURL"] as? String, "https://openrouter.ai/api/v1")
+        XCTAssertNil(options["apiKey"])
         XCTAssertNotNil(models["anthropic/claude-3.5-sonnet"])
     }
 
-    func testDocumentWritesMiniMaxProviderWithAPIKey() throws {
+    func testOpenCodeAIProviderSettingsStoreUsesGlobalAndServerOverrides() throws {
+        let suiteName = "OpenCodeAIProviderSettingsStoreTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = OpenCodeAIProviderSettingsStore(userDefaults: defaults)
+        let serverID = UUID()
+
+        try store.saveGlobalProfile(OpenCodeAIProviderProfile(
+            providerID: "OpenAI",
+            providerName: "OpenAI",
+            authMode: .openAIChatGPT,
+            modelID: "openai/gpt-5.2"
+        ))
+
+        XCTAssertEqual(store.effectiveProfile(for: serverID).normalizedProviderID, "openai")
+        XCTAssertEqual(store.effectiveProfile(for: serverID).authMode, .openAIChatGPT)
+        XCTAssertEqual(store.effectiveProfile(for: serverID).resolvedModelID, "openai/gpt-5.2")
+
+        try store.saveServerOverride(
+            OpenCodeServerAIProviderOverride(
+                usesGlobalDefaults: false,
+                profile: OpenCodeAIProviderProfile(
+                    providerID: "openrouter",
+                    providerName: "OpenRouter",
+                    authMode: .apiKey,
+                    modelID: "openrouter/anthropic/claude-sonnet"
+                )
+            ),
+            for: serverID
+        )
+
+        XCTAssertEqual(store.effectiveProfile(for: serverID).normalizedProviderID, "openrouter")
+        XCTAssertEqual(store.effectiveProfile(for: serverID).authMode, .apiKey)
+        XCTAssertEqual(store.effectiveProfile(for: serverID).resolvedModelID, "openrouter/anthropic/claude-sonnet")
+    }
+
+    func testOpenCodeAIProviderProfileInfersCustomProviderModel() {
+        let profile = OpenCodeAIProviderProfile(
+            providerID: "local-ai",
+            providerName: "Local AI",
+            authMode: .apiKey,
+            customBaseURL: "http://127.0.0.1:1234/v1",
+            customModelID: "qwen3-coder",
+            customModelName: "Qwen Coder"
+        )
+
+        XCTAssertTrue(profile.isCustomProvider)
+        XCTAssertTrue(profile.isReadyToSave)
+        XCTAssertEqual(profile.resolvedModelID, "local-ai/qwen3-coder")
+        XCTAssertEqual(profile.resolvedSmallModelID, "local-ai/qwen3-coder")
+    }
+
+    func testDocumentWritesMiniMaxProviderWithoutAPIKey() throws {
         var document = OpenCodeMCPConfigDocument()
 
-        try document.setMiniMaxProvider(apiKey: "test-minimax-key")
+        document.setMiniMaxProvider()
 
         let output = try document.toJSONString()
         let decoded = try OpenCodeMCPConfigDocument(jsonString: output)
@@ -140,7 +194,7 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
 
         XCTAssertEqual(miniMax["npm"] as? String, "@ai-sdk/anthropic")
         XCTAssertEqual(options["baseURL"] as? String, "https://api.minimax.io/anthropic/v1")
-        XCTAssertEqual(options["apiKey"] as? String, "test-minimax-key")
+        XCTAssertNil(options["apiKey"])
         XCTAssertNotNil(models["MiniMax-M2.7"])
     }
 

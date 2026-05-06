@@ -179,6 +179,24 @@ struct EditServerSheet: View {
                 OpenCodeServerSetupSection(server: server)
 
                 Section {
+                    NavigationLink {
+                        OpenCodeAIProviderSettingsView(server: server)
+                    } label: {
+                        HStack {
+                            Label("Provider & Models", systemImage: "sparkles")
+                            Spacer()
+                            Text(OpenCodeAIProviderSettingsStore().effectiveProfile(for: server.id).normalizedProviderID)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("server-opencode-ai-provider-link")
+                } header: {
+                    Text("OpenCode AI Provider")
+                } footer: {
+                    Text("Override the global OpenCode provider for this server, or sync the global profile to its OpenCode runtime.")
+                }
+
+                Section {
                     HStack {
                         Label("Status", systemImage: isPushEnabled ? "bell.fill" : "bell.slash")
                         Spacer()

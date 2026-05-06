@@ -147,6 +147,11 @@ struct OpenCodeCustomProviderInput: Equatable {
     var apiKey: String
 }
 
+enum OpenCodeAIProviderCredentialScope: Equatable {
+    case global
+    case server(UUID)
+}
+
 @MainActor
 final class OpenCodeProviderService: ObservableObject {
     static let shared = OpenCodeProviderService()
@@ -173,6 +178,22 @@ final class OpenCodeProviderService: ObservableObject {
         )
     }
 
+    func status(for server: Server) async throws -> OpenCodeProviderStatus {
+        let session = try await sshService.connect(to: server, purpose: .opencode)
+        defer { session.disconnect() }
+
+        let client = client(for: server.id)
+        let resolvedProviders = try await client.providerList(sshSession: session)
+        let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session)
+
+        return OpenCodeProviderStatus(
+            providers: resolvedProviders.all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
+            defaultModels: resolvedProviders.defaultModels,
+            connectedProviderIDs: resolvedProviders.connected.sorted(),
+            authMethods: resolvedAuthMethods
+        )
+    }
+
     func saveAPIKey(_ apiKey: String, providerID: String, for project: RemoteProject) async throws {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -182,11 +203,6 @@ final class OpenCodeProviderService: ObservableObject {
 
         try KeychainManager.shared.storeOpenCodeAPIKey(trimmedKey, providerID: trimmedProviderID)
 
-        if trimmedProviderID.caseInsensitiveCompare("minimax") == .orderedSame {
-            try await saveMiniMaxAPIKeyToProjectConfiguration(trimmedKey, for: project)
-            return
-        }
-
         let session = try await sshService.getConnection(for: project, purpose: .opencode)
         let client = client(for: project)
         _ = try await client.setProviderAPIKey(
@@ -195,6 +211,47 @@ final class OpenCodeProviderService: ObservableObject {
             apiKey: trimmedKey,
             directory: project.path
         )
+    }
+
+    func applyAIProviderProfile(
+        _ profile: OpenCodeAIProviderProfile,
+        credentialScope: OpenCodeAIProviderCredentialScope,
+        to server: Server
+    ) async throws {
+        let normalizedProfile = profile.normalizedForStorage()
+        guard normalizedProfile.isReadyToSave else {
+            throw OpenCodeProviderServiceError.invalidInput
+        }
+
+        let session = try await sshService.connect(to: server, purpose: .opencode)
+        defer { session.disconnect() }
+
+        var loaded = try await loadGlobalConfiguration(session: session)
+        if normalizedProfile.isCustomProvider {
+            try loaded.document.setCustomOpenAICompatibleProvider(
+                id: normalizedProfile.providerID,
+                name: normalizedProfile.providerName,
+                baseURL: normalizedProfile.customBaseURL,
+                modelID: normalizedProfile.customModelID,
+                modelName: normalizedProfile.customModelName,
+                npmPackage: normalizedProfile.npmPackage
+            )
+        }
+
+        loaded.document.setModelSelection(
+            modelID: normalizedProfile.resolvedModelID,
+            smallModelID: normalizedProfile.resolvedSmallModelID
+        )
+        try await writeConfiguration(loaded.document, to: loaded.path, session: session)
+
+        if normalizedProfile.authMode.requiresAPIKey {
+            let apiKey = try retrieveAPIKey(for: normalizedProfile.providerID, scope: credentialScope)
+            _ = try await client(for: server.id).setProviderAPIKey(
+                sshSession: session,
+                providerID: normalizedProfile.providerID,
+                apiKey: apiKey
+            )
+        }
     }
 
     func modelConfiguration(
@@ -249,23 +306,33 @@ final class OpenCodeProviderService: ObservableObject {
             name: input.name,
             baseURL: input.baseURL,
             modelID: input.modelID,
-            modelName: input.modelName,
-            apiKey: apiKey
+            modelName: input.modelName
         )
         loaded.document.setModelSelection(modelID: "\(providerID)/\(input.modelID)", smallModelID: loaded.document.selectedSmallModelID)
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
 
         try KeychainManager.shared.storeOpenCodeAPIKey(apiKey, providerID: providerID)
+
+        let client = client(for: project)
+        _ = try await client.setProviderAPIKey(
+            sshSession: try await sshService.getConnection(for: project, purpose: .opencode),
+            providerID: providerID,
+            apiKey: apiKey,
+            directory: project.path
+        )
     }
 }
 
 enum OpenCodeProviderServiceError: LocalizedError {
     case invalidInput
+    case missingAPIKey(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidInput:
-            return "Provider ID and API key are required."
+            return "Provider ID and model configuration are required."
+        case .missingAPIKey(let providerID):
+            return "No local API key is stored for \(providerID)."
         }
     }
 }
@@ -275,14 +342,17 @@ private extension OpenCodeProviderService {
         clientOverride ?? OpenCodeClientFactory.client(for: project.serverId)
     }
 
+    func client(for serverID: UUID) -> OpenCodeClient {
+        clientOverride ?? OpenCodeClientFactory.client(for: serverID)
+    }
+
     func loadConfiguration(
         for project: RemoteProject,
         scope: OpenCodeConfigurationScope,
         session: SSHSession
     ) async throws -> (path: String, document: OpenCodeMCPConfigDocument) {
         if scope == .global {
-            let path = try await globalConfigurationPath(session: session)
-            return (path, try await readConfiguration(at: path, session: session))
+            return try await loadGlobalConfiguration(session: session)
         }
 
         let jsonPath = "\(project.path)/opencode.json"
@@ -296,6 +366,11 @@ private extension OpenCodeProviderService {
         }
 
         return (jsonPath, OpenCodeMCPConfigDocument())
+    }
+
+    func loadGlobalConfiguration(session: SSHSession) async throws -> (path: String, document: OpenCodeMCPConfigDocument) {
+        let path = try await globalConfigurationPath(session: session)
+        return (path, try await readConfiguration(at: path, session: session))
     }
 
     func readConfiguration(at path: String, session: SSHSession) async throws -> OpenCodeMCPConfigDocument {
@@ -348,17 +423,13 @@ private extension OpenCodeProviderService {
             .replacingOccurrences(of: "`", with: "\\`")
     }
 
-    func saveMiniMaxAPIKeyToProjectConfiguration(_ apiKey: String, for project: RemoteProject) async throws {
-        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        var loaded = try await loadConfiguration(for: project, scope: .project, session: session)
-        try loaded.document.setMiniMaxProvider(apiKey: apiKey)
-        if loaded.document.selectedModelID == nil {
-            loaded.document.setModelSelection(
-                modelID: "minimax/MiniMax-M2.7",
-                smallModelID: loaded.document.selectedSmallModelID
-            )
+    func retrieveAPIKey(for providerID: String, scope: OpenCodeAIProviderCredentialScope) throws -> String {
+        switch scope {
+        case .global:
+            return try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID)
+        case .server(let serverID):
+            return try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID, serverID: serverID)
         }
-        try await writeConfiguration(loaded.document, to: loaded.path, session: session)
     }
 }
 
