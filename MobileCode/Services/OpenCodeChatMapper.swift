@@ -219,6 +219,8 @@ struct OpenCodeChatEventAccumulator {
     private var partOrderByMessageID: [String: [String]] = [:]
     private var assistantMessageOrder: [String] = []
     private var completedMessageIDs: Set<String> = []
+    private var lastEmittedTextByMessageID: [String: String] = [:]
+    private var lastEmittedProgressByPartID: [String: String] = [:]
 
     init(sessionID: String) {
         self.sessionID = sessionID
@@ -312,8 +314,13 @@ struct OpenCodeChatEventAccumulator {
         let content = isTextPart ? (textByPartID[partID] ?? "") : content(for: messageID)
         guard !content.isEmpty else {
             guard let progress = progressText(for: properties.part) else { return [] }
+            guard lastEmittedProgressByPartID[partID] != progress else { return [] }
+            lastEmittedProgressByPartID[partID] = progress
             return [progressChunk(content: progress, raw: raw, messageID: messageID, partID: partID)]
         }
+
+        guard lastEmittedTextByMessageID[messageID] != content else { return [] }
+        lastEmittedTextByMessageID[messageID] = content
 
         return [chunk(
             content: content,
@@ -353,6 +360,7 @@ struct OpenCodeChatEventAccumulator {
         if let partType, partType != "text" {
             return []
         }
+        typeByPartID[partID] = "text"
 
         if partOrderByMessageID[messageID]?.contains(partID) != true {
             partOrderByMessageID[messageID, default: []].append(partID)
@@ -364,6 +372,8 @@ struct OpenCodeChatEventAccumulator {
 
         let content = textByPartID[partID] ?? ""
         guard !content.isEmpty else { return [] }
+        guard lastEmittedTextByMessageID[messageID] != content else { return [] }
+        lastEmittedTextByMessageID[messageID] = content
 
         return [chunk(
             content: content,
@@ -485,7 +495,7 @@ struct OpenCodeChatEventAccumulator {
         case .stepStart:
             return payload.title ?? "Working..."
         case .stepFinish:
-            return "Finishing step..."
+            return nil
         case .agent, .subtask:
             return payload.title ?? "Working with a subtask..."
         case .retry:

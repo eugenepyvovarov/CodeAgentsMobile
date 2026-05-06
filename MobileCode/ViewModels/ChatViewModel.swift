@@ -678,8 +678,9 @@ class ChatViewModel {
             var didReceiveProgress = false
             var toolMessagesByPartID: [String: Message] = [:]
             var textMessagesByPartID: [String: Message] = [:]
-            var lastProgressMessage: Message?
-            var lastProgressContent: String?
+            var textMessagesByMessageID: [String: Message] = [:]
+            var assistantMessageIsTransientProgress = false
+            var assistantMessageWasRemoved = false
 
             for try await chunk in stream {
                 let chunkType = chunk.metadata?["type"] as? String
@@ -730,25 +731,14 @@ class ChatViewModel {
 
                 if chunkType == "opencode_progress" {
                     didReceiveProgress = true
-                    let progressMessage: Message
-                    if !didReceiveAnswerText && assistantMessage.content.isEmpty {
-                        progressMessage = assistantMessage
-                    } else if lastProgressContent == chunk.content, let existing = lastProgressMessage {
-                        progressMessage = existing
-                    } else {
-                        progressMessage = createMessage(
-                            content: "",
-                            role: .assistant,
-                            isComplete: false,
-                            isStreaming: true
-                        )
+                    guard !didReceiveAnswerText else {
+                        continue
                     }
-                    updateMessage(progressMessage, with: chunk.content)
-                    progressMessage.isStreaming = true
-                    progressMessage.isComplete = false
-                    project.activeStreamingMessageId = progressMessage.id
-                    lastProgressMessage = progressMessage
-                    lastProgressContent = chunk.content
+                    updateMessage(assistantMessage, with: chunk.content)
+                    assistantMessage.isStreaming = true
+                    assistantMessage.isComplete = false
+                    assistantMessageIsTransientProgress = true
+                    project.activeStreamingMessageId = assistantMessage.id
                     if let provider = chunk.metadata?["runtimeProvider"] as? String {
                         project.lastSuccessfulRuntimeProviderRawValue = provider
                     }
@@ -765,9 +755,12 @@ class ChatViewModel {
                 }
 
                 if !chunk.content.isEmpty {
+                    let messageID = chunk.metadata?["opencodeMessageId"] as? String
                     let partID = chunk.metadata?["opencodeCurrentPartId"] as? String
                     let targetMessage: Message
-                    if let partID, let existing = textMessagesByPartID[partID] {
+                    if let messageID, let existing = textMessagesByMessageID[messageID] {
+                        targetMessage = existing
+                    } else if let partID, let existing = textMessagesByPartID[partID] {
                         targetMessage = existing
                     } else if !didReceiveAnswerText && !didReceiveProgress && assistantMessage.content.isEmpty {
                         targetMessage = assistantMessage
@@ -779,12 +772,21 @@ class ChatViewModel {
                             isStreaming: true
                         )
                     }
+                    if let messageID {
+                        textMessagesByMessageID[messageID] = targetMessage
+                    }
                     if let partID {
                         textMessagesByPartID[partID] = targetMessage
                     }
                     updateOpenCodeMessage(targetMessage, with: chunk)
                     project.activeStreamingMessageId = targetMessage.id
                     didReceiveAnswerText = true
+                    if targetMessage.id != assistantMessage.id,
+                       assistantMessageIsTransientProgress || assistantMessage.content.isEmpty {
+                        removeTransientOpenCodeMessage(assistantMessage)
+                        assistantMessageIsTransientProgress = false
+                        assistantMessageWasRemoved = true
+                    }
                 }
 
                 if let provider = chunk.metadata?["runtimeProvider"] as? String {
@@ -796,9 +798,15 @@ class ChatViewModel {
                        let completedTextMessage = textMessagesByPartID[partID] {
                         completedTextMessage.isStreaming = false
                         completedTextMessage.isComplete = true
-                    } else {
+                    } else if let messageID = chunk.metadata?["opencodeMessageId"] as? String,
+                              let completedTextMessage = textMessagesByMessageID[messageID] {
+                        completedTextMessage.isStreaming = false
+                        completedTextMessage.isComplete = true
+                    } else if !assistantMessageWasRemoved {
                         assistantMessage.isStreaming = false
                         assistantMessage.isComplete = true
+                    } else {
+                        project.activeStreamingMessageId = nil
                     }
                     break
                 }
@@ -819,10 +827,10 @@ class ChatViewModel {
                 textMessage.isStreaming = false
                 textMessage.isComplete = true
             }
-            lastProgressMessage?.isStreaming = false
-            lastProgressMessage?.isComplete = true
-            assistantMessage.isStreaming = false
-            assistantMessage.isComplete = true
+            if !assistantMessageWasRemoved {
+                assistantMessage.isStreaming = false
+                assistantMessage.isComplete = true
+            }
             project.activeStreamingMessageId = nil
             project.updateLastModified()
             saveChanges()
@@ -1845,6 +1853,17 @@ class ChatViewModel {
             loadMessages()
             messagesRevision += 1
         }
+    }
+
+    private func removeTransientOpenCodeMessage(_ message: Message) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+
+        messages.remove(at: index)
+        if let modelContext {
+            modelContext.delete(message)
+            saveChanges()
+        }
+        messagesRevision += 1
     }
     
     /// Create a ToolResultBlock without decoder

@@ -112,6 +112,30 @@ final class OpenCodeChatMapperTests: XCTestCase {
 
         XCTAssertEqual(idleChunks.last?.content, "Hello from OpenCode")
         XCTAssertEqual(idleChunks.last?.isComplete, true)
+        XCTAssertEqual(idleChunks.last?.metadata?["opencodeCurrentPartId"] as? String, "prt_text")
+    }
+
+    func testAccumulatorTreatsRepeatedPartSnapshotsAsUpserts() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let firstSnapshot = try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","text":"Site Monitoring Status","id":"prt_text","messageID":"msg_assistant","sessionID":"ses_fixture"},"time":2}}
+        """)
+        let firstChunks = accumulator.consume(firstSnapshot)
+        let duplicateChunks = accumulator.consume(firstSnapshot)
+
+        XCTAssertEqual(firstChunks.last?.content, "Site Monitoring Status")
+        XCTAssertTrue(duplicateChunks.isEmpty)
+
+        let updatedChunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"text","text":"Site Monitoring Status\\nBoth sites are healthy.","id":"prt_text","messageID":"msg_assistant","sessionID":"ses_fixture"},"time":3}}
+        """))
+
+        XCTAssertEqual(updatedChunks.last?.content, "Site Monitoring Status\nBoth sites are healthy.")
     }
 
     func testAccumulatorIgnoresReasoningPartDeltas() throws {
@@ -191,6 +215,20 @@ final class OpenCodeChatMapperTests: XCTestCase {
         """))
 
         XCTAssertEqual(chunks.last?.content, "final answer")
+    }
+
+    func testAccumulatorSuppressesMeaninglessStepFinishProgress() throws {
+        var accumulator = OpenCodeChatEventAccumulator(sessionID: "ses_fixture")
+
+        _ = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.updated","properties":{"sessionID":"ses_fixture","info":{"id":"msg_assistant","role":"assistant","sessionID":"ses_fixture","time":{"created":1}}}}
+        """))
+
+        let chunks = accumulator.consume(try OpenCodeEventMapper.decodeJSON("""
+        {"type":"message.part.updated","properties":{"sessionID":"ses_fixture","part":{"type":"step-finish","id":"prt_step","messageID":"msg_assistant","sessionID":"ses_fixture","reason":"tool-calls","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}},"time":2}}
+        """))
+
+        XCTAssertTrue(chunks.isEmpty)
     }
 
     func testAccumulatorIgnoresNonAnswerPartsInMainAssistantText() throws {
