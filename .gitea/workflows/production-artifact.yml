@@ -12,8 +12,8 @@ permissions:
 
 jobs:
   production-artifact:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: macos-ultramac
+    timeout-minutes: 60
     env:
       GIT_SSL_NO_VERIFY: "1"
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -23,6 +23,28 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_REGISTRY_USER: ${{ secrets.OPENCODE_REGISTRY_USER }}
+      OPENCODE_REGISTRY_TOKEN: ${{ secrets.OPENCODE_REGISTRY_TOKEN }}
+      OPENCODE_FALLBACK_REGISTRY_USER: opencode-bot
+      OPENCODE_FALLBACK_REGISTRY_TOKEN: ${{ secrets.OPENCODE_PERSONA_OPENCODE_BOT_TOKEN }}
+      OPENCODE_PRODUCTION_ARTIFACT_RUN_NUMBER: ${{ gitea.run_number }}
+      SPARKLE_ED25519_PRIVATE_KEY: ${{ secrets.SPARKLE_ED25519_PRIVATE_KEY }}
+      SPARKLE_ED25519_PRIVATE_KEY_B64: ${{ secrets.SPARKLE_ED25519_PRIVATE_KEY_B64 }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      SPARKLE_PRIVATE_KEY_B64: ${{ secrets.SPARKLE_PRIVATE_KEY_B64 }}
+      SPARKLE_PRIVATE_KEY_PEM: ${{ secrets.SPARKLE_PRIVATE_KEY_PEM }}
+      DEVELOPER_ID_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
+      CODESIGN_ENTITLEMENTS: ${{ secrets.CODESIGN_ENTITLEMENTS }}
+      CODESIGN_ADDITIONAL_FLAGS: ${{ secrets.CODESIGN_ADDITIONAL_FLAGS }}
+      NOTARIZE_APP: ${{ secrets.NOTARIZE_APP }}
+      NOTARYTOOL_PROFILE: ${{ secrets.NOTARYTOOL_PROFILE }}
+      NOTARY_PROFILE: ${{ secrets.NOTARY_PROFILE }}
+      NOTARY_PRIMARY_BUNDLE_ID: ${{ secrets.NOTARY_PRIMARY_BUNDLE_ID }}
+      DOWNLOAD_BASE: ${{ secrets.DOWNLOAD_BASE }}
+      RELEASE_NOTES_BASE_URL: ${{ secrets.RELEASE_NOTES_BASE_URL }}
+      SPARKLE_CHANNEL_LINK: ${{ secrets.SPARKLE_CHANNEL_LINK }}
+      PHASE_SERVICE_TOKEN: ${{ secrets.PHASE_SERVICE_TOKEN }}
+      PHASE_HOST: ${{ secrets.PHASE_HOST }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -34,7 +56,49 @@ jobs:
 
       - name: Set up Python
         run: |
-          PYTHON_BIN="$(command -v python3)"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:$PATH"
+          validate_python_bin() {
+            local candidate="$1"
+            local probe_dir=""
+
+            probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/production-artifact-venv.XXXXXX")"
+            if "$candidate" -m venv "$probe_dir" >/dev/null 2>&1; then
+              rm -rf "$probe_dir"
+              return 0
+            fi
+            rm -rf "$probe_dir"
+            return 1
+          }
+          resolve_python_bin() {
+            local resolved=""
+            local candidate
+
+            if [[ -n "${OPENCODE_PYTHON_BIN:-}" ]]; then
+              if [[ ! -x "${OPENCODE_PYTHON_BIN}" ]]; then
+                echo "Configured OPENCODE_PYTHON_BIN is not executable: ${OPENCODE_PYTHON_BIN}" >&2
+                exit 1
+              fi
+              if ! validate_python_bin "${OPENCODE_PYTHON_BIN}"; then
+                echo "Configured OPENCODE_PYTHON_BIN cannot create virtual environments: ${OPENCODE_PYTHON_BIN}" >&2
+                exit 1
+              fi
+              printf '%s\n' "${OPENCODE_PYTHON_BIN}"
+              return 0
+            fi
+
+            for candidate in python3.14 python3.13 python3.12 /usr/bin/python3 python3; do
+              resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+              if [[ -n "${resolved}" ]] && validate_python_bin "${resolved}"; then
+                printf '%s\n' "${resolved}"
+                return 0
+              fi
+            done
+
+            echo "No supported Python interpreter with a working venv module found in PATH." >&2
+            exit 1
+          }
+          PYTHON_BIN="$(resolve_python_bin)"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
           echo "PRODUCTION_ARTIFACT_VENV=$PWD/.production-artifact-venv" >> "$GITHUB_ENV"
 
@@ -61,6 +125,19 @@ jobs:
           assert isinstance(production_artifact["supported"], bool)
           assert production_artifact["result"]["format"] == "json"
           assert production_artifact["result"]["transport"] == "stdout"
+          phase = production_artifact.get("phase") or {}
+          if not isinstance(phase, dict):
+              raise SystemExit("production_artifact.phase must be an object when present")
+          phase_enabled = phase.get("enabled") is True
+          phase_app_id = str(phase.get("app_id") or "").strip()
+          phase_env = str(phase.get("env") or "prod").strip()
+          phase_path = str(phase.get("path") or "/").strip()
+          if phase_enabled and not phase_app_id:
+              raise SystemExit("production_artifact.phase.app_id is required when phase.enabled is true")
+          if phase_enabled and not phase_env:
+              raise SystemExit("production_artifact.phase.env is required when phase.enabled is true")
+          if phase_enabled and not phase_path:
+              raise SystemExit("production_artifact.phase.path is required when phase.enabled is true")
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
           raw = f"{owner}-{repo}".lower()
@@ -76,6 +153,12 @@ jobs:
               handle.write(
                   f"OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED={'true' if production_artifact['supported'] else 'false'}\n"
               )
+              handle.write(
+                  f"OPENCODE_PRODUCTION_ARTIFACT_PHASE_ENABLED={'true' if phase_enabled else 'false'}\n"
+              )
+              handle.write(f"OPENCODE_PRODUCTION_ARTIFACT_PHASE_APP_ID={phase_app_id}\n")
+              handle.write(f"OPENCODE_PRODUCTION_ARTIFACT_PHASE_ENV={phase_env}\n")
+              handle.write(f"OPENCODE_PRODUCTION_ARTIFACT_PHASE_PATH={phase_path}\n")
           print("managed production-artifact config ok")
           PY
 
@@ -104,6 +187,24 @@ jobs:
           "$PRODUCTION_ARTIFACT_VENV/bin/python" --version
           "$PRODUCTION_ARTIFACT_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
 
+      - name: Select production registry credentials
+        if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED == 'true' }}
+        run: |
+          if [ -n "${OPENCODE_REGISTRY_TOKEN:-}" ]; then
+            if [ -z "${OPENCODE_REGISTRY_USER:-}" ]; then
+              echo "OPENCODE_REGISTRY_USER must be set when OPENCODE_REGISTRY_TOKEN is provided." >&2
+              exit 1
+            fi
+            echo "REGISTRY_USER=${OPENCODE_REGISTRY_USER}" >> "$GITHUB_ENV"
+            echo "REGISTRY_PASSWORD=${OPENCODE_REGISTRY_TOKEN}" >> "$GITHUB_ENV"
+          elif [ -n "${OPENCODE_FALLBACK_REGISTRY_TOKEN:-}" ]; then
+            echo "REGISTRY_USER=${OPENCODE_FALLBACK_REGISTRY_USER}" >> "$GITHUB_ENV"
+            echo "REGISTRY_PASSWORD=${OPENCODE_FALLBACK_REGISTRY_TOKEN}" >> "$GITHUB_ENV"
+          else
+            echo "No production registry token is configured. Set OPENCODE_REGISTRY_USER/OPENCODE_REGISTRY_TOKEN or provide the fallback opencode-bot persona token." >&2
+            exit 1
+          fi
+
       - name: Run pinned production-artifact worker
         if: ${{ github.ref_name != env.OPENCODE_SETUP_BRANCH && env.OPENCODE_PRODUCTION_ARTIFACT_SUPPORTED == 'true' }}
         run: |
@@ -114,9 +215,44 @@ jobs:
             "repo_name": "$OPENCODE_REPO_NAME"
           }
           EOF
+          cat > .opencode-run-production-artifact-worker.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
           "$PRODUCTION_ARTIFACT_VENV/bin/python" controller/scripts/production_artifact_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-production-artifact-project.json" \
             --automation-config "$PWD/controller/automation.json" \
             --event-name "$GITHUB_EVENT_NAME" \
             --event-path "$GITHUB_EVENT_PATH"
+          EOF
+          chmod +x .opencode-run-production-artifact-worker.sh
+          if [ "${OPENCODE_PRODUCTION_ARTIFACT_PHASE_ENABLED:-false}" = "true" ]; then
+            if ! command -v phase >/dev/null 2>&1; then
+              if [ -x /opt/homebrew/bin/phase ]; then
+                export PATH="/opt/homebrew/bin:$PATH"
+              else
+                echo "Phase CLI is required for production_artifact.phase but was not found on PATH or /opt/homebrew/bin/phase." >&2
+                exit 1
+              fi
+            fi
+            phase --version
+            run_phase() {
+              phase run \
+                --app-id "$OPENCODE_PRODUCTION_ARTIFACT_PHASE_APP_ID" \
+                --env "$OPENCODE_PRODUCTION_ARTIFACT_PHASE_ENV" \
+                --path "$OPENCODE_PRODUCTION_ARTIFACT_PHASE_PATH" \
+                "$@"
+            }
+            if [ -n "${PHASE_SERVICE_TOKEN:-}" ]; then
+              if ! run_phase "true" >/tmp/opencode-phase-preflight.log 2>&1; then
+                echo "PHASE_SERVICE_TOKEN was provided but Phase rejected it; falling back to runner keychain auth." >&2
+                unset PHASE_SERVICE_TOKEN
+              fi
+            else
+              echo "PHASE_SERVICE_TOKEN is not set; trying runner keychain auth." >&2
+            fi
+            run_phase \
+              "bash .opencode-run-production-artifact-worker.sh"
+          else
+            bash .opencode-run-production-artifact-worker.sh
+          fi
