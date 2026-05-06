@@ -140,6 +140,16 @@ extension OpenCodeClient {
     }
 
     @discardableResult
+    func disposeInstance(sshSession: SSHSession) async throws -> Bool {
+        try await jsonRequest(
+            session: sshSession,
+            method: .post,
+            path: "/instance/dispose",
+            responseType: Bool.self
+        )
+    }
+
+    @discardableResult
     func replyPermission(
         sshSession: SSHSession,
         sessionID: String,

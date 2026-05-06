@@ -266,11 +266,19 @@ export const triggerReplyFinished = onRequest({ region: "us-central1", invoker: 
         data: dataPayload,
         apns: {
           headers: {
+            "apns-push-type": "alert",
+            "apns-priority": "10",
             // APNs spec: apns-collapse-id must be <= 64 bytes. agentKey is a 64-char hex string.
             "apns-collapse-id": agentKey,
           },
           payload: {
             aps: {
+              alert: {
+                title: titleText,
+                body: bodyText,
+              },
+              sound: "default",
+              threadId: agentKey,
               contentAvailable: true,
             },
           },

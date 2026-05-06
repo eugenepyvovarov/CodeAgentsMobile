@@ -33,6 +33,38 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertEqual(status.modelChoices.first?.id, "anthropic/claude-sonnet")
     }
 
+    func testProviderAuthMethodDetectsOAuthAndAPIKeyTypes() throws {
+        let json = """
+        [
+          { "type": "oauth", "label": "ChatGPT Pro/Plus (headless)" },
+          { "type": "api", "label": "Manually enter API Key" }
+        ]
+        """
+
+        let methods = try JSONDecoder().decode([OpenCodeProviderAuthMethod].self, from: Data(json.utf8))
+
+        XCTAssertTrue(methods[0].isOAuthBased)
+        XCTAssertFalse(methods[0].isAPIKeyBased)
+        XCTAssertFalse(methods[1].isOAuthBased)
+        XCTAssertTrue(methods[1].isAPIKeyBased)
+    }
+
+    func testProviderOAuthAuthorizationDecodesHeadlessDeviceFlow() throws {
+        let json = """
+        {
+          "url": "https://auth.openai.com/codex/device",
+          "method": "auto",
+          "instructions": "Enter code: ABCD-EFGH"
+        }
+        """
+
+        let authorization = try JSONDecoder().decode(OpenCodeProviderOAuthAuthorization.self, from: Data(json.utf8))
+
+        XCTAssertEqual(authorization.url, "https://auth.openai.com/codex/device")
+        XCTAssertTrue(authorization.isAutoBased)
+        XCTAssertFalse(authorization.isCodeBased)
+    }
+
     func testAPIKeyProviderChoicesIncludeMiniMaxFallback() {
         let anthropic = OpenCodeProvider(
             id: "anthropic",
@@ -54,6 +86,62 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertEqual(status.apiKeyProviderChoices.first?.name, "Anthropic From OpenCode")
         XCTAssertTrue(status.apiKeyProviderChoices.contains(OpenCodeAPIKeyProviderChoice(id: "minimax", name: "MiniMax")))
         XCTAssertEqual(status.apiKeyProviderChoices.filter { $0.id == "anthropic" }.count, 1)
+    }
+
+    func testProviderStatusUsesConfiguredModelsWhenAvailable() {
+        let catalogOpenAI = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            source: nil,
+            env: [],
+            key: nil,
+            models: [
+                "gpt-5.4-mini": OpenCodeProviderModel(id: "gpt-5.4-mini", name: "GPT-5.4 Mini"),
+                "gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5")
+            ]
+        )
+        let configuredOpenAI = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            source: nil,
+            env: [],
+            key: nil,
+            models: [
+                "gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5")
+            ]
+        )
+        let status = OpenCodeProviderStatus(
+            providers: [catalogOpenAI],
+            configuredProviders: [configuredOpenAI],
+            defaultModels: [:],
+            connectedProviderIDs: ["openai"],
+            authMethods: [:]
+        )
+
+        XCTAssertEqual(status.modelChoices(for: "openai").map(\.id), ["openai/gpt-5.5"])
+        XCTAssertFalse(status.hasModel(providerID: "openai", modelID: "gpt-5.4-mini"))
+    }
+
+    func testProviderStatusSortsModelsByRawID() {
+        let provider = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            source: nil,
+            env: [],
+            key: nil,
+            models: [
+                "z-model": OpenCodeProviderModel(id: "z-model", name: "A Display Name"),
+                "a-model": OpenCodeProviderModel(id: "a-model", name: "Z Display Name")
+            ]
+        )
+        let status = OpenCodeProviderStatus(
+            providers: [provider],
+            defaultModels: [:],
+            connectedProviderIDs: [],
+            authMethods: [:]
+        )
+
+        XCTAssertEqual(status.modelChoices(for: "openai").map(\.id), ["openai/a-model", "openai/z-model"])
     }
 
     func testProviderConnectionDefaultsUseOpenCodeDefaultModels() {
@@ -84,6 +172,40 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
             "minimax/MiniMax-M2.7"
         )
         XCTAssertNil(OpenCodeProviderConnectionDefaults.suggestedModelID(providerID: "openai", status: nil))
+    }
+
+    func testProviderConnectionDefaultsSkipUnavailableDefaultModel() {
+        let openAI = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            source: nil,
+            env: [],
+            key: nil,
+            models: [
+                "gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5")
+            ]
+        )
+        let status = OpenCodeProviderStatus(
+            providers: [openAI],
+            configuredProviders: [openAI],
+            defaultModels: ["openai": "gpt-5.4-mini"],
+            connectedProviderIDs: ["openai"],
+            authMethods: [:]
+        )
+
+        XCTAssertNil(OpenCodeProviderConnectionDefaults.suggestedModelID(providerID: "openai", status: status))
+    }
+
+    func testOpenCodeProviderProfileDoesNotRequireAPIKeyCredential() {
+        let profile = OpenCodeAIProviderProfile(
+            providerID: "opencode",
+            providerName: "OpenCode Zen",
+            authMode: .apiKey,
+            modelID: "opencode/grok-code-fast-1"
+        )
+
+        XCTAssertFalse(profile.requiresAPIKeyCredential)
+        XCTAssertTrue(profile.isReadyToSave)
     }
 
     func testDocumentWritesModelSelectionAndProviderFilters() throws {
@@ -196,6 +318,87 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertEqual(options["baseURL"] as? String, "https://api.minimax.io/anthropic/v1")
         XCTAssertNil(options["apiKey"])
         XCTAssertNotNil(models["MiniMax-M2.7"])
+        XCTAssertNotNil(models["MiniMax-M2.7-highspeed"])
+    }
+
+    func testDocumentWritesCatalogCustomProviderForMiniMaxCodingPlan() throws {
+        var document = OpenCodeMCPConfigDocument()
+        let provider = OpenCodeProvider(
+            id: "minimax-coding-plan",
+            name: "MiniMax Coding Plan (minimax.io)",
+            source: "custom",
+            env: ["MINIMAX_API_KEY"],
+            key: nil,
+            models: [
+                "MiniMax-M2.7": OpenCodeProviderModel(
+                    id: "MiniMax-M2.7",
+                    name: "MiniMax-M2.7",
+                    api: OpenCodeProviderModelAPI(
+                        id: "MiniMax-M2.7",
+                        url: "https://api.minimax.io/anthropic/v1",
+                        npm: "@ai-sdk/anthropic"
+                    )
+                ),
+                "MiniMax-M2.7-highspeed": OpenCodeProviderModel(
+                    id: "MiniMax-M2.7-highspeed",
+                    name: "MiniMax-M2.7-highspeed",
+                    api: OpenCodeProviderModelAPI(
+                        id: "MiniMax-M2.7-highspeed",
+                        url: "https://api.minimax.io/anthropic/v1",
+                        npm: "@ai-sdk/anthropic"
+                    )
+                )
+            ]
+        )
+
+        try document.setCatalogProvider(provider, preferredModelID: "MiniMax-M2.7")
+
+        let decoded = try OpenCodeMCPConfigDocument(jsonString: document.toJSONString())
+        let providers = try XCTUnwrap(decoded.root["provider"] as? [String: Any])
+        let miniMax = try XCTUnwrap(providers["minimax-coding-plan"] as? [String: Any])
+        let options = try XCTUnwrap(miniMax["options"] as? [String: Any])
+        let models = try XCTUnwrap(miniMax["models"] as? [String: Any])
+
+        XCTAssertEqual(miniMax["npm"] as? String, "@ai-sdk/anthropic")
+        XCTAssertEqual(miniMax["name"] as? String, "MiniMax Coding Plan (minimax.io)")
+        XCTAssertEqual(options["baseURL"] as? String, "https://api.minimax.io/anthropic/v1")
+        XCTAssertNotNil(models["MiniMax-M2.7"])
+        XCTAssertNotNil(models["MiniMax-M2.7-highspeed"])
+    }
+
+    func testDocumentWritesCatalogProviderWithoutExplicitBaseURL() throws {
+        var document = OpenCodeMCPConfigDocument()
+        let provider = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            source: "custom",
+            env: ["OPENAI_API_KEY"],
+            key: nil,
+            npm: "@ai-sdk/openai",
+            models: [
+                "gpt-5.5": OpenCodeProviderModel(
+                    id: "gpt-5.5",
+                    name: "GPT-5.5",
+                    api: OpenCodeProviderModelAPI(
+                        id: "gpt-5.5",
+                        url: nil,
+                        npm: nil
+                    )
+                )
+            ]
+        )
+
+        try document.setCatalogProvider(provider, preferredModelID: "gpt-5.5")
+
+        let decoded = try OpenCodeMCPConfigDocument(jsonString: document.toJSONString())
+        let providers = try XCTUnwrap(decoded.root["provider"] as? [String: Any])
+        let openAI = try XCTUnwrap(providers["openai"] as? [String: Any])
+        let models = try XCTUnwrap(openAI["models"] as? [String: Any])
+
+        XCTAssertEqual(openAI["npm"] as? String, "@ai-sdk/openai")
+        XCTAssertEqual(openAI["name"] as? String, "OpenAI")
+        XCTAssertNil(openAI["options"])
+        XCTAssertNotNil(models["gpt-5.5"])
     }
 
     func testPromptModelParsesFullID() throws {
@@ -205,5 +408,24 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertEqual(model.modelID, "claude-sonnet")
         XCTAssertEqual(model.fullID, "anthropic/claude-sonnet")
         XCTAssertNil(OpenCodePromptModel(fullID: "missing-provider-separator"))
+    }
+
+    func testOpenCodeErrorDisplayExplainsMissingProviderModel() throws {
+        let json = """
+        {
+          "name": "ProviderModelNotFoundError",
+          "data": {
+            "providerID": "minimax-coding-plan",
+            "modelID": "MiniMax-M2.7"
+          }
+        }
+        """
+
+        let error = try JSONDecoder().decode(OpenCodeErrorInfo.self, from: Data(json.utf8))
+
+        XCTAssertEqual(
+            error.displayMessage,
+            "OpenCode does not have minimax-coding-plan/MiniMax-M2.7 loaded. Sync the provider config and reload OpenCode."
+        )
     }
 }

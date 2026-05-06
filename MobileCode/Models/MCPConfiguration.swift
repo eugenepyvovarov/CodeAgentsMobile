@@ -511,16 +511,71 @@ struct OpenCodeMCPConfigDocument {
         ensureSchema()
     }
 
+    mutating func setCatalogProvider(_ provider: OpenCodeProvider, preferredModelID: String? = nil) throws {
+        let providerID = provider.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = provider.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !providerID.isEmpty, !displayName.isEmpty, !provider.models.isEmpty else {
+            throw MCPConfigurationError.encodingFailed
+        }
+
+        let preferredModel = preferredModelID.flatMap { id in
+            provider.models.values.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
+        }
+        let modelAPIs = ([preferredModel].compactMap { $0 } + provider.models.values).compactMap(\.api)
+        let npm = (
+            modelAPIs.first { $0.npm?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }?.npm
+                ?? provider.npm
+                ?? ""
+        )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL = (modelAPIs.first { $0.url?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }?.url ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !npm.isEmpty else {
+            throw MCPConfigurationError.encodingFailed
+        }
+
+        let modelConfigs = Dictionary(
+            uniqueKeysWithValues: provider.models.values
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map { model in
+                    (
+                        model.id,
+                        ["name": model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? model.id : model.name] as [String: Any]
+                    )
+                }
+        )
+
+        var providerConfig: [String: Any] = [
+            "npm": npm,
+            "name": displayName,
+            "models": modelConfigs
+        ]
+        if !baseURL.isEmpty {
+            providerConfig["options"] = [
+                "baseURL": baseURL
+            ]
+        }
+
+        var providers = root["provider"] as? [String: Any] ?? [:]
+        providers[providerID] = providerConfig
+        root["provider"] = providers
+        ensureSchema()
+    }
+
     mutating func setMiniMaxProvider() {
         var providers = root["provider"] as? [String: Any] ?? [:]
         providers["minimax"] = [
             "npm": "@ai-sdk/anthropic",
+            "name": "MiniMax",
             "options": [
                 "baseURL": "https://api.minimax.io/anthropic/v1"
             ],
             "models": [
                 "MiniMax-M2.7": [
                     "name": "MiniMax-M2.7"
+                ],
+                "MiniMax-M2.7-highspeed": [
+                    "name": "MiniMax-M2.7-highspeed"
                 ]
             ]
         ]

@@ -349,6 +349,17 @@ final class OpenCodeSessionAPITests: XCTestCase {
         XCTAssertEqual(body["key"] as? String, "sk-test")
     }
 
+    func testDisposeInstanceUsesInstanceDisposeEndpoint() async throws {
+        let response = try httpResponse(status: "200 OK", body: "true")
+        let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        let result = try await client.disposeInstance(sshSession: sshSession)
+
+        XCTAssertTrue(result)
+        XCTAssertTrue(sshSession.sentInput.contains("POST /instance/dispose HTTP/1.1"))
+    }
+
     func testHydrationDiffComparesMessageAndPartIDs() throws {
         let remote = try JSONDecoder().decode(
             [OpenCodeSessionMessage].self,

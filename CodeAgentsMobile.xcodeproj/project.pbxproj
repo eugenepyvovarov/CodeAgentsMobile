@@ -41,9 +41,22 @@
 		87CEB3282E156C1F00AC3F71 /* LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		87F000012F00000100ABCDEF /* Exceptions for "MobileCode" folder in "CodeAgentsMobile" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 877CE6652DF8632600B93778 /* CodeAgentsMobile */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		877CE6682DF8632600B93778 /* MobileCode */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				87F000012F00000100ABCDEF /* Exceptions for "MobileCode" folder in "CodeAgentsMobile" target */,
+			);
 			path = MobileCode;
 			sourceTree = "<group>";
 		};
@@ -440,8 +453,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MobileCode/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Code Agents";
+				INFOPLIST_KEY_FirebaseAppDelegateProxyEnabled = NO;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Code Agents uses the camera so you can take photos and attach them to chats.";
@@ -482,8 +497,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VXRLZNZH2E;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MobileCode/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Code Agents";
+				INFOPLIST_KEY_FirebaseAppDelegateProxyEnabled = NO;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Code Agents uses the camera so you can take photos and attach them to chats.";

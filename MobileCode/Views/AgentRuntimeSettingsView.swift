@@ -227,6 +227,8 @@ struct AgentRuntimeSettingsView: View {
             }
             .accessibilityIdentifier("opencode-api-provider-picker")
             .onChange(of: apiProviderID) { _, _ in
+                selectedModelID = ""
+                selectedSmallModelID = ""
                 applySuggestedModelsForSelectedProvider(overwriteExisting: false)
             }
 
@@ -262,7 +264,7 @@ struct AgentRuntimeSettingsView: View {
             } else if let suggestedModelID = suggestedModelIDForSelectedProvider {
                 Button {
                     selectedModelID = suggestedModelID
-                    selectedSmallModelID = suggestedSmallModelIDForSelectedProvider ?? suggestedModelID
+                    selectedSmallModelID = suggestedModelID
                 } label: {
                     Label("Use \(suggestedModelID)", systemImage: "wand.and.stars")
                 }
@@ -458,7 +460,6 @@ struct AgentRuntimeSettingsView: View {
         let resolvedModelID = selectedModelID.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? suggestedModelIDForSelectedProvider
         let resolvedSmallModelID = selectedSmallModelID.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-            ?? suggestedSmallModelIDForSelectedProvider
             ?? resolvedModelID
 
         do {
@@ -580,17 +581,14 @@ struct AgentRuntimeSettingsView: View {
         OpenCodeProviderConnectionDefaults.suggestedModelID(providerID: apiProviderID, status: providerStatus)
     }
 
-    private var suggestedSmallModelIDForSelectedProvider: String? {
-        OpenCodeProviderConnectionDefaults.suggestedSmallModelID(providerID: apiProviderID, status: providerStatus)
-    }
-
     private func applySuggestedModelsForSelectedProvider(overwriteExisting: Bool) {
         guard let suggestedModelID = suggestedModelIDForSelectedProvider else { return }
         if overwriteExisting || selectedModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             selectedModelID = suggestedModelID
         }
         if overwriteExisting || selectedSmallModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            selectedSmallModelID = suggestedSmallModelIDForSelectedProvider ?? suggestedModelID
+            selectedSmallModelID = selectedModelID.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                ?? suggestedModelID
         }
     }
 

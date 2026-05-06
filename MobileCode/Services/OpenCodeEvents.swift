@@ -660,6 +660,77 @@ struct OpenCodeErrorInfo: Decodable {
         message = try container.decodeIfPresent(String.self, forKey: .message)
         data = try container.decodeIfPresent([String: AnyCodable].self, forKey: .data)
     }
+
+    var displayMessage: String {
+        if let message = message?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !message.isEmpty {
+            return message
+        }
+
+        if let providerModelMessage {
+            return providerModelMessage
+        }
+
+        if let nested = firstNestedError(in: data?.mapValues(\.value) ?? raw.mapValues(\.value)),
+           !nested.isEmpty {
+            return nested
+        }
+
+        if let name = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            return name
+        }
+
+        return "OpenCode session error."
+    }
+
+    private var providerModelMessage: String? {
+        let values = data?.mapValues(\.value) ?? raw.mapValues(\.value)
+        let providerID = values["providerID"] as? String
+        let modelID = values["modelID"] as? String
+        guard let providerID, let modelID else { return nil }
+        return "OpenCode does not have \(providerID)/\(modelID) loaded. Sync the provider config and reload OpenCode."
+    }
+
+    private func firstNestedError(in value: Any) -> String? {
+        if let dictionary = value as? [String: Any] {
+            let nestedName = dictionary["name"] as? String
+            let nestedMessage = dictionary["message"] as? String
+            if let nestedMessage = nestedMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !nestedMessage.isEmpty {
+                return nestedMessage
+            }
+
+            if nestedName == "ProviderModelNotFoundError",
+               let nestedData = dictionary["data"] as? [String: Any],
+               let providerID = nestedData["providerID"] as? String,
+               let modelID = nestedData["modelID"] as? String {
+                return "OpenCode does not have \(providerID)/\(modelID) loaded. Sync the provider config and reload OpenCode."
+            }
+
+            if let nestedName = nestedName?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !nestedName.isEmpty,
+               nestedName != name {
+                return nestedName
+            }
+
+            for child in dictionary.values {
+                if let found = firstNestedError(in: child) {
+                    return found
+                }
+            }
+        }
+
+        if let array = value as? [Any] {
+            for child in array {
+                if let found = firstNestedError(in: child) {
+                    return found
+                }
+            }
+        }
+
+        return nil
+    }
 }
 
 private extension String {

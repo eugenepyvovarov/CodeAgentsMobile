@@ -242,7 +242,7 @@ struct OpenCodeChatEventAccumulator {
             return completionChunksIfReady(raw: raw)
         case .sessionError(let properties, let raw):
             guard matches(properties.sessionID) else { return [] }
-            return [errorChunk(message: properties.error.message ?? properties.error.name ?? "OpenCode session error.", raw: raw)]
+            return [errorChunk(message: properties.error.displayMessage, raw: raw)]
         case .permissionUpdated(let properties, let raw):
             guard matches(properties.sessionID) else { return [] }
             return permissionChunks(properties, raw: raw)
@@ -526,7 +526,7 @@ struct OpenCodeChatEventAccumulator {
             ?? [:]
         let status = payload.state?.status.lowercased() ?? "running"
         let output = payload.output?.value ?? payload.state?.output?.value
-        let errorMessage = payload.error?.message ?? payload.state?.error?.message
+        let errorMessage = payload.error?.displayMessage ?? payload.state?.error?.displayMessage
         let isError = errorMessage != nil || ["error", "failed", "failure"].contains(status)
 
         var blocks: [[String: Any]] = [

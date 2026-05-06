@@ -9,9 +9,24 @@ import Foundation
 
 struct OpenCodeProviderStatus: Equatable {
     let providers: [OpenCodeProvider]
+    let configuredProviders: [OpenCodeProvider]
     let defaultModels: [String: String]
     let connectedProviderIDs: [String]
     let authMethods: [String: [OpenCodeProviderAuthMethod]]
+
+    init(
+        providers: [OpenCodeProvider],
+        configuredProviders: [OpenCodeProvider] = [],
+        defaultModels: [String: String],
+        connectedProviderIDs: [String],
+        authMethods: [String: [OpenCodeProviderAuthMethod]]
+    ) {
+        self.providers = providers
+        self.configuredProviders = configuredProviders
+        self.defaultModels = defaultModels
+        self.connectedProviderIDs = connectedProviderIDs
+        self.authMethods = authMethods
+    }
 
     var apiKeyProviders: [OpenCodeProvider] {
         providers.filter { provider in
@@ -28,17 +43,50 @@ struct OpenCodeProviderStatus: Equatable {
 
     var modelChoices: [OpenCodeModelChoice] {
         providers.flatMap { provider in
-            provider.models.values.map { model in
-                OpenCodeModelChoice(
-                    providerID: provider.id,
-                    providerName: provider.name,
-                    modelID: model.id,
-                    modelName: model.name
-                )
-            }
+            modelChoices(from: provider)
         }
         .sorted { lhs, rhs in
-            lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+            lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+        }
+    }
+
+    func modelChoices(for providerID: String) -> [OpenCodeModelChoice] {
+        let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProviderID.isEmpty else { return [] }
+
+        let configuredProvider = configuredProviders.first { provider in
+            provider.id.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        }
+        if let configuredProvider, !configuredProvider.models.isEmpty {
+            return modelChoices(from: configuredProvider)
+        }
+
+        guard let provider = providers.first(where: { provider in
+            provider.id.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        }) else {
+            return []
+        }
+
+        return modelChoices(from: provider)
+    }
+
+    func hasModel(providerID: String, modelID: String) -> Bool {
+        modelChoices(for: providerID).contains { choice in
+            choice.modelID.caseInsensitiveCompare(modelID) == .orderedSame
+        }
+    }
+
+    private func modelChoices(from provider: OpenCodeProvider) -> [OpenCodeModelChoice] {
+        provider.models.values.map { model in
+            OpenCodeModelChoice(
+                providerID: provider.id,
+                providerName: provider.name,
+                modelID: model.id,
+                modelName: model.name
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
         }
     }
 }
@@ -83,6 +131,11 @@ enum OpenCodeProviderConnectionDefaults {
         if let defaultModel = status?.defaultModels.first(where: { key, _ in
             key.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
         })?.value.nilIfEmpty {
+            let availableChoices = status?.modelChoices(for: normalizedProviderID) ?? []
+            if !availableChoices.isEmpty,
+               status?.hasModel(providerID: normalizedProviderID, modelID: defaultModel) == false {
+                return nil
+            }
             return "\(normalizedProviderID)/\(defaultModel)"
         }
 
@@ -169,10 +222,16 @@ final class OpenCodeProviderService: ObservableObject {
         let client = client(for: project)
         let resolvedProviders = try await client.providerList(sshSession: session, directory: project.path)
         let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session, directory: project.path)
+        let resolvedConfiguredProviders = try? await client.configuredProviders(sshSession: session, directory: project.path)
 
         return OpenCodeProviderStatus(
             providers: resolvedProviders.all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
-            defaultModels: resolvedProviders.defaultModels,
+            configuredProviders: resolvedConfiguredProviders?.providers.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            } ?? [],
+            defaultModels: resolvedConfiguredProviders?.defaultModels.isEmpty == false
+                ? resolvedConfiguredProviders?.defaultModels ?? resolvedProviders.defaultModels
+                : resolvedProviders.defaultModels,
             connectedProviderIDs: resolvedProviders.connected.sorted(),
             authMethods: resolvedAuthMethods
         )
@@ -185,13 +244,65 @@ final class OpenCodeProviderService: ObservableObject {
         let client = client(for: server.id)
         let resolvedProviders = try await client.providerList(sshSession: session)
         let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session)
+        let resolvedConfiguredProviders = try? await client.configuredProviders(sshSession: session)
 
         return OpenCodeProviderStatus(
             providers: resolvedProviders.all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
-            defaultModels: resolvedProviders.defaultModels,
+            configuredProviders: resolvedConfiguredProviders?.providers.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            } ?? [],
+            defaultModels: resolvedConfiguredProviders?.defaultModels.isEmpty == false
+                ? resolvedConfiguredProviders?.defaultModels ?? resolvedProviders.defaultModels
+                : resolvedProviders.defaultModels,
             connectedProviderIDs: resolvedProviders.connected.sorted(),
             authMethods: resolvedAuthMethods
         )
+    }
+
+    func startOAuth(
+        providerID: String,
+        methodIndex: Int,
+        inputs: [String: String] = [:],
+        on server: Server
+    ) async throws -> OpenCodeProviderOAuthAuthorization {
+        let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProviderID.isEmpty else {
+            throw OpenCodeProviderServiceError.invalidInput
+        }
+
+        let session = try await sshService.connect(to: server, purpose: .opencode)
+        defer { session.disconnect() }
+
+        return try await client(for: server.id).startProviderOAuth(
+            sshSession: session,
+            providerID: trimmedProviderID,
+            methodIndex: methodIndex,
+            inputs: inputs
+        )
+    }
+
+    func completeOAuth(
+        providerID: String,
+        methodIndex: Int,
+        code: String? = nil,
+        on server: Server
+    ) async throws {
+        let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProviderID.isEmpty else {
+            throw OpenCodeProviderServiceError.invalidInput
+        }
+
+        let session = try await sshService.connect(to: server, purpose: .opencode)
+        defer { session.disconnect() }
+
+        let client = client(for: server.id)
+        _ = try await client.completeProviderOAuth(
+            sshSession: session,
+            providerID: trimmedProviderID,
+            methodIndex: methodIndex,
+            code: code
+        )
+        let _ = try? await client.disposeInstance(sshSession: session)
     }
 
     func saveAPIKey(_ apiKey: String, providerID: String, for project: RemoteProject) async throws {
@@ -226,6 +337,7 @@ final class OpenCodeProviderService: ObservableObject {
         let session = try await sshService.connect(to: server, purpose: .opencode)
         defer { session.disconnect() }
 
+        let openCodeClient = client(for: server.id)
         var loaded = try await loadGlobalConfiguration(session: session)
         if normalizedProfile.isCustomProvider {
             try loaded.document.setCustomOpenAICompatibleProvider(
@@ -236,6 +348,15 @@ final class OpenCodeProviderService: ObservableObject {
                 modelName: normalizedProfile.customModelName,
                 npmPackage: normalizedProfile.npmPackage
             )
+        } else if let provider = try await catalogProvider(
+            matching: normalizedProfile.providerID,
+            client: openCodeClient,
+            session: session
+        ), provider.requiresExplicitConfiguration {
+            try loaded.document.setCatalogProvider(
+                provider,
+                preferredModelID: OpenCodePromptModel(fullID: normalizedProfile.resolvedModelID ?? "")?.modelID
+            )
         }
 
         loaded.document.setModelSelection(
@@ -243,15 +364,23 @@ final class OpenCodeProviderService: ObservableObject {
             smallModelID: normalizedProfile.resolvedSmallModelID
         )
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
+        try await reloadConfiguration(loaded.document, client: openCodeClient, session: session, directory: nil)
 
-        if normalizedProfile.authMode.requiresAPIKey {
+        if normalizedProfile.requiresAPIKeyCredential {
             let apiKey = try retrieveAPIKey(for: normalizedProfile.providerID, scope: credentialScope)
-            _ = try await client(for: server.id).setProviderAPIKey(
+            _ = try await openCodeClient.setProviderAPIKey(
                 sshSession: session,
                 providerID: normalizedProfile.providerID,
                 apiKey: apiKey
             )
         }
+
+        try await validateProfile(
+            normalizedProfile,
+            client: openCodeClient,
+            session: session,
+            directory: nil
+        )
     }
 
     func modelConfiguration(
@@ -282,6 +411,14 @@ final class OpenCodeProviderService: ObservableObject {
         loaded.document.setModelSelection(modelID: modelID, smallModelID: smallModelID)
         loaded.document.setProviderFilters(enabled: enabledProviderIDs, disabled: disabledProviderIDs)
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
+
+        let openCodeSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        try await reloadConfiguration(
+            loaded.document,
+            client: client(for: project),
+            session: openCodeSession,
+            directory: scope == .project ? project.path : nil
+        )
     }
 
     func saveCustomOpenAICompatibleProvider(
@@ -314,10 +451,23 @@ final class OpenCodeProviderService: ObservableObject {
         try KeychainManager.shared.storeOpenCodeAPIKey(apiKey, providerID: providerID)
 
         let client = client(for: project)
+        let openCodeSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        try await reloadConfiguration(
+            loaded.document,
+            client: client,
+            session: openCodeSession,
+            directory: scope == .project ? project.path : nil
+        )
         _ = try await client.setProviderAPIKey(
-            sshSession: try await sshService.getConnection(for: project, purpose: .opencode),
+            sshSession: openCodeSession,
             providerID: providerID,
             apiKey: apiKey,
+            directory: project.path
+        )
+        try await validateModel(
+            OpenCodePromptModel(providerID: providerID, modelID: input.modelID),
+            client: client,
+            session: openCodeSession,
             directory: project.path
         )
     }
@@ -326,6 +476,8 @@ final class OpenCodeProviderService: ObservableObject {
 enum OpenCodeProviderServiceError: LocalizedError {
     case invalidInput
     case missingAPIKey(String)
+    case modelNotConfigured(String)
+    case validationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -333,6 +485,10 @@ enum OpenCodeProviderServiceError: LocalizedError {
             return "Provider ID and model configuration are required."
         case .missingAPIKey(let providerID):
             return "No local API key is stored for \(providerID)."
+        case .modelNotConfigured(let modelID):
+            return "OpenCode did not load \(modelID). Sync the provider config and try again."
+        case .validationFailed(let message):
+            return "OpenCode provider validation failed: \(message)"
         }
     }
 }
@@ -344,6 +500,192 @@ private extension OpenCodeProviderService {
 
     func client(for serverID: UUID) -> OpenCodeClient {
         clientOverride ?? OpenCodeClientFactory.client(for: serverID)
+    }
+
+    func catalogProvider(
+        matching providerID: String,
+        client: OpenCodeClient,
+        session: SSHSession
+    ) async throws -> OpenCodeProvider? {
+        let normalizedID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedID.isEmpty else { return nil }
+        let response = try await client.providerList(sshSession: session)
+        return response.all.first { provider in
+            provider.id.caseInsensitiveCompare(normalizedID) == .orderedSame
+        }
+    }
+
+    func reloadConfiguration(
+        _ document: OpenCodeMCPConfigDocument,
+        client: OpenCodeClient,
+        session: SSHSession,
+        directory: String?
+    ) async throws {
+        try await client.patchConfiguration(
+            sshSession: session,
+            json: document.toJSONString(),
+            directory: directory
+        )
+    }
+
+    func validateProfile(
+        _ profile: OpenCodeAIProviderProfile,
+        client: OpenCodeClient,
+        session: SSHSession,
+        directory: String?
+    ) async throws {
+        guard let modelID = profile.resolvedModelID,
+              let model = OpenCodePromptModel(fullID: modelID) else {
+            return
+        }
+        try await validateModel(model, client: client, session: session, directory: directory)
+    }
+
+    func validateModel(
+        _ model: OpenCodePromptModel,
+        client: OpenCodeClient,
+        session: SSHSession,
+        directory: String?
+    ) async throws {
+        let configured = try await client.configuredProviders(sshSession: session, directory: directory)
+        guard configured.providers.contains(where: { provider in
+            provider.id.caseInsensitiveCompare(model.providerID) == .orderedSame
+                && provider.models.values.contains { $0.id.caseInsensitiveCompare(model.modelID) == .orderedSame }
+        }) else {
+            throw OpenCodeProviderServiceError.modelNotConfigured(model.fullID)
+        }
+
+        let created = try await client.createSession(
+            sshSession: session,
+            title: "CodeAgents provider validation",
+            directory: directory
+        )
+        guard let sessionID = created.id?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty else {
+            throw OpenCodeClientError.invalidResponse("OpenCode did not return a validation session id.")
+        }
+
+        let eventPath = OpenCodeSessionPath.path("/event", directory: directory)
+        let eventIterator = OpenCodeProviderValidationEventIterator(
+            stream: client.streamEvents(session: session, path: eventPath)
+        )
+        _ = try await nextValidationEvent(
+            from: eventIterator,
+            timeoutNanoseconds: 5_000_000_000
+        )
+
+        try await client.promptAsync(
+            sshSession: session,
+            sessionID: sessionID,
+            payload: OpenCodePromptPayload(
+                model: model,
+                system: "Validate the provider connection. Reply with exactly OK.",
+                tools: [:],
+                parts: [.text("Reply with exactly OK.")]
+            ),
+            directory: directory
+        )
+
+        try await waitForValidationReply(
+            sessionID: sessionID,
+            model: model,
+            eventIterator: eventIterator
+        )
+    }
+
+    func waitForValidationReply(
+        sessionID: String,
+        model: OpenCodePromptModel,
+        eventIterator: OpenCodeProviderValidationEventIterator
+    ) async throws {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            let remaining = UInt64(max(1, deadline.timeIntervalSinceNow) * 1_000_000_000)
+            guard let event = try await nextValidationEvent(
+                from: eventIterator,
+                timeoutNanoseconds: min(remaining, 5_000_000_000)
+            ) else {
+                continue
+            }
+
+            switch event {
+            case .sessionError(let properties, _):
+                guard validationEventMatches(properties.sessionID, sessionID: sessionID) else { continue }
+                throw OpenCodeProviderServiceError.validationFailed(properties.error.displayMessage)
+
+            case .messageUpdated(let properties, _):
+                guard validationEventMatches(properties.sessionID ?? properties.info.sessionID, sessionID: sessionID) else {
+                    continue
+                }
+                if let error = properties.info.error {
+                    throw OpenCodeProviderServiceError.validationFailed(error.displayMessage)
+                }
+                if properties.info.role != "user" {
+                    return
+                }
+
+            case .messagePartUpdated(let properties, _):
+                guard validationEventMatches(properties.sessionID ?? properties.part.payload.sessionID, sessionID: sessionID) else {
+                    continue
+                }
+                if let error = properties.part.payload.error {
+                    throw OpenCodeProviderServiceError.validationFailed(error.displayMessage)
+                }
+                if properties.part.payload.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    return
+                }
+
+            case .messagePartDelta(let properties, _):
+                guard validationEventMatches(properties.sessionID ?? properties.part?.payload.sessionID, sessionID: sessionID) else {
+                    continue
+                }
+                if properties.delta?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    || properties.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    return
+                }
+
+            case .sessionIdle(let properties, _):
+                guard validationEventMatches(properties.sessionID ?? properties.id, sessionID: sessionID) else { continue }
+                return
+
+            case .sessionStatus(let properties, _):
+                guard validationEventMatches(properties.sessionID, sessionID: sessionID),
+                      properties.status.type == "idle" else { continue }
+                return
+
+            default:
+                continue
+            }
+        }
+
+        throw OpenCodeProviderServiceError.validationFailed(
+            "\(model.fullID) accepted the prompt but did not return a validation reply."
+        )
+    }
+
+    func nextValidationEvent(
+        from iterator: OpenCodeProviderValidationEventIterator,
+        timeoutNanoseconds: UInt64
+    ) async throws -> OpenCodeEvent? {
+        try await withThrowingTaskGroup(of: OpenCodeEvent?.self) { group in
+            group.addTask {
+                try await iterator.next()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return nil
+            }
+
+            guard let result = try await group.next() else {
+                return nil
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
+    func validationEventMatches(_ candidate: String?, sessionID: String) -> Bool {
+        candidate?.trimmingCharacters(in: .whitespacesAndNewlines) == sessionID
     }
 
     func loadConfiguration(
@@ -430,6 +772,21 @@ private extension OpenCodeProviderService {
         case .server(let serverID):
             return try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID, serverID: serverID)
         }
+    }
+}
+
+private actor OpenCodeProviderValidationEventIterator {
+    private var iterator: AsyncThrowingStream<OpenCodeEvent, Error>.Iterator
+
+    init(stream: AsyncThrowingStream<OpenCodeEvent, Error>) {
+        iterator = stream.makeAsyncIterator()
+    }
+
+    func next() async throws -> OpenCodeEvent? {
+        var activeIterator = iterator
+        let event = try await activeIterator.next()
+        iterator = activeIterator
+        return event
     }
 }
 
