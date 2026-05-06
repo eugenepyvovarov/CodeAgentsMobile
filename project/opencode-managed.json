@@ -34,6 +34,12 @@
     "workflow": ".gitea/workflows/production-artifact.yml",
     "supported": false,
     "command": "/bin/bash ./scripts/artifact.sh",
+    "phase": {
+      "enabled": false,
+      "app_id": "",
+      "env": "prod",
+      "path": "/"
+    },
     "result": {
       "format": "json",
       "transport": "stdout",
