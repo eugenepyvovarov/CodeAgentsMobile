@@ -5,6 +5,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export PATH="/opt/homebrew/bin:${HOME}/.opencode/bin:${PATH}"
 
+if [[ -z "${DEVELOPER_DIR:-}" ]]; then
+  for candidate in /Applications/Xcode.app/Contents/Developer /Applications/Xcode-beta.app/Contents/Developer; do
+    if [[ -x "${candidate}/usr/bin/xcodebuild" ]]; then
+      export DEVELOPER_DIR="${candidate}"
+      break
+    fi
+  done
+fi
+
 XCODEBUILDMCP_BIN="${XCODEBUILDMCP_BIN:-xcodebuildmcp}"
 PROJECT_PATH="${CODEAGENTS_XCODE_PROJECT:-${ROOT_DIR}/CodeAgentsMobile.xcodeproj}"
 SCHEME="${CODEAGENTS_XCODE_SCHEME:-CodeAgentsMobile}"
