@@ -316,7 +316,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
                     let client = client(for: project)
                     let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
-                    let promptModel = resolvePromptModel(for: project)
+                    let promptModel = await resolvePromptModel(for: project, sshSession: sshSession)
                     var accumulator = OpenCodeChatEventAccumulator(sessionID: sessionID)
                     let eventPath = OpenCodeSessionPath.path("/event", directory: project.path)
                     let diagnostics = OpenCodeRuntimeDiagnostics(
@@ -516,12 +516,65 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         return sessionID
     }
 
-    private func resolvePromptModel(for project: RemoteProject) -> OpenCodePromptModel? {
+    private func resolvePromptModel(for project: RemoteProject, sshSession: SSHSession) async -> OpenCodePromptModel? {
         let profile = OpenCodeAIProviderSettingsStore().effectiveProfile(for: project.serverId)
-        guard let modelID = profile.resolvedModelID else {
+        if let modelID = profile.resolvedModelID,
+           let promptModel = OpenCodePromptModel(fullID: modelID) {
+            return promptModel
+        }
+
+        for path in await modelConfigurationPaths(for: project, sshSession: sshSession) {
+            guard let modelID = await selectedModelID(at: path, sshSession: sshSession),
+                  let promptModel = OpenCodePromptModel(fullID: modelID) else {
+                continue
+            }
+            return promptModel
+        }
+
+        return nil
+    }
+
+    private func modelConfigurationPaths(for project: RemoteProject, sshSession: SSHSession) async -> [String] {
+        let projectPaths = [
+            "\(project.path)/opencode.json",
+            "\(project.path)/opencode.jsonc"
+        ]
+
+        let globalPath = await globalOpenCodeConfigurationPath(sshSession: sshSession)
+        return projectPaths + [globalPath].compactMap { $0 }
+    }
+
+    private func globalOpenCodeConfigurationPath(sshSession: SSHSession) async -> String? {
+        do {
+            let command = "printf '%s' \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json\""
+            let path = try await sshSession.execute(command)
+            return nonEmptyString(path)
+        } catch {
+            SSHLogger.log("Unable to resolve OpenCode global config path: \(error.localizedDescription)", level: .debug)
             return nil
         }
-        return OpenCodePromptModel(fullID: modelID)
+    }
+
+    private func selectedModelID(at path: String, sshSession: SSHSession) async -> String? {
+        do {
+            let json = try await sshSession.readFile(path)
+            let document = try OpenCodeMCPConfigDocument(jsonString: json)
+            return nonEmptyString(document.selectedModelID)
+        } catch {
+            let message = error.localizedDescription.lowercased()
+            if !message.contains("no such file") && !message.contains("cannot open") {
+                SSHLogger.log("Unable to read OpenCode model config at \(path): \(error.localizedDescription)", level: .debug)
+            }
+            return nil
+        }
+    }
+
+    private func nonEmptyString(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     private func hydrateOpenCodeState(
