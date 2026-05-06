@@ -7,10 +7,12 @@ final class OpenCodePromptBuilderTests: XCTestCase {
             messageID: "msg_fixture",
             composedPrompt: "  Hello OpenCode  ",
             projectPath: "/workspace/app",
+            model: OpenCodePromptModel(providerID: "minimax", modelID: "MiniMax-M2.7"),
             systemRules: "CodeAgents rules"
         )
 
         XCTAssertEqual(result.payload.messageID, "msg_fixture")
+        XCTAssertEqual(result.payload.model?.fullID, "minimax/MiniMax-M2.7")
         XCTAssertEqual(result.payload.system, "CodeAgents rules")
         XCTAssertNil(result.payload.tools)
         XCTAssertEqual(result.payload.parts.count, 1)

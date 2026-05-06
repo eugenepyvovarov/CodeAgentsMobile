@@ -316,13 +316,14 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
                     let client = client(for: project)
                     let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
+                    let promptModel = resolvePromptModel(for: project)
                     var accumulator = OpenCodeChatEventAccumulator(sessionID: sessionID)
                     let eventPath = OpenCodeSessionPath.path("/event", directory: project.path)
                     let diagnostics = OpenCodeRuntimeDiagnostics(
                         eventPath: eventPath,
                         directory: project.path,
                         sessionID: sessionID,
-                        modelID: nil
+                        modelID: promptModel?.fullID
                     )
                     let eventIterator = OpenCodeEventIterator(stream: client.streamEvents(session: sshSession, path: eventPath))
                     let firstEvent = try await waitForStreamAttachment(
@@ -336,7 +337,8 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     let prompt = try OpenCodePromptBuilder.build(
                         messageID: messageId?.uuidString,
                         composedPrompt: text,
-                        projectPath: project.path
+                        projectPath: project.path,
+                        model: promptModel
                     )
                     try await validatePromptReferences(prompt, sshSession: sshSession)
                     try await client.promptAsync(
@@ -512,6 +514,14 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         project.selectedAgentRuntime = .openCode
         project.updateLastModified()
         return sessionID
+    }
+
+    private func resolvePromptModel(for project: RemoteProject) -> OpenCodePromptModel? {
+        let profile = OpenCodeAIProviderSettingsStore().effectiveProfile(for: project.serverId)
+        guard let modelID = profile.resolvedModelID else {
+            return nil
+        }
+        return OpenCodePromptModel(fullID: modelID)
     }
 
     private func hydrateOpenCodeState(
