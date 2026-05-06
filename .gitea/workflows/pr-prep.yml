@@ -78,10 +78,11 @@ jobs:
           visual_platform = str(visual_validation["platform"]).strip()
           visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
           visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
+          visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
           visual_stage = (
               "visual-validation" in stages
               and visual_validation["supported"] is True
-              and ((visual_playwright_web and preview["supported"] is True) or visual_native_macos)
+              and ((visual_playwright_web and preview["supported"] is True) or visual_native_macos or visual_native_ios_simulator)
           )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write("validation_supported=true\n")
@@ -231,7 +232,8 @@ jobs:
           visual_platform = str(visual_validation["platform"]).strip()
           visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
           visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
-          visual_evidence_supported = visual_validation["supported"] is True and (visual_playwright_web or visual_native_macos)
+          visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
+          visual_evidence_supported = visual_validation["supported"] is True and (visual_playwright_web or visual_native_macos or visual_native_ios_simulator)
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
           raw = f"{owner}-{repo}".lower()
@@ -251,6 +253,7 @@ jobs:
               handle.write(f"OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED={'true' if visual_evidence_supported else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB={'true' if visual_validation['supported'] is True and visual_playwright_web else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_MACOS={'true' if visual_validation['supported'] is True and visual_native_macos else 'false'}\n")
+              handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_IOS_SIMULATOR={'true' if visual_validation['supported'] is True and visual_native_ios_simulator else 'false'}\n")
           print("managed visual validation config ok")
           PY
 
