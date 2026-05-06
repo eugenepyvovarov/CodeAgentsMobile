@@ -220,7 +220,7 @@ struct EditServerSheet: View {
                 } header: {
                     Text("Push Notifications")
                 } footer: {
-                    Text("Foreground OpenCode chat connects directly over SSH. Push notifications are for CodeAgents daemon background completions, such as scheduled tasks. You’ll be auto-subscribed when opening an agent chat.")
+                    Text("Foreground OpenCode chat connects directly over SSH. Push notifications are for CodeAgents daemon background completions, such as scheduled tasks. Active agents are subscribed automatically.")
                         .font(.caption)
                 }
                 
@@ -400,7 +400,7 @@ struct EditServerSheet: View {
                 )
                 pushStatusMessage = "Enabled. Subscribed for \(agentDisplayName)."
             } else {
-                pushStatusMessage = "Enabled. Open an agent chat to subscribe."
+                pushStatusMessage = "Enabled. Select an agent to subscribe this device."
             }
         } catch {
             errorMessage = error.localizedDescription

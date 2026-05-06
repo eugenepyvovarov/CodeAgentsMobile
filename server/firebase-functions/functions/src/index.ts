@@ -269,6 +269,11 @@ export const triggerReplyFinished = onRequest({ region: "us-central1", invoker: 
             // APNs spec: apns-collapse-id must be <= 64 bytes. agentKey is a 64-char hex string.
             "apns-collapse-id": agentKey,
           },
+          payload: {
+            aps: {
+              contentAvailable: true,
+            },
+          },
         },
       });
 

@@ -52,9 +52,6 @@ struct ChatView: View {
                 } else {
                     // Normal chat UI
                     ChatDetailView(viewModel: viewModel, assistantLabel: assistantLabel)
-                        .refreshable {
-                            await viewModel.refreshProxyEvents()
-                        }
                 }
             }
             .navigationTitle(chatTitle)
@@ -117,6 +114,14 @@ struct ChatView: View {
                         }
 
                         Divider()
+
+                        Button {
+                            Task {
+                                await viewModel.refreshProxyEvents()
+                            }
+                        } label: {
+                            Label("Refresh Messages", systemImage: "arrow.clockwise")
+                        }
                         
                         Button {
                             clearChat()
@@ -192,6 +197,13 @@ struct ChatView: View {
             guard let projectId = notification.userInfo?["projectId"] as? UUID else { return }
             guard projectContext.activeProject?.id == projectId else { return }
             viewModel.reloadMessages()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .replyFinishedPushReceived)) { notification in
+            guard let projectId = notification.userInfo?[ReplyFinishedPushEventKey.projectId] as? UUID else { return }
+            guard projectContext.activeProject?.id == projectId else { return }
+            Task {
+                await viewModel.refreshProxyEvents()
+            }
         }
         .sheet(isPresented: $showingMCPServers) {
             MCPServersListView()
@@ -694,11 +706,13 @@ struct PlainMessageBubble: View {
         let bubbleBackground = isUser ? Color.accentColor : Color(.systemGray6)
         let bubbleTextColor: Color = isUser ? .white : .primary
         let bubbleBorderColor = Color(.systemGray4).opacity(0.6)
-        let bubbleMaxWidth = UIScreen.main.bounds.width * 0.78
         let lowercasedContent = message.content.lowercased()
-        let shouldForceFullWidth = !isUser
-            && lowercasedContent.contains("codeagents_ui")
+        let containsCodeAgentsUI = lowercasedContent.contains("codeagents_ui")
             && lowercasedContent.contains("```")
+        let compactContent = lowercasedContent.filter { !$0.isWhitespace }
+        let containsTableWidget = containsCodeAgentsUI && compactContent.contains("\"type\":\"table\"")
+        let bubbleMaxWidth = UIScreen.main.bounds.width * (containsTableWidget ? 0.94 : 0.78)
+        let shouldForceFullWidth = !isUser && containsCodeAgentsUI
 
         ZStack {
             // Invisible background to catch taps outside

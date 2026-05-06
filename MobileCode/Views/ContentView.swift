@@ -78,6 +78,17 @@ struct ContentView: View {
         ShortcutSyncService.shared.sync(using: modelContext)
         
         if let project = projectContext.activeProject {
+            if let server = projectContext.activeServer {
+                let agentDisplayName = "\(project.displayTitle)@\(server.name)"
+                Task {
+                    await PushNotificationsManager.shared.registerProjectSubscription(
+                        project: project,
+                        server: server,
+                        agentDisplayName: agentDisplayName
+                    )
+                }
+            }
+
             Task {
                 do {
                     try await CodingAgentMCPService.shared.ensureManagedSchedulerServerIfNeeded(for: project)

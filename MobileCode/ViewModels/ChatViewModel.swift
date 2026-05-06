@@ -302,7 +302,9 @@ class ChatViewModel {
     }
 
     func refreshProxyEvents() async {
-        guard let project = ProjectContext.shared.activeProject else { return }
+        guard let project = ProjectContext.shared.activeProject,
+              projectId == project.id,
+              modelContext != nil else { return }
         if activeRuntimeKind(for: project) == .openCode {
             await hydrateOpenCodeMessagesIfNeeded(project: project)
             return

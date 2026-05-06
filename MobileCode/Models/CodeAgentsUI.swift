@@ -102,6 +102,85 @@ struct CodeAgentsUITable {
     let caption: String?
 }
 
+enum CodeAgentsUITableExport {
+    static func tsv(_ table: CodeAgentsUITable) -> String {
+        exportRows(for: table)
+            .map { row in
+                row.map { sanitizeTSVCell($0) }.joined(separator: "\t")
+            }
+            .joined(separator: "\n")
+    }
+
+    static func csv(_ table: CodeAgentsUITable) -> String {
+        exportRows(for: table)
+            .map { row in
+                row.map { sanitizeCSVCell($0) }.joined(separator: ",")
+            }
+            .joined(separator: "\n")
+    }
+
+    static func markdown(_ table: CodeAgentsUITable) -> String {
+        guard !table.columns.isEmpty else { return "" }
+
+        let header = markdownRow(table.columns)
+        let separator = markdownRow(Array(repeating: "---", count: table.columns.count))
+        let body = normalizedRows(for: table).map(markdownRow)
+
+        return ([header, separator] + body).joined(separator: "\n")
+    }
+
+    private static func exportRows(for table: CodeAgentsUITable) -> [[String]] {
+        [table.columns] + normalizedRows(for: table)
+    }
+
+    private static func normalizedRows(for table: CodeAgentsUITable) -> [[String]] {
+        table.rows.map { row in
+            if row.count == table.columns.count {
+                return row
+            }
+
+            if row.count > table.columns.count {
+                return Array(row.prefix(table.columns.count))
+            }
+
+            return row + Array(repeating: "", count: table.columns.count - row.count)
+        }
+    }
+
+    private static func sanitizeTSVCell(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\t", with: " ")
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+    }
+
+    private static func sanitizeCSVCell(_ value: String) -> String {
+        let normalized = value.replacingOccurrences(of: "\r\n", with: "\n")
+        let needsQuotes = normalized.contains(",")
+            || normalized.contains("\"")
+            || normalized.contains("\n")
+            || normalized.contains("\r")
+
+        guard needsQuotes else { return normalized }
+
+        return "\"\(normalized.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+
+    private static func markdownRow(_ row: [String]) -> String {
+        "| \(row.map(markdownCell).joined(separator: " | ")) |"
+    }
+
+    private static func markdownCell(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "|", with: "\\|")
+            .replacingOccurrences(of: "\r\n", with: "<br>")
+            .replacingOccurrences(of: "\n", with: "<br>")
+            .replacingOccurrences(of: "\r", with: "<br>")
+    }
+}
+
 struct CodeAgentsUIChart {
     let id: String
     let title: String?

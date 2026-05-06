@@ -58,6 +58,70 @@ final class CodeAgentsUIValidationTests: XCTestCase {
         XCTAssertEqual(table.rows[0][1], "")
     }
 
+    func testTableExportBuildsTSV() {
+        let table = CodeAgentsUITable(
+            id: "clubs",
+            columns: ["Club", "Courts"],
+            rows: [
+                ["Club Series Padel", "30"],
+                ["One Padel\nValencia", "15"]
+            ],
+            caption: "Best Padel Clubs"
+        )
+
+        XCTAssertEqual(
+            CodeAgentsUITableExport.tsv(table),
+            """
+            Club\tCourts
+            Club Series Padel\t30
+            One Padel Valencia\t15
+            """
+        )
+    }
+
+    func testTableExportBuildsQuotedCSV() {
+        let table = CodeAgentsUITable(
+            id: "quotes",
+            columns: ["Name", "Notes"],
+            rows: [
+                ["A", "Has, comma"],
+                ["B", "Says \"hello\""],
+                ["C", "Two\nlines"]
+            ],
+            caption: nil
+        )
+
+        let expectedCSV = "Name,Notes\n"
+            + "A,\"Has, comma\"\n"
+            + "B,\"Says \"\"hello\"\"\"\n"
+            + "C,\"Two\nlines\""
+
+        XCTAssertEqual(
+            CodeAgentsUITableExport.csv(table),
+            expectedCSV
+        )
+    }
+
+    func testTableExportBuildsMarkdown() {
+        let table = CodeAgentsUITable(
+            id: "markdown",
+            columns: ["Name", "Notes"],
+            rows: [
+                ["A|B", "Line 1\nLine 2"]
+            ],
+            caption: nil
+        )
+
+        XCTAssertEqual(
+            CodeAgentsUITableExport.markdown(table),
+            """
+            | Name | Notes |
+            | --- | --- |
+            | A\\|B | Line 1<br>Line 2 |
+            """
+        )
+    }
+
     func testParseBlockRejectsInvalidProjectFilePath() {
         let json = """
         {

@@ -11,6 +11,18 @@ import UIKit
 import UserNotifications
 import FirebaseMessaging
 
+extension Notification.Name {
+    static let replyFinishedPushReceived = Notification.Name("replyFinishedPushReceived")
+}
+
+enum ReplyFinishedPushEventKey {
+    static let projectId = "projectId"
+    static let serverId = "serverId"
+    static let cwd = "cwd"
+    static let conversationId = "conversationId"
+    static let renderableAssistantCount = "renderableAssistantCount"
+}
+
 @MainActor
 final class PushNotificationsManager: NSObject, ObservableObject {
     static let shared = PushNotificationsManager()
@@ -32,7 +44,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         if let payload = pendingPayload {
             pendingPayload = nil
             Task { @MainActor in
-                await applyUnreadUpdateIfPossible(payload: payload)
+                _ = await applyReplyFinishedUpdateIfPossible(payload: payload)
                 await routeToChat(payload: payload)
             }
         }
@@ -58,6 +70,10 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     }
 
     func recordChatOpened(project: RemoteProject, server: Server, agentDisplayName: String) async {
+        await registerProjectSubscription(project: project, server: server, agentDisplayName: agentDisplayName)
+    }
+
+    func registerProjectSubscription(project: RemoteProject, server: Server, agentDisplayName: String) async {
         guard KeychainManager.shared.hasPushSecret(for: server.id) else {
             return
         }
@@ -73,9 +89,14 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             return
         }
         Task {
-            await applyUnreadUpdateIfPossible(payload: payload)
+            _ = await applyReplyFinishedUpdateIfPossible(payload: payload)
             await routeToChat(payload: payload)
         }
+    }
+
+    func handleRemoteNotification(userInfo: [AnyHashable: Any]) async -> Bool {
+        guard let payload = PushPayload(userInfo: userInfo) else { return false }
+        return await applyReplyFinishedUpdateIfPossible(payload: payload)
     }
 
     func refreshSubscriptions() async {
@@ -94,7 +115,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         for notification in notifications {
             let userInfo = notification.request.content.userInfo
             guard let payload = PushPayload(userInfo: userInfo) else { continue }
-            await applyUnreadUpdateIfPossible(payload: payload)
+            _ = await applyReplyFinishedUpdateIfPossible(payload: payload)
         }
     }
 
@@ -214,24 +235,24 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         AppNavigationState.shared.selectedTab = .chat
     }
 
-    private func applyUnreadUpdateIfPossible(payload: PushPayload) async {
-        guard payload.type == "reply_finished" else { return }
-        guard let incomingCount = payload.renderableAssistantCount, incomingCount >= 0 else { return }
-        guard let modelContainer else { return }
+    @discardableResult
+    private func applyReplyFinishedUpdateIfPossible(payload: PushPayload) async -> Bool {
+        guard payload.type == "reply_finished" else { return false }
+        guard let modelContainer else { return false }
         let context = ModelContext(modelContainer)
 
         let servers: [Server]
         do {
             servers = try context.fetch(FetchDescriptor<Server>())
         } catch {
-            return
+            return false
         }
 
         guard let matchedServer = servers.first(where: { server in
             guard let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id) else { return false }
             return secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
         }) else {
-            return
+            return false
         }
 
         let serverId = matchedServer.id
@@ -243,41 +264,61 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         )
 
         guard let project = (try? context.fetch(descriptor))?.first else {
-            return
+            return false
         }
 
-        let isUnreadStateUninitialized =
-            project.unreadConversationId == nil && project.lastKnownUnreadCursor == 0 && project.lastReadUnreadCursor == 0
-        if isUnreadStateUninitialized {
-            let baseline = min(estimateRenderableBubbleCount(for: project, in: context), incomingCount)
-            project.lastKnownUnreadCursor = baseline
-            project.lastReadUnreadCursor = baseline
-        }
+        if let incomingCount = payload.renderableAssistantCount, incomingCount >= 0 {
+            let isUnreadStateUninitialized =
+                project.unreadConversationId == nil && project.lastKnownUnreadCursor == 0 && project.lastReadUnreadCursor == 0
+            if isUnreadStateUninitialized {
+                let baseline = min(estimateRenderableBubbleCount(for: project, in: context), incomingCount)
+                project.lastKnownUnreadCursor = baseline
+                project.lastReadUnreadCursor = baseline
+            }
 
-        if let conversationId = payload.conversationId, !conversationId.isEmpty {
-            if project.unreadConversationId != conversationId {
-                let shouldResetReadCursor = project.unreadConversationId != nil && !isUnreadStateUninitialized
-                project.unreadConversationId = conversationId
-                if shouldResetReadCursor {
-                    project.lastReadUnreadCursor = 0
+            if let conversationId = payload.conversationId, !conversationId.isEmpty {
+                if project.unreadConversationId != conversationId {
+                    let shouldResetReadCursor = project.unreadConversationId != nil && !isUnreadStateUninitialized
+                    project.unreadConversationId = conversationId
+                    if shouldResetReadCursor {
+                        project.lastReadUnreadCursor = 0
+                    }
+                    project.lastKnownUnreadCursor = incomingCount
+                } else if incomingCount > project.lastKnownUnreadCursor {
+                    project.lastKnownUnreadCursor = incomingCount
                 }
-                project.lastKnownUnreadCursor = incomingCount
             } else if incomingCount > project.lastKnownUnreadCursor {
                 project.lastKnownUnreadCursor = incomingCount
             }
-        } else if incomingCount > project.lastKnownUnreadCursor {
-            project.lastKnownUnreadCursor = incomingCount
+
+            project.updateLastModified()
+
+            do {
+                try context.save()
+            } catch {
+                #if DEBUG
+                SSHLogger.log("Failed to save unread update: \(error)", level: .warning)
+                #endif
+            }
         }
 
-        project.updateLastModified()
+        postReplyFinishedEvent(project: project, server: matchedServer, payload: payload)
+        return true
+    }
 
-        do {
-            try context.save()
-        } catch {
-            #if DEBUG
-            SSHLogger.log("Failed to save unread update: \(error)", level: .warning)
-            #endif
+    private func postReplyFinishedEvent(project: RemoteProject, server: Server, payload: PushPayload) {
+        var userInfo: [String: Any] = [
+            ReplyFinishedPushEventKey.projectId: project.id,
+            ReplyFinishedPushEventKey.serverId: server.id,
+            ReplyFinishedPushEventKey.cwd: payload.cwd,
+        ]
+        if let conversationId = payload.conversationId {
+            userInfo[ReplyFinishedPushEventKey.conversationId] = conversationId
         }
+        if let renderableAssistantCount = payload.renderableAssistantCount {
+            userInfo[ReplyFinishedPushEventKey.renderableAssistantCount] = renderableAssistantCount
+        }
+        NotificationCenter.default.post(name: .replyFinishedPushReceived, object: nil, userInfo: userInfo)
     }
 
     private func estimateRenderableBubbleCount(for project: RemoteProject, in context: ModelContext) -> Int {
@@ -472,7 +513,7 @@ extension PushNotificationsManager: @preconcurrency UNUserNotificationCenterDele
             return
         }
 
-        Task { await applyUnreadUpdateIfPossible(payload: payload) }
+        Task { _ = await handleRemoteNotification(userInfo: userInfo) }
 
         if shouldSuppressForegroundNotification(payload: payload) {
             completionHandler([])

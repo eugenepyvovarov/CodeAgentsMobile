@@ -55,6 +55,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         NSLog("APNs registration failed: \(error.localizedDescription)")
     }
+
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        Task { @MainActor in
+            let handled = await PushNotificationsManager.shared.handleRemoteNotification(userInfo: userInfo)
+            completionHandler(handled ? .newData : .noData)
+        }
+    }
 }
 
 enum FirebaseBootstrap {

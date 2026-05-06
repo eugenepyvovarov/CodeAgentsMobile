@@ -120,6 +120,13 @@ struct RegularTasksView: View {
         .onChange(of: claudeProviderConfigurationData) { _, _ in
             refreshProviderMismatch()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .replyFinishedPushReceived)) { notification in
+            guard let projectId = notification.userInfo?[ReplyFinishedPushEventKey.projectId] as? UUID else { return }
+            guard projectContext.activeProject?.id == projectId else { return }
+            Task {
+                await refreshTasks()
+            }
+        }
         .sheet(isPresented: $showingProviderSettings) {
             NavigationStack {
                 ClaudeProviderSettingsView()
