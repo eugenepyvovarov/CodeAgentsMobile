@@ -22,6 +22,7 @@ SCHEME="${CODEAGENTS_XCODE_SCHEME:-CodeAgentsMobile}"
 SIMULATOR_NAME="${CODEAGENTS_SIMULATOR_NAME:-iPhone 17}"
 CONFIGURATION="${CODEAGENTS_CONFIGURATION:-Release}"
 APP_BUNDLE_ID="${CODEAGENTS_BUNDLE_ID:-lifeisgoodlabs.CodeAgentsMobile}"
+TEAM_ID="${CODEAGENTS_TEAM_ID:-VXRLZNZH2E}"
 MODE="${OPENCODE_ARTIFACT_MODE:-${1:-review}}"
 DIST_DIR="${OPENCODE_ARTIFACT_DIST_DIR:-${ROOT_DIR}/dist}"
 DERIVED_DATA_PATH="${CODEAGENTS_DERIVED_DATA_PATH:-${ROOT_DIR}/.build/opencode-artifact/DerivedData}"
@@ -135,6 +136,18 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
 
   VERSION_ARG=(--version "${RELEASE_VERSION_RESOLVED}")
   BUILD_ARG=(--build-number "${RELEASE_BUILD_RESOLVED}")
+  XCODEBUILD_AUTH_FLAGS=(
+    -allowProvisioningUpdates
+    -authenticationKeyPath "${PRIVATE_KEY_FILE}"
+    -authenticationKeyID "${ASC_KEY_ID}"
+    -authenticationKeyIssuerID "${ASC_ISSUER_ID}"
+  )
+  ASC_ARCHIVE_FLAGS=()
+  ASC_EXPORT_FLAGS=()
+  for flag in "${XCODEBUILD_AUTH_FLAGS[@]}"; do
+    ASC_ARCHIVE_FLAGS+=(--archive-xcodebuild-flag="${flag}")
+    ASC_EXPORT_FLAGS+=(--export-xcodebuild-flag="${flag}")
+  done
 
   EXPORT_OPTIONS="${CODEAGENTS_EXPORT_OPTIONS_PLIST:-${DIST_DIR}/ExportOptions-AppStore.plist}"
   if [[ ! -f "${EXPORT_OPTIONS}" ]]; then
@@ -148,7 +161,7 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
   <key>signingStyle</key>
   <string>automatic</string>
   <key>teamID</key>
-  <string>VXRLZNZH2E</string>
+  <string>${TEAM_ID}</string>
   <key>uploadSymbols</key>
   <true/>
 </dict>
@@ -177,8 +190,8 @@ PLIST
       --wait \
       --poll-interval "${ASC_POLL_INTERVAL:-30s}" \
       --timeout "${ASC_TIMEOUT:-45m}" \
-      --archive-xcodebuild-flag=-allowProvisioningUpdates \
-      --export-xcodebuild-flag=-allowProvisioningUpdates \
+      "${ASC_ARCHIVE_FLAGS[@]}" \
+      "${ASC_EXPORT_FLAGS[@]}" \
       "${VERSION_ARG[@]}" \
       "${BUILD_ARG[@]}" \
       --output json
