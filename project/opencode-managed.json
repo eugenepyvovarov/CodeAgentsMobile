@@ -33,11 +33,11 @@
   },
   "production_artifact": {
     "workflow": ".gitea/workflows/production-artifact.yml",
-    "supported": false,
-    "command": "/bin/bash ./scripts/artifact.sh",
+    "supported": true,
+    "command": "/bin/bash ./scripts/artifact.sh testflight",
     "phase": {
-      "enabled": false,
-      "app_id": "",
+      "enabled": true,
+      "app_id": "6abec477-1930-4e2e-bd18-554059958ccd",
       "env": "prod",
       "path": "/"
     },
