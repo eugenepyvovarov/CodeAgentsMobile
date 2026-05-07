@@ -432,6 +432,61 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertNotNil(models["gpt-5.5"])
     }
 
+    func testDocumentRemovesOpenAIProviderOverrideForBuiltInAuth() throws {
+        var document = try OpenCodeMCPConfigDocument(jsonString: """
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "provider": {
+            "minimax-coding-plan": {
+              "npm": "@ai-sdk/anthropic",
+              "name": "MiniMax Coding Plan",
+              "models": { "MiniMax-M2.7": { "name": "MiniMax-M2.7" } }
+            },
+            "OpenAI": {
+              "npm": "@ai-sdk/openai",
+              "name": "OpenAI",
+              "models": { "gpt-5.5": { "name": "GPT-5.5" } }
+            }
+          }
+        }
+        """)
+
+        document.removeProviderConfiguration(id: "openai")
+
+        let decoded = try OpenCodeMCPConfigDocument(jsonString: document.toJSONString())
+        let providers = try XCTUnwrap(decoded.root["provider"] as? [String: Any])
+        XCTAssertNil(providers["OpenAI"])
+        XCTAssertNotNil(providers["minimax-coding-plan"])
+    }
+
+    func testOpenAIProviderProfileUsesBuiltInProviderWhenNotCustom() {
+        let chatGPTProfile = OpenCodeAIProviderProfile(
+            providerID: "OpenAI",
+            providerName: "OpenAI",
+            authMode: .openAIChatGPT,
+            modelID: "openai/gpt-5.5"
+        )
+
+        let apiKeyProfile = OpenCodeAIProviderProfile(
+            providerID: "openai",
+            providerName: "OpenAI",
+            authMode: .apiKey,
+            modelID: "openai/gpt-5.5"
+        )
+
+        let customEndpointProfile = OpenCodeAIProviderProfile(
+            providerID: "openai",
+            providerName: "OpenAI",
+            authMode: .apiKey,
+            customBaseURL: "https://example.com/v1",
+            customModelID: "custom-model"
+        )
+
+        XCTAssertTrue(chatGPTProfile.usesBuiltInOpenAIProvider)
+        XCTAssertTrue(apiKeyProfile.usesBuiltInOpenAIProvider)
+        XCTAssertFalse(customEndpointProfile.usesBuiltInOpenAIProvider)
+    }
+
     func testPromptModelParsesFullID() throws {
         let model = try XCTUnwrap(OpenCodePromptModel(fullID: "anthropic/claude-sonnet"))
 

@@ -375,6 +375,8 @@ final class OpenCodeProviderService: ObservableObject {
                 modelName: normalizedProfile.customModelName,
                 npmPackage: normalizedProfile.npmPackage
             )
+        } else if normalizedProfile.usesBuiltInOpenAIProvider {
+            loaded.document.removeProviderConfiguration(id: normalizedProfile.providerID)
         } else if let provider = try await catalogProvider(
             matching: normalizedProfile.providerID,
             client: openCodeClient,

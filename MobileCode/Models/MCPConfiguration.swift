@@ -511,6 +511,25 @@ struct OpenCodeMCPConfigDocument {
         ensureSchema()
     }
 
+    mutating func removeProviderConfiguration(id: String) {
+        let providerID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !providerID.isEmpty, var providers = root["provider"] as? [String: Any] else {
+            ensureSchema()
+            return
+        }
+
+        if let existingKey = providers.keys.first(where: { $0.caseInsensitiveCompare(providerID) == .orderedSame }) {
+            providers.removeValue(forKey: existingKey)
+        }
+
+        if providers.isEmpty {
+            root.removeValue(forKey: "provider")
+        } else {
+            root["provider"] = providers
+        }
+        ensureSchema()
+    }
+
     mutating func setCatalogProvider(_ provider: OpenCodeProvider, preferredModelID: String? = nil) throws {
         let providerID = provider.id.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = provider.name.trimmingCharacters(in: .whitespacesAndNewlines)

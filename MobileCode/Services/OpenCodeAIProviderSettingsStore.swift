@@ -123,6 +123,10 @@ struct OpenCodeAIProviderProfile: Codable, Equatable {
             || !customModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var usesBuiltInOpenAIProvider: Bool {
+        normalizedProviderID == "openai" && !isCustomProvider
+    }
+
     var requiresAPIKeyCredential: Bool {
         authMode.requiresAPIKey && normalizedProviderID != "opencode"
     }
