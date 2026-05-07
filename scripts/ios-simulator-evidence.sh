@@ -27,6 +27,17 @@ MODE="${1:-auto}"
 SCENARIO="${OPENCODE_EVIDENCE_SCENARIO:-${CODEAGENTS_EVIDENCE_SCENARIO:-agents-create-agent-flow}}"
 AGENTS_CTA_CHECKPOINT="agents-empty-create-agent"
 NEW_AGENT_SHEET_CHECKPOINT="new-agent-sheet"
+ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SCENARIO}}"
+
+if [[ "${MODE}" == "demo" ]]; then
+  OPENCODE_DEMO_SCREENSHOT_DIR="${OPENCODE_DEMO_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/demo/screenshots}"
+  OPENCODE_DEMO_RECORD_VIDEO="${OPENCODE_DEMO_RECORD_VIDEO:-true}"
+  OPENCODE_DEMO_VIDEO_OUTPUT_PATH="${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-${ARTIFACT_ROOT}/demo/${SCENARIO}.mp4}"
+fi
+
+if [[ "${MODE}" == "visual" ]]; then
+  OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR="${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/visual/screenshots}"
+fi
 
 if ! command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
   echo "xcodebuildmcp is required for iOS simulator evidence capture." >&2
@@ -208,6 +219,7 @@ sleep "${LAUNCH_SETTLE_SECONDS}"
 
 if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
+    mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
     "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --start --fps 30 --output json >/dev/null
     VIDEO_STARTED="true"
     sleep 2
