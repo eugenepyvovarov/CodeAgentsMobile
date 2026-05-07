@@ -201,11 +201,14 @@ raw_checkpoints = json.load(sys.stdin)
 if isinstance(raw_checkpoints, dict):
     checkpoints = raw_checkpoints.get("checkpoints") or raw_checkpoints.get("screenshots") or []
     if not checkpoints:
-        checkpoints = [
-            {"name": name, "path": path}
-            for name, path in raw_checkpoints.items()
-            if isinstance(path, str)
-        ]
+        checkpoints = []
+        for name, value in raw_checkpoints.items():
+            if isinstance(value, str):
+                checkpoints.append({"name": name, "path": value})
+            elif isinstance(value, dict):
+                checkpoint = dict(value)
+                checkpoint.setdefault("name", name)
+                checkpoints.append(checkpoint)
 elif isinstance(raw_checkpoints, list):
     checkpoints = raw_checkpoints
 else:
