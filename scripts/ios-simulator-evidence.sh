@@ -24,6 +24,9 @@ DERIVED_ROOT="${OPENCODE_EVIDENCE_BUILD_ROOT:-${ROOT_DIR}/.build/opencode-eviden
 DERIVED_DATA_PATH="${CODEAGENTS_DERIVED_DATA_PATH:-${DERIVED_ROOT}/DerivedData}"
 LAUNCH_SETTLE_SECONDS="${CODEAGENTS_EVIDENCE_LAUNCH_SETTLE_SECONDS:-4}"
 MODE="${1:-auto}"
+SCENARIO="${OPENCODE_EVIDENCE_SCENARIO:-${CODEAGENTS_EVIDENCE_SCENARIO:-agents-create-agent-flow}}"
+AGENTS_CTA_CHECKPOINT="agents-empty-create-agent"
+NEW_AGENT_SHEET_CHECKPOINT="new-agent-sheet"
 
 if ! command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
   echo "xcodebuildmcp is required for iOS simulator evidence capture." >&2
@@ -146,9 +149,9 @@ capture_demo_agents_screen() {
   local simulator_id="$1"
 
   if [[ -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
-    copy_screenshot_to_named_checkpoint "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}" "agents-empty-create-agent" "0"
+    copy_screenshot_to_named_checkpoint "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}" "${AGENTS_CTA_CHECKPOINT}" "0"
   elif [[ -n "${OPENCODE_DEMO_SCREENSHOT_DIR:-}" ]]; then
-    capture_png "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/agents-empty-create-agent.png"
+    capture_png "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/${AGENTS_CTA_CHECKPOINT}.png"
   fi
 }
 
@@ -156,11 +159,30 @@ capture_demo_new_agent_sheet() {
   local simulator_id="$1"
 
   if [[ -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
-    copy_screenshot_to_named_checkpoint "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}" "new-agent-sheet" "1"
+    copy_screenshot_to_named_checkpoint "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}" "${NEW_AGENT_SHEET_CHECKPOINT}" "1"
   elif [[ -n "${OPENCODE_DEMO_SCREENSHOT_DIR:-}" ]]; then
-    capture_png "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/new-agent-sheet.png"
+    capture_png "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/${NEW_AGENT_SHEET_CHECKPOINT}.png"
   fi
 }
+
+capture_visual_agents_screen() {
+  local simulator_id="$1"
+
+  if [[ -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS:-}" ]]; then
+    copy_screenshot_to_named_checkpoint \
+      "${simulator_id}" \
+      "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS}" \
+      "${AGENTS_CTA_CHECKPOINT}" \
+      "0"
+  elif [[ -n "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-}" ]]; then
+    capture_png "${simulator_id}" "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR}/${AGENTS_CTA_CHECKPOINT}.png"
+  fi
+}
+
+if [[ "${SCENARIO}" != "agents-create-agent-flow" ]]; then
+  echo "Unsupported iOS simulator evidence scenario: ${SCENARIO}" >&2
+  exit 1
+fi
 
 SIMULATOR_ID="${CODEAGENTS_SIMULATOR_ID:-$(resolve_simulator_id)}"
 VIDEO_STARTED="false"
@@ -207,11 +229,7 @@ if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; 
 fi
 
 if [[ "${MODE}" == "visual" || -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS:-}" ]]; then
-  if [[ -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS:-}" ]]; then
-    copy_screenshot_to_checkpoints "${SIMULATOR_ID}" "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS}"
-  elif [[ -n "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-}" ]]; then
-    capture_png "${SIMULATOR_ID}" "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR}/agents-empty-create-agent.png"
-  fi
+  capture_visual_agents_screen "${SIMULATOR_ID}"
 fi
 
 "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${SIMULATOR_ID}" --output json | python_json_text >&2 || true
