@@ -30,13 +30,13 @@ NEW_AGENT_SHEET_CHECKPOINT="new-agent-sheet"
 ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SCENARIO}}"
 
 if [[ "${MODE}" == "demo" ]]; then
-  OPENCODE_DEMO_SCREENSHOT_DIR="${OPENCODE_DEMO_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/demo/screenshots}"
-  OPENCODE_DEMO_RECORD_VIDEO="${OPENCODE_DEMO_RECORD_VIDEO:-true}"
-  OPENCODE_DEMO_VIDEO_OUTPUT_PATH="${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-${ARTIFACT_ROOT}/demo/${SCENARIO}.mp4}"
+  export OPENCODE_DEMO_SCREENSHOT_DIR="${OPENCODE_DEMO_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/demo/screenshots}"
+  export OPENCODE_DEMO_RECORD_VIDEO="${OPENCODE_DEMO_RECORD_VIDEO:-true}"
+  export OPENCODE_DEMO_VIDEO_OUTPUT_PATH="${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-${ARTIFACT_ROOT}/demo/${SCENARIO}.mp4}"
 fi
 
 if [[ "${MODE}" == "visual" ]]; then
-  OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR="${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/visual/screenshots}"
+  export OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR="${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/visual/screenshots}"
 fi
 
 if ! command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
@@ -99,6 +99,59 @@ capture_png() {
   screenshot_json="$("${XCODEBUILDMCP_BIN}" ui-automation screenshot --simulator-id "${simulator_id}" --return-format path --output json)"
   source_path="$(printf '%s' "${screenshot_json}" | extract_screenshot_path)"
   sips -s format png "${source_path}" --out "${output_path}" >/dev/null
+}
+
+ui_snapshot_text() {
+  local simulator_id="$1"
+
+  "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${simulator_id}" --output json | python_json_text
+}
+
+ui_contains_label() {
+  local simulator_id="$1"
+  local label="$2"
+
+  ui_snapshot_text "${simulator_id}" | python3 -c '
+import sys
+
+label = sys.argv[1]
+text = sys.stdin.read()
+raise SystemExit(0 if label in text else 1)
+' "${label}"
+}
+
+wait_for_ui_label() {
+  local simulator_id="$1"
+  local label="$2"
+  local attempts="${3:-8}"
+  local delay_seconds="${4:-1}"
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if ui_contains_label "${simulator_id}" "${label}"; then
+      return 0
+    fi
+    sleep "${delay_seconds}"
+  done
+
+  return 1
+}
+
+navigate_to_agents_screen() {
+  local simulator_id="$1"
+
+  if wait_for_ui_label "${simulator_id}" "Create Agent" 2 1; then
+    return 0
+  fi
+
+  if ui_contains_label "${simulator_id}" "Agents"; then
+    "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --label "Agents" --post-delay 1 --output json >/dev/null || true
+  fi
+
+  if ! wait_for_ui_label "${simulator_id}" "Create Agent" 8 1; then
+    echo "Unable to navigate to the Agents screen Create Agent CTA for ${SCENARIO}." >&2
+    ui_snapshot_text "${simulator_id}" >&2 || true
+    exit 1
+  fi
 }
 
 copy_screenshot_to_checkpoints() {
@@ -216,6 +269,8 @@ trap cleanup EXIT
   --output json >/dev/null
 
 sleep "${LAUNCH_SETTLE_SECONDS}"
+
+navigate_to_agents_screen "${SIMULATOR_ID}"
 
 if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
