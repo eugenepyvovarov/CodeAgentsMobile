@@ -925,6 +925,13 @@ class ChatViewModel {
             project.activeStreamingMessageId = nil
             if activeRuntimeKind(for: project) == .openCode {
                 project.resetOpenCodeRuntimeState()
+                Task { @MainActor in
+                    do {
+                        try await ProxyTaskService.shared.clearActiveOpenCodeSession(project: project)
+                    } catch {
+                        SSHLogger.log("Failed to clear active OpenCode task session for project \(project.id): \(error)", level: .warning)
+                    }
+                }
             } else if claudeService.isProxyChatEnabled {
                 Task { @MainActor in
                     let previousSuffix = previousProxyConversationId.map { String($0.suffix(6)) } ?? "nil"

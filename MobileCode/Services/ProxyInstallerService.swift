@@ -8,6 +8,18 @@
 import Foundation
 import Security
 
+enum PushNotificationSyncSource {
+    case alreadyConfigured
+    case repairedFromLocalSecret
+    case adoptedServerSecret
+    case createdNewSecret
+}
+
+struct PushNotificationSyncResult {
+    let secret: String
+    let source: PushNotificationSyncSource
+}
+
 final class ProxyInstallerService {
     static let shared = ProxyInstallerService()
 
@@ -158,6 +170,12 @@ final class ProxyInstallerService {
     }
 
     func enablePushNotifications(on server: Server) async throws -> String {
+        let localSecret = try? KeychainManager.shared.retrievePushSecret(for: server.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await syncPushNotifications(on: server, preferredSecret: localSecret).secret
+    }
+
+    func syncPushNotifications(on server: Server, preferredSecret: String?) async throws -> PushNotificationSyncResult {
         let session = try await SSHService.shared.connect(to: server, purpose: .proxyInstall)
         defer { session.disconnect() }
 
@@ -166,26 +184,46 @@ final class ProxyInstallerService {
         let existing = try await fetchProxyEnvFile(using: session)
         let parsed = parseEnvValues(from: existing)
 
-        let existingSecret = parsed["CODEAGENTS_PUSH_SECRET"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pushSecret = (existingSecret?.isEmpty == false) ? existingSecret! : try generatePushSecret()
-
+        let serverSecret = parsed["CODEAGENTS_PUSH_SECRET"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localSecret = preferredSecret?.trimmingCharacters(in: .whitespacesAndNewlines)
         let gatewayBaseURL = try PushGatewayClient.functionsBaseURL().absoluteString
+        let existingGatewayBaseURL = parsed["CODEAGENTS_PUSH_GATEWAY_BASE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let merged = mergeEnvFile(
-            existing: existing,
-            upserts: [
-                "CODEAGENTS_PUSH_SECRET": pushSecret,
-                "CODEAGENTS_PUSH_GATEWAY_BASE_URL": gatewayBaseURL
-            ],
-            removals: []
-        )
-        try await writeProxyEnvFile(
-            merged,
-            verifyKeys: ["CODEAGENTS_PUSH_SECRET", "CODEAGENTS_PUSH_GATEWAY_BASE_URL"],
-            using: session
-        )
+        let pushSecret: String
+        let source: PushNotificationSyncSource
+        if let serverSecret, !serverSecret.isEmpty {
+            pushSecret = serverSecret
+            if let localSecret, !localSecret.isEmpty, localSecret == serverSecret {
+                source = existingGatewayBaseURL == gatewayBaseURL ? .alreadyConfigured : .repairedFromLocalSecret
+            } else {
+                source = .adoptedServerSecret
+            }
+        } else if let localSecret, !localSecret.isEmpty {
+            pushSecret = localSecret
+            source = .repairedFromLocalSecret
+        } else {
+            pushSecret = try generatePushSecret()
+            source = .createdNewSecret
+        }
+
+        if serverSecret != pushSecret || existingGatewayBaseURL != gatewayBaseURL {
+            let merged = mergeEnvFile(
+                existing: existing,
+                upserts: [
+                    "CODEAGENTS_PUSH_SECRET": pushSecret,
+                    "CODEAGENTS_PUSH_GATEWAY_BASE_URL": gatewayBaseURL
+                ],
+                removals: []
+            )
+            try await writeProxyEnvFile(
+                merged,
+                verifyKeys: ["CODEAGENTS_PUSH_SECRET", "CODEAGENTS_PUSH_GATEWAY_BASE_URL"],
+                using: session
+            )
+        }
+
         try await verifyDaemonHealth(using: session)
-        return pushSecret
+        return PushNotificationSyncResult(secret: pushSecret, source: source)
     }
 
     private struct ProxyEnvDelta {

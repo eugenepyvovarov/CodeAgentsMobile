@@ -97,15 +97,41 @@ final class ProxyTaskService {
         _ = try await client.request(session: session, method: "DELETE", path: path, body: nil)
     }
 
+    func recordActiveOpenCodeSession(project: RemoteProject, sessionId: String) async throws {
+        guard CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode else { return }
+        guard let sessionId = sanitizedOpenCodeSessionId(sessionId) else { return }
+
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
+        let body = try activeOpenCodeSessionPayload(project: project, sessionId: sessionId)
+        _ = try await client.request(
+            session: session,
+            method: "POST",
+            path: "/v1/opencode/active-session",
+            body: body
+        )
+    }
+
+    func clearActiveOpenCodeSession(project: RemoteProject) async throws {
+        guard CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode else { return }
+
+        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
+        let body = try activeOpenCodeSessionPayload(project: project, sessionId: nil)
+        _ = try await client.request(
+            session: session,
+            method: "POST",
+            path: "/v1/opencode/active-session",
+            body: body
+        )
+    }
+
     private func createTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
         let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
-        let openCodeSessionId = try await resolveOpenCodeSessionIdIfNeeded(for: project)
+        try await resolveOpenCodeSessionIdIfNeeded(for: project)
         let body = try buildPayload(
             for: task,
             project: project,
-            conversationId: conversationId,
-            openCodeSessionId: openCodeSessionId
+            conversationId: conversationId
         )
         let response = try await client.request(session: session,
                                                 method: "POST",
@@ -119,12 +145,11 @@ final class ProxyTaskService {
                             project: RemoteProject) async throws -> ProxyTaskRecord {
         let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
         let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
-        let openCodeSessionId = try await resolveOpenCodeSessionIdIfNeeded(for: project)
+        try await resolveOpenCodeSessionIdIfNeeded(for: project)
         let body = try buildPayload(
             for: task,
             project: project,
-            conversationId: conversationId,
-            openCodeSessionId: openCodeSessionId
+            conversationId: conversationId
         )
         let path = "/v1/agent/tasks/\(remoteId)"
         let response = try await client.request(session: session,
@@ -137,8 +162,7 @@ final class ProxyTaskService {
     func buildPayload(
         for task: AgentScheduledTask,
         project: RemoteProject,
-        conversationId: String,
-        openCodeSessionId: String? = nil
+        conversationId: String
     ) throws -> String {
         let agentId = project.proxyAgentId ?? project.id.uuidString
         var payload: [String: Any] = [
@@ -156,8 +180,25 @@ final class ProxyTaskService {
             payload["title"] = trimmedTitle
         }
 
-        if let openCodeSessionId = sanitizedOpenCodeSessionId(openCodeSessionId) {
-            payload["open_code_session_id"] = openCodeSessionId
+        if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
+            payload["open_code_session_target"] = "active_agent_chat"
+        }
+
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private func activeOpenCodeSessionPayload(project: RemoteProject, sessionId: String?) throws -> String {
+        var payload: [String: Any] = [
+            "agent_id": project.proxyAgentId ?? project.id.uuidString,
+            "cwd": project.path
+        ]
+        if let group = project.proxyConversationGroupId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !group.isEmpty {
+            payload["conversation_group"] = group
+        }
+        if let sessionId {
+            payload["session_id"] = sessionId
         }
 
         let data = try JSONSerialization.data(withJSONObject: payload, options: [])
@@ -211,6 +252,7 @@ final class ProxyTaskService {
     private func resolveOpenCodeSessionIdIfNeeded(for project: RemoteProject) async throws -> String? {
         guard CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode else { return nil }
         if let existing = sanitizedOpenCodeSessionId(project.openCodeSessionId) {
+            try await recordActiveOpenCodeSession(project: project, sessionId: existing)
             return existing
         }
 
@@ -227,6 +269,7 @@ final class ProxyTaskService {
         project.openCodeSessionId = sessionId
         project.selectedAgentRuntime = .openCode
         project.updateLastModified()
+        try await recordActiveOpenCodeSession(project: project, sessionId: sessionId)
         return sessionId
     }
 

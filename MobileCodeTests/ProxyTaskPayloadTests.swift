@@ -3,9 +3,10 @@ import XCTest
 
 final class ProxyTaskPayloadTests: XCTestCase {
     @MainActor
-    func testTaskPayloadIncludesOpenCodeSessionIdWhenProvided() throws {
+    func testOpenCodeTaskPayloadTargetsActiveAgentChat() throws {
         let project = RemoteProject(name: "MobileCode", serverId: UUID(), basePath: "/workspace")
         project.proxyAgentId = "agent_fixture"
+        project.selectedAgentRuntime = .openCode
         let task = AgentScheduledTask(
             projectId: project.id,
             title: "Daily check",
@@ -21,15 +22,15 @@ final class ProxyTaskPayloadTests: XCTestCase {
         let body = try AgentTaskService.shared.buildPayload(
             for: task,
             project: project,
-            conversationId: "proxy_conversation",
-            openCodeSessionId: " ses_fixture "
+            conversationId: "proxy_conversation"
         )
         let payload = try decodePayload(body)
 
         XCTAssertEqual(payload["agent_id"] as? String, "agent_fixture")
         XCTAssertEqual(payload["conversation_id"] as? String, "proxy_conversation")
         XCTAssertEqual(payload["cwd"] as? String, "/workspace/MobileCode")
-        XCTAssertEqual(payload["open_code_session_id"] as? String, "ses_fixture")
+        XCTAssertNil(payload["open_code_session_id"])
+        XCTAssertEqual(payload["open_code_session_target"] as? String, "active_agent_chat")
         XCTAssertEqual(payload["title"] as? String, "Daily check")
 
         let schedule = try XCTUnwrap(payload["schedule"] as? [String: Any])
@@ -39,19 +40,20 @@ final class ProxyTaskPayloadTests: XCTestCase {
     }
 
     @MainActor
-    func testTaskPayloadOmitsOpenCodeSessionIdWhenUnavailable() throws {
+    func testClaudeTaskPayloadOmitsOpenCodeSessionTarget() throws {
         let project = RemoteProject(name: "MobileCode", serverId: UUID(), basePath: "/workspace")
+        project.selectedAgentRuntime = .claudeProxy
         let task = AgentScheduledTask(projectId: project.id, prompt: "Run checks")
 
         let body = try AgentTaskService.shared.buildPayload(
             for: task,
             project: project,
-            conversationId: "proxy_conversation",
-            openCodeSessionId: " "
+            conversationId: "proxy_conversation"
         )
         let payload = try decodePayload(body)
 
         XCTAssertNil(payload["open_code_session_id"])
+        XCTAssertNil(payload["open_code_session_target"])
     }
 
     private func decodePayload(_ body: String) throws -> [String: Any] {

@@ -498,6 +498,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
     private func resolveSessionID(for project: RemoteProject, sshSession: SSHSession) async throws -> String {
         if let existing = sanitizedSessionID(project.openCodeSessionId) {
+            try? await ProxyTaskService.shared.recordActiveOpenCodeSession(project: project, sessionId: existing)
             return existing
         }
 
@@ -513,6 +514,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         project.openCodeSessionId = sessionID
         project.selectedAgentRuntime = .openCode
         project.updateLastModified()
+        try? await ProxyTaskService.shared.recordActiveOpenCodeSession(project: project, sessionId: sessionID)
         return sessionID
     }
 

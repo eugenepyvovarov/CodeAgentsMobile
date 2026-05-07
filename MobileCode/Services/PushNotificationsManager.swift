@@ -74,12 +74,19 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     }
 
     func registerProjectSubscription(project: RemoteProject, server: Server, agentDisplayName: String) async {
-        guard KeychainManager.shared.hasPushSecret(for: server.id) else {
+        guard await hasNotificationDeliveryPermission() else {
             return
         }
 
+        registerForRemoteNotifications()
+        await syncServerPushConfigurationIfPossible(server: server)
         upsertStoredSubscription(.init(serverId: server.id, cwd: project.path, agentDisplayName: agentDisplayName))
-        await registerStoredSubscriptionIfPossible(serverId: server.id, cwd: project.path, agentDisplayName: agentDisplayName)
+        await registerStoredSubscriptionIfPossible(
+            serverId: server.id,
+            cwd: project.path,
+            agentDisplayName: agentDisplayName,
+            syncServer: false
+        )
     }
 
     func handleLaunchOrTap(userInfo: [AnyHashable: Any]) {
@@ -132,6 +139,24 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     }
 
     private func registerStoredSubscriptionIfPossible(serverId: UUID, cwd: String, agentDisplayName: String?) async {
+        await registerStoredSubscriptionIfPossible(
+            serverId: serverId,
+            cwd: cwd,
+            agentDisplayName: agentDisplayName,
+            syncServer: true
+        )
+    }
+
+    private func registerStoredSubscriptionIfPossible(
+        serverId: UUID,
+        cwd: String,
+        agentDisplayName: String?,
+        syncServer: Bool
+    ) async {
+        if syncServer, let server = fetchServer(withId: serverId) {
+            await syncServerPushConfigurationIfPossible(server: server)
+        }
+
         guard let secret = try? KeychainManager.shared.retrievePushSecret(for: serverId).trimmingCharacters(in: .whitespacesAndNewlines),
               !secret.isEmpty else {
             return
@@ -167,6 +192,46 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         } catch {
             SSHLogger.log("Push subscription registration failed: \(error)", level: .warning)
         }
+    }
+
+    private func hasNotificationDeliveryPermission() async -> Bool {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        case .denied, .notDetermined:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func syncServerPushConfigurationIfPossible(server: Server) async {
+        let localSecret = (try? KeychainManager.shared.retrievePushSecret(for: server.id))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let result = try await ProxyInstallerService.shared.syncPushNotifications(
+                on: server,
+                preferredSecret: localSecret
+            )
+            try KeychainManager.shared.storePushSecret(result.secret, for: server.id)
+            #if DEBUG
+            SSHLogger.log("Push server sync completed: \(result.source)", level: .info)
+            #endif
+        } catch {
+            SSHLogger.log("Push server sync failed: \(error)", level: .warning)
+        }
+    }
+
+    private func fetchServer(withId serverId: UUID) -> Server? {
+        guard let modelContainer else { return nil }
+        let context = ModelContext(modelContainer)
+        let descriptor = FetchDescriptor<Server>(
+            predicate: #Predicate { server in
+                server.id == serverId
+            }
+        )
+        return (try? context.fetch(descriptor))?.first
     }
 
     private func fetchFCMToken() async -> String? {
@@ -267,6 +332,16 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             return false
         }
 
+        var didUpdateOpenCodeSession = false
+        if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode,
+           let conversationId = payload.conversationId,
+           project.openCodeSessionId != conversationId {
+            project.openCodeSessionId = conversationId
+            project.openCodeLastMessageIds = []
+            project.openCodeLastPartIds = []
+            didUpdateOpenCodeSession = true
+        }
+
         if let incomingCount = payload.renderableAssistantCount, incomingCount >= 0 {
             let isUnreadStateUninitialized =
                 project.unreadConversationId == nil && project.lastKnownUnreadCursor == 0 && project.lastReadUnreadCursor == 0
@@ -298,6 +373,17 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             } catch {
                 #if DEBUG
                 SSHLogger.log("Failed to save unread update: \(error)", level: .warning)
+                #endif
+            }
+        }
+
+        if didUpdateOpenCodeSession {
+            project.updateLastModified()
+            do {
+                try context.save()
+            } catch {
+                #if DEBUG
+                SSHLogger.log("Failed to save OpenCode push session update: \(error)", level: .warning)
                 #endif
             }
         }

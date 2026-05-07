@@ -328,6 +328,9 @@ struct RegularTasksView: View {
             project.lastSuccessfulClaudeProviderRawValue = nil
             project.activeStreamingMessageId = nil
             claudeService.clearSessions()
+            if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
+                project.resetOpenCodeRuntimeState()
+            }
 
             do {
                 let projectId: UUID? = project.id
@@ -344,7 +347,13 @@ struct RegularTasksView: View {
                 SSHLogger.log("Failed to clear messages for project \(project.id): \(error)", level: .warning)
             }
 
-            if claudeService.isProxyChatEnabled {
+            if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
+                do {
+                    try await ProxyTaskService.shared.clearActiveOpenCodeSession(project: project)
+                } catch {
+                    SSHLogger.log("Failed to clear active OpenCode task session for project \(project.id): \(error)", level: .warning)
+                }
+            } else if claudeService.isProxyChatEnabled {
                 do {
                     try await claudeService.resetProxyConversation(project: project)
                 } catch {
