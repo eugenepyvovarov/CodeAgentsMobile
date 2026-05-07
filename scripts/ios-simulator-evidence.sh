@@ -196,10 +196,30 @@ import sys
 
 checkpoint_name = sys.argv[1]
 fallback_index = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
-checkpoints = json.load(sys.stdin)
+raw_checkpoints = json.load(sys.stdin)
+
+if isinstance(raw_checkpoints, dict):
+    checkpoints = raw_checkpoints.get("checkpoints") or raw_checkpoints.get("screenshots") or []
+    if not checkpoints:
+        checkpoints = [
+            {"name": name, "path": path}
+            for name, path in raw_checkpoints.items()
+            if isinstance(path, str)
+        ]
+elif isinstance(raw_checkpoints, list):
+    checkpoints = raw_checkpoints
+else:
+    checkpoints = []
+
 matches = []
 for checkpoint in checkpoints:
-    path = checkpoint.get("path")
+    if isinstance(checkpoint, str):
+        path = checkpoint
+        checkpoint = {}
+    elif isinstance(checkpoint, dict):
+        path = checkpoint.get("path")
+    else:
+        path = None
     if not path:
         continue
     names = [
@@ -211,7 +231,8 @@ for checkpoint in checkpoints:
     if checkpoint_name in names or checkpoint_name in path:
         matches.append(path)
 if not matches and fallback_index is not None and fallback_index < len(checkpoints):
-    path = checkpoints[fallback_index].get("path")
+    fallback = checkpoints[fallback_index]
+    path = fallback if isinstance(fallback, str) else fallback.get("path") if isinstance(fallback, dict) else None
     if path:
         matches.append(path)
 for path in matches:
