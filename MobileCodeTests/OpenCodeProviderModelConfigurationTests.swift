@@ -122,6 +122,37 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertFalse(status.hasModel(providerID: "openai", modelID: "gpt-5.4-mini"))
     }
 
+    func testProviderStatusSeparatesConfiguredProviderFromAuthCredential() {
+        let openAI = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            source: "config",
+            models: ["gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5")]
+        )
+        let status = OpenCodeProviderStatus(
+            providers: [openAI],
+            defaultModels: [:],
+            connectedProviderIDs: ["openai"],
+            authenticatedProviderIDs: [],
+            authMethods: ["openai": [OpenCodeProviderAuthMethod(type: "oauth", label: "ChatGPT Pro/Plus")]]
+        )
+
+        XCTAssertEqual(status.connectedProviderIDs, ["openai"])
+        XCTAssertFalse(status.isAuthenticated(providerID: "openai"))
+    }
+
+    func testProviderStatusReportsAuthenticatedProviderCaseInsensitively() {
+        let status = OpenCodeProviderStatus(
+            providers: [],
+            defaultModels: [:],
+            connectedProviderIDs: [],
+            authenticatedProviderIDs: ["OpenAI"],
+            authMethods: [:]
+        )
+
+        XCTAssertTrue(status.isAuthenticated(providerID: "openai"))
+    }
+
     func testProviderStatusSortsModelsByRawID() {
         let provider = OpenCodeProvider(
             id: "openai",
@@ -425,7 +456,7 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
 
         XCTAssertEqual(
             error.displayMessage,
-            "OpenCode does not have minimax-coding-plan/MiniMax-M2.7 loaded. Sync the provider config and reload OpenCode."
+            "OpenCode does not have minimax-coding-plan/MiniMax-M2.7 loaded. Apply the provider config and reload OpenCode."
         )
     }
 }

@@ -2,7 +2,7 @@
 //  OpenCodeProviderService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: OpenCode provider/auth status and credential sync
+//  Purpose: OpenCode provider/auth status and server-side credential apply
 //
 
 import Foundation
@@ -12,6 +12,7 @@ struct OpenCodeProviderStatus: Equatable {
     let configuredProviders: [OpenCodeProvider]
     let defaultModels: [String: String]
     let connectedProviderIDs: [String]
+    let authenticatedProviderIDs: [String]
     let authMethods: [String: [OpenCodeProviderAuthMethod]]
 
     init(
@@ -19,13 +20,23 @@ struct OpenCodeProviderStatus: Equatable {
         configuredProviders: [OpenCodeProvider] = [],
         defaultModels: [String: String],
         connectedProviderIDs: [String],
+        authenticatedProviderIDs: [String] = [],
         authMethods: [String: [OpenCodeProviderAuthMethod]]
     ) {
         self.providers = providers
         self.configuredProviders = configuredProviders
         self.defaultModels = defaultModels
         self.connectedProviderIDs = connectedProviderIDs
+        self.authenticatedProviderIDs = authenticatedProviderIDs
         self.authMethods = authMethods
+    }
+
+    func isAuthenticated(providerID: String) -> Bool {
+        let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProviderID.isEmpty else { return false }
+        return authenticatedProviderIDs.contains {
+            $0.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        }
     }
 
     var apiKeyProviders: [OpenCodeProvider] {
@@ -200,11 +211,6 @@ struct OpenCodeCustomProviderInput: Equatable {
     var apiKey: String
 }
 
-enum OpenCodeAIProviderCredentialScope: Equatable {
-    case global
-    case server(UUID)
-}
-
 @MainActor
 final class OpenCodeProviderService: ObservableObject {
     static let shared = OpenCodeProviderService()
@@ -223,6 +229,7 @@ final class OpenCodeProviderService: ObservableObject {
         let resolvedProviders = try await client.providerList(sshSession: session, directory: project.path)
         let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session, directory: project.path)
         let resolvedConfiguredProviders = try? await client.configuredProviders(sshSession: session, directory: project.path)
+        let resolvedAuthenticatedProviders = await authenticatedProviderIDs(session: session)
 
         return OpenCodeProviderStatus(
             providers: resolvedProviders.all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
@@ -233,6 +240,7 @@ final class OpenCodeProviderService: ObservableObject {
                 ? resolvedConfiguredProviders?.defaultModels ?? resolvedProviders.defaultModels
                 : resolvedProviders.defaultModels,
             connectedProviderIDs: resolvedProviders.connected.sorted(),
+            authenticatedProviderIDs: resolvedAuthenticatedProviders,
             authMethods: resolvedAuthMethods
         )
     }
@@ -245,6 +253,7 @@ final class OpenCodeProviderService: ObservableObject {
         let resolvedProviders = try await client.providerList(sshSession: session)
         let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session)
         let resolvedConfiguredProviders = try? await client.configuredProviders(sshSession: session)
+        let resolvedAuthenticatedProviders = await authenticatedProviderIDs(session: session)
 
         return OpenCodeProviderStatus(
             providers: resolvedProviders.all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
@@ -255,6 +264,7 @@ final class OpenCodeProviderService: ObservableObject {
                 ? resolvedConfiguredProviders?.defaultModels ?? resolvedProviders.defaultModels
                 : resolvedProviders.defaultModels,
             connectedProviderIDs: resolvedProviders.connected.sorted(),
+            authenticatedProviderIDs: resolvedAuthenticatedProviders,
             authMethods: resolvedAuthMethods
         )
     }
@@ -305,6 +315,23 @@ final class OpenCodeProviderService: ObservableObject {
         let _ = try? await client.disposeInstance(sshSession: session)
     }
 
+    func removeAuth(providerID: String, on server: Server) async throws {
+        let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProviderID.isEmpty else {
+            throw OpenCodeProviderServiceError.invalidInput
+        }
+
+        let session = try await sshService.connect(to: server, purpose: .opencode)
+        defer { session.disconnect() }
+
+        let client = client(for: server.id)
+        _ = try await client.removeProviderAuth(
+            sshSession: session,
+            providerID: trimmedProviderID
+        )
+        let _ = try? await client.disposeInstance(sshSession: session)
+    }
+
     func saveAPIKey(_ apiKey: String, providerID: String, for project: RemoteProject) async throws {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -326,7 +353,7 @@ final class OpenCodeProviderService: ObservableObject {
 
     func applyAIProviderProfile(
         _ profile: OpenCodeAIProviderProfile,
-        credentialScope: OpenCodeAIProviderCredentialScope,
+        apiKey: String? = nil,
         to server: Server
     ) async throws {
         let normalizedProfile = profile.normalizedForStorage()
@@ -366,8 +393,9 @@ final class OpenCodeProviderService: ObservableObject {
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
         try await reloadConfiguration(loaded.document, client: openCodeClient, session: session, directory: nil)
 
-        if normalizedProfile.requiresAPIKeyCredential {
-            let apiKey = try retrieveAPIKey(for: normalizedProfile.providerID, scope: credentialScope)
+        if normalizedProfile.requiresAPIKeyCredential,
+           let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !apiKey.isEmpty {
             _ = try await openCodeClient.setProviderAPIKey(
                 sshSession: session,
                 providerID: normalizedProfile.providerID,
@@ -475,7 +503,6 @@ final class OpenCodeProviderService: ObservableObject {
 
 enum OpenCodeProviderServiceError: LocalizedError {
     case invalidInput
-    case missingAPIKey(String)
     case modelNotConfigured(String)
     case validationFailed(String)
 
@@ -483,10 +510,8 @@ enum OpenCodeProviderServiceError: LocalizedError {
         switch self {
         case .invalidInput:
             return "Provider ID and model configuration are required."
-        case .missingAPIKey(let providerID):
-            return "No local API key is stored for \(providerID)."
         case .modelNotConfigured(let modelID):
-            return "OpenCode did not load \(modelID). Sync the provider config and try again."
+            return "OpenCode did not load \(modelID). Apply the provider config and try again."
         case .validationFailed(let message):
             return "OpenCode provider validation failed: \(message)"
         }
@@ -500,6 +525,36 @@ private extension OpenCodeProviderService {
 
     func client(for serverID: UUID) -> OpenCodeClient {
         clientOverride ?? OpenCodeClientFactory.client(for: serverID)
+    }
+
+    func authenticatedProviderIDs(session: SSHSession) async -> [String] {
+        let command = """
+        python3 - <<'PY'
+        import json
+        import os
+        import pathlib
+
+        data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        auth_path = pathlib.Path(data_home) / "opencode" / "auth.json"
+        try:
+            data = json.loads(auth_path.read_text())
+        except Exception:
+            print("[]")
+        else:
+            if isinstance(data, dict):
+                print(json.dumps(sorted(str(key) for key in data.keys() if str(key).strip())))
+            else:
+                print("[]")
+        PY
+        """
+
+        guard let output = try? await session.execute(command),
+              let data = output.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let providerIDs = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+
+        return providerIDs
     }
 
     func catalogProvider(
@@ -765,14 +820,6 @@ private extension OpenCodeProviderService {
             .replacingOccurrences(of: "`", with: "\\`")
     }
 
-    func retrieveAPIKey(for providerID: String, scope: OpenCodeAIProviderCredentialScope) throws -> String {
-        switch scope {
-        case .global:
-            return try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID)
-        case .server(let serverID):
-            return try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID, serverID: serverID)
-        }
-    }
 }
 
 private actor OpenCodeProviderValidationEventIterator {

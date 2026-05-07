@@ -689,7 +689,7 @@ struct OpenCodeErrorInfo: Decodable {
         let providerID = values["providerID"] as? String
         let modelID = values["modelID"] as? String
         guard let providerID, let modelID else { return nil }
-        return "OpenCode does not have \(providerID)/\(modelID) loaded. Sync the provider config and reload OpenCode."
+        return "OpenCode does not have \(providerID)/\(modelID) loaded. Apply the provider config and reload OpenCode."
     }
 
     private func firstNestedError(in value: Any) -> String? {
@@ -705,7 +705,7 @@ struct OpenCodeErrorInfo: Decodable {
                let nestedData = dictionary["data"] as? [String: Any],
                let providerID = nestedData["providerID"] as? String,
                let modelID = nestedData["modelID"] as? String {
-                return "OpenCode does not have \(providerID)/\(modelID) loaded. Sync the provider config and reload OpenCode."
+                return "OpenCode does not have \(providerID)/\(modelID) loaded. Apply the provider config and reload OpenCode."
             }
 
             if let nestedName = nestedName?.trimmingCharacters(in: .whitespacesAndNewlines),

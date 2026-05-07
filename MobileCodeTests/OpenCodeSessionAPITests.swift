@@ -349,6 +349,21 @@ final class OpenCodeSessionAPITests: XCTestCase {
         XCTAssertEqual(body["key"] as? String, "sk-test")
     }
 
+    func testRemoveProviderAuthUsesAuthEndpoint() async throws {
+        let response = try httpResponse(status: "200 OK", body: "true")
+        let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        let result = try await client.removeProviderAuth(
+            sshSession: sshSession,
+            providerID: "openai",
+            directory: "/workspace/MobileCode"
+        )
+
+        XCTAssertTrue(result)
+        XCTAssertTrue(sshSession.sentInput.contains("DELETE /auth/openai?directory=/workspace/MobileCode HTTP/1.1"))
+    }
+
     func testDisposeInstanceUsesInstanceDisposeEndpoint() async throws {
         let response = try httpResponse(status: "200 OK", body: "true")
         let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])

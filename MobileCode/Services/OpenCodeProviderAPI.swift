@@ -73,6 +73,19 @@ extension OpenCodeClient {
         )
     }
 
+    func removeProviderAuth(
+        sshSession: SSHSession,
+        providerID: String,
+        directory: String? = nil
+    ) async throws -> Bool {
+        try await jsonRequest(
+            session: sshSession,
+            method: .delete,
+            path: OpenCodeSessionPath.path("/auth/\(OpenCodeSessionPath.escape(providerID))", directory: directory),
+            responseType: Bool.self
+        )
+    }
+
     func startProviderOAuth(
         sshSession: SSHSession,
         providerID: String,

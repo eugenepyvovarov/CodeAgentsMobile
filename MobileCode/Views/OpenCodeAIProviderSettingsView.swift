@@ -22,11 +22,12 @@ struct OpenCodeAIProviderSettingsView: View {
     @State private var showModelPicker = false
     @State private var showAdvancedModels = false
     @State private var confirmApplyAll = false
+    @State private var confirmRemoveAuth = false
+    @State private var removeAuthFromAllServers = false
     @State private var providerStatus: OpenCodeProviderStatus?
     @State private var statusSourceName: String?
-    @State private var hasStoredAPIKey = false
-    @State private var isSavingLocal = false
     @State private var isApplying = false
+    @State private var isRemovingAuth = false
     @State private var isRefreshingStatus = false
     @State private var statusMessage: String?
     @State private var errorMessage: String?
@@ -93,6 +94,18 @@ struct OpenCodeAIProviderSettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This updates the provider, credential, and selected model on each server.")
+        }
+        .confirmationDialog(
+            removeAuthFromAllServers ? "Remove \(selectedProviderName) auth from every server?" : "Remove \(selectedProviderName) auth from \(authActionTargetServer?.name ?? "this server")?",
+            isPresented: $confirmRemoveAuth,
+            titleVisibility: .visible
+        ) {
+            Button(removeAuthFromAllServers ? "Remove from All Servers" : "Remove Auth", role: .destructive) {
+                Task { await removeSelectedProviderAuth() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the selected provider credential from OpenCode. You can reconnect it immediately after.")
         }
         .alert("OpenCode AI Provider", isPresented: $showError) {
             Button("OK") {}
@@ -183,13 +196,13 @@ struct OpenCodeAIProviderSettingsView: View {
                     .foregroundStyle(.green)
                     .font(.footnote)
             } else if profile.requiresAPIKeyCredential {
-                if hasStoredAPIKey {
-                    Label("API key saved on this device", systemImage: "checkmark.seal.fill")
+                if providerConnectedInStatus {
+                    Label("\(selectedProviderName) is authorized on \(statusSourceName ?? "the server")", systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                         .font(.footnote)
                 }
 
-                SecureField(hasStoredAPIKey ? "Replace API Key" : "API Key", text: $apiKey)
+                SecureField(providerConnectedInStatus ? "Replace API Key on Server" : "API Key", text: $apiKey)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .disabled(editsDisabled)
@@ -197,6 +210,8 @@ struct OpenCodeAIProviderSettingsView: View {
             } else {
                 chatGPTConnectionView
             }
+
+            authRemovalControls
         } header: {
             Text("Connection")
         } footer: {
@@ -230,6 +245,10 @@ struct OpenCodeAIProviderSettingsView: View {
             Label("OpenAI is connected on \(statusSourceName ?? "the server")", systemImage: "checkmark.seal.fill")
                 .foregroundStyle(.green)
                 .font(.footnote)
+
+            Text("Remove auth below to sign in with a different OpenAI account.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         } else if chatGPTOAuthCompletedForTargetServer {
             Label("OpenAI authorization completed on \(chatGPTOAuthTargetServer?.name ?? "the server")", systemImage: "checkmark.seal.fill")
                 .foregroundStyle(.green)
@@ -333,6 +352,37 @@ struct OpenCodeAIProviderSettingsView: View {
             .foregroundColor(.secondary)
     }
 
+    @ViewBuilder
+    private var authRemovalControls: some View {
+        if canRemoveProviderAuth, server == nil {
+            Button(role: .destructive) {
+                removeAuthFromAllServers = true
+                confirmRemoveAuth = true
+            } label: {
+                savingLabel(
+                    isWorking: isRemovingAuth,
+                    title: "Remove Auth on All Servers",
+                    systemImage: "person.2.crop.square.stack.fill"
+                )
+            }
+            .disabled(editsDisabled || isRemovingAuth)
+            .accessibilityIdentifier("opencode-ai-remove-auth-all-servers-button")
+        } else if canRemoveProviderAuth, let targetServer = authActionTargetServer {
+            Button(role: .destructive) {
+                removeAuthFromAllServers = false
+                confirmRemoveAuth = true
+            } label: {
+                savingLabel(
+                    isWorking: isRemovingAuth,
+                    title: "Remove Auth on \(targetServer.name)",
+                    systemImage: "person.crop.circle.badge.xmark"
+                )
+            }
+            .disabled(editsDisabled || isRemovingAuth)
+            .accessibilityIdentifier("opencode-ai-remove-auth-server-button")
+        }
+    }
+
     private var modelSection: some View {
         Section {
             if customProviderEnabled {
@@ -429,7 +479,7 @@ struct OpenCodeAIProviderSettingsView: View {
                 } label: {
                     savingLabel(isWorking: isApplying, title: "Apply to This Server", systemImage: "checkmark.circle")
                 }
-                .disabled(isApplying || !canSync)
+                .disabled(isApplying || !canApply)
                 .accessibilityIdentifier("opencode-ai-apply-server-button")
             } else {
                 Button {
@@ -437,21 +487,14 @@ struct OpenCodeAIProviderSettingsView: View {
                 } label: {
                     savingLabel(isWorking: isApplying, title: "Apply to All Servers", systemImage: "checkmark.circle")
                 }
-                .disabled(isApplying || servers.isEmpty || !canSync)
+                .disabled(isApplying || servers.isEmpty || !canApply)
                 .accessibilityIdentifier("opencode-ai-apply-all-servers-button")
             }
 
-            Button {
-                Task { await saveLocalSettings() }
-            } label: {
-                savingLabel(isWorking: isSavingLocal, title: "Save Draft on This Device", systemImage: "key")
-            }
-            .disabled(isSavingLocal || !canSave)
-            .accessibilityIdentifier("opencode-ai-save-local-button")
         } header: {
             Text("Apply")
         } footer: {
-            Text("Apply validates the selected model on OpenCode. Save Draft only stores this setup locally.")
+            Text("Apply writes the provider and model to OpenCode, then validates the selected model on the target server.")
         }
     }
 
@@ -498,7 +541,6 @@ struct OpenCodeAIProviderSettingsView: View {
                     customProviderEnabled = false
                     apiKey = ""
                 }
-                refreshStoredCredentialState()
             }
         )
     }
@@ -633,9 +675,18 @@ struct OpenCodeAIProviderSettingsView: View {
     }
 
     private var providerConnectedInStatus: Bool {
-        providerStatus?.connectedProviderIDs.contains {
-            $0.caseInsensitiveCompare(profile.normalizedProviderID) == .orderedSame
-        } == true
+        providerStatus?.isAuthenticated(providerID: profile.normalizedProviderID) == true
+    }
+
+    private var canRemoveProviderAuth: Bool {
+        guard !selectedProviderUsesNoCredential,
+              !profile.normalizedProviderID.isEmpty else {
+            return false
+        }
+        if server == nil {
+            return !servers.isEmpty
+        }
+        return providerConnectedInStatus && authActionTargetServer != nil
     }
 
     private var chatGPTOAuthCompletedForTargetServer: Bool {
@@ -652,18 +703,14 @@ struct OpenCodeAIProviderSettingsView: View {
             && !selectedModelUnavailable
     }
 
-    private var canSave: Bool {
-        profile.isReadyToSave && !selectedModelUnavailable
-    }
-
-    private var canSync: Bool {
+    private var canApply: Bool {
         guard profile.isReadyToSave else { return false }
         guard modelStepComplete else { return false }
         if selectedProviderUsesNoCredential {
             return true
         }
         if profile.requiresAPIKeyCredential {
-            return hasStoredAPIKey || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return providerConnectedInStatus || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return providerIsConnected
     }
@@ -673,9 +720,13 @@ struct OpenCodeAIProviderSettingsView: View {
             return "OpenCode bundled models do not need a provider API key."
         }
         if profile.requiresAPIKeyCredential {
-            return "This stores a credential first. CodeAgents keeps the key in Keychain, sends it during sync, then validates it with the selected model."
+            return "Paste a key to authorize or replace the provider on the server. Leave it empty to use an auth that already exists on that server."
         }
         return "ChatGPT Plus/Pro uses OpenCode's OAuth flow on the server. CodeAgents only shows the link and code; it does not store the OpenAI credential."
+    }
+
+    private var authActionTargetServer: Server? {
+        server ?? servers.first
     }
 
     private var chatGPTOAuthTargetServer: Server? {
@@ -750,7 +801,6 @@ struct OpenCodeAIProviderSettingsView: View {
         apiKey = ""
         resetChatGPTOAuthState()
         repairSelectedModelIfNeeded()
-        refreshStoredCredentialState()
     }
 
     private func loadServerScope(useGlobalDefaults: Bool) {
@@ -764,7 +814,6 @@ struct OpenCodeAIProviderSettingsView: View {
         apiKey = ""
         resetChatGPTOAuthState()
         repairSelectedModelIfNeeded()
-        refreshStoredCredentialState()
     }
 
     private func selectProvider(_ choice: OpenCodeProviderChoice) {
@@ -808,7 +857,6 @@ struct OpenCodeAIProviderSettingsView: View {
         }
         repairSelectedModelIfNeeded()
         apiKey = ""
-        refreshStoredCredentialState()
     }
 
     private func selectModel(_ choice: OpenCodeModelChoice) {
@@ -957,20 +1005,8 @@ struct OpenCodeAIProviderSettingsView: View {
         }
     }
 
-    @MainActor
-    private func saveLocalSettings() async {
-        isSavingLocal = true
-        defer { isSavingLocal = false }
-
-        do {
-            try persistLocalSettings()
-            statusMessage = "Saved on this device."
-        } catch {
-            present(error)
-        }
-    }
-
-    private func persistLocalSettings() throws {
+    @discardableResult
+    private func persistSelection() throws -> OpenCodeAIProviderProfile {
         if customProviderEnabled {
             profile.modelID = ""
         }
@@ -987,18 +1023,10 @@ struct OpenCodeAIProviderSettingsView: View {
                 ),
                 for: server.id
             )
-            if !useGlobalDefaults, normalized.requiresAPIKeyCredential, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try KeychainManager.shared.storeOpenCodeAPIKey(apiKey, providerID: normalized.providerID, serverID: server.id)
-                apiKey = ""
-            }
         } else {
             try settingsStore.saveGlobalProfile(normalized)
-            if normalized.requiresAPIKeyCredential, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try KeychainManager.shared.storeOpenCodeAPIKey(apiKey, providerID: normalized.providerID)
-                apiKey = ""
-            }
         }
-        refreshStoredCredentialState()
+        return normalized
     }
 
     @MainActor
@@ -1007,23 +1035,22 @@ struct OpenCodeAIProviderSettingsView: View {
         defer { isApplying = false }
 
         do {
-            try persistLocalSettings()
+            let normalized = try persistSelection()
+            let apiKeyToApply = apiKey.trimmedOpenCodeValue.nilIfEmpty
 
             let profileToApply: OpenCodeAIProviderProfile
-            let credentialScope: OpenCodeAIProviderCredentialScope
             if let sourceServer = server {
                 profileToApply = settingsStore.effectiveProfile(for: sourceServer.id)
-                credentialScope = useGlobalDefaults ? .global : .server(sourceServer.id)
             } else {
-                profileToApply = settingsStore.globalProfile()
-                credentialScope = .global
+                profileToApply = normalized
             }
 
             try await providerService.applyAIProviderProfile(
                 profileToApply,
-                credentialScope: credentialScope,
+                apiKey: apiKeyToApply,
                 to: targetServer
             )
+            apiKey = ""
             statusMessage = "Applied and validated on \(targetServer.name)."
             await refreshProviderStatusIfPossible()
         } catch {
@@ -1037,15 +1064,16 @@ struct OpenCodeAIProviderSettingsView: View {
         defer { isApplying = false }
 
         do {
-            try persistLocalSettings()
-            let globalProfile = settingsStore.globalProfile()
+            let globalProfile = try persistSelection()
+            let apiKeyToApply = apiKey.trimmedOpenCodeValue.nilIfEmpty
             for targetServer in servers {
                 try await providerService.applyAIProviderProfile(
                     globalProfile,
-                    credentialScope: .global,
+                    apiKey: apiKeyToApply,
                     to: targetServer
                 )
             }
+            apiKey = ""
             statusMessage = "Applied and validated on \(servers.count) server\(servers.count == 1 ? "" : "s")."
             await refreshProviderStatusIfPossible()
         } catch {
@@ -1053,16 +1081,52 @@ struct OpenCodeAIProviderSettingsView: View {
         }
     }
 
-    private func refreshStoredCredentialState() {
-        guard profile.requiresAPIKeyCredential else {
-            hasStoredAPIKey = false
+    @MainActor
+    private func removeSelectedProviderAuth() async {
+        let normalizedProviderID = profile.normalizedProviderID
+        guard !normalizedProviderID.isEmpty else {
+            present(OpenCodeProviderServiceError.invalidInput)
             return
         }
 
-        if let server, !useGlobalDefaults {
-            hasStoredAPIKey = KeychainManager.shared.hasOpenCodeAPIKey(providerID: profile.normalizedProviderID, serverID: server.id)
+        let targetServers: [Server]
+        if removeAuthFromAllServers {
+            targetServers = servers
+        } else if let authActionTargetServer {
+            targetServers = [authActionTargetServer]
         } else {
-            hasStoredAPIKey = KeychainManager.shared.hasOpenCodeAPIKey(providerID: profile.normalizedProviderID)
+            present(OpenCodeProviderServiceError.invalidInput)
+            return
+        }
+
+        guard !targetServers.isEmpty else {
+            present(OpenCodeProviderServiceError.invalidInput)
+            return
+        }
+
+        isRemovingAuth = true
+        defer { isRemovingAuth = false }
+
+        do {
+            for targetServer in targetServers {
+                try await providerService.removeAuth(providerID: normalizedProviderID, on: targetServer)
+            }
+            deleteLocalAPIKeyIfPresent(for: normalizedProviderID, targetServers: targetServers)
+            apiKey = ""
+            chatGPTOAuthCompletedServerID = nil
+            resetChatGPTOAuthState()
+            let count = targetServers.count
+            statusMessage = "Removed \(selectedProviderName) auth from \(count) server\(count == 1 ? "" : "s")."
+            await refreshProviderStatusIfPossible()
+        } catch {
+            present(error)
+        }
+    }
+
+    private func deleteLocalAPIKeyIfPresent(for providerID: String, targetServers: [Server]) {
+        try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+        for targetServer in targetServers {
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID, serverID: targetServer.id)
         }
     }
 
@@ -1287,6 +1351,10 @@ private struct OpenCodeModelPickerSheet: View {
 private extension String {
     var trimmedOpenCodeValue: String {
         trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
