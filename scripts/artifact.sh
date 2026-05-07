@@ -186,12 +186,13 @@ PLIST
 
   IPA_PATH="${DIST_DIR}/CodeAgentsMobile-${RELEASE_VERSION_RESOLVED}-${RELEASE_BUILD_RESOLVED}.ipa"
   IPA_SHA_PATH="${IPA_PATH}.sha256"
-  IPA_DIGEST=""
-  if [[ -f "${IPA_PATH}" ]]; then
-    IPA_SHA256="$(shasum -a 256 "${IPA_PATH}" | awk '{print $1}')"
-    printf "%s  %s\n" "${IPA_SHA256}" "$(basename "${IPA_PATH}")" > "${IPA_SHA_PATH}"
-    IPA_DIGEST="sha256:${IPA_SHA256}"
+  if [[ ! -f "${IPA_PATH}" ]]; then
+    echo "Expected TestFlight IPA was not produced at ${IPA_PATH}" >&2
+    exit 1
   fi
+  IPA_SHA256="$(shasum -a 256 "${IPA_PATH}" | awk '{print $1}')"
+  printf "%s  %s\n" "${IPA_SHA256}" "$(basename "${IPA_PATH}")" > "${IPA_SHA_PATH}"
+  IPA_DIGEST="sha256:${IPA_SHA256}"
 
   export ASC_OUTPUT
   export IPA_PATH IPA_SHA_PATH IPA_DIGEST
