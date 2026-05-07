@@ -79,7 +79,7 @@ struct ProjectsView: View {
                                 .font(.footnote)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 8)
-                                .background(Color.blue)
+                                .background(Color.orange)
                                 .foregroundColor(.white)
                                 .clipShape(Capsule())
                         }
@@ -102,7 +102,7 @@ struct ProjectsView: View {
                         .font(.body)
                         .padding()
                         .frame(maxWidth: .infinity)
-                        .background(Color.blue)
+                        .background(Color.orange)
                         .foregroundColor(.white)
                         .cornerRadius(10)
                     }
