@@ -30,13 +30,18 @@ AGENTS_CTA_CHECKPOINT="agents-empty-create-agent"
 NEW_AGENT_SHEET_CHECKPOINT="new-agent-sheet"
 ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SCENARIO}}"
 
-if [[ "${MODE}" == "demo" ]]; then
+DEMO_CAPTURE_REQUESTED="false"
+VISUAL_CAPTURE_REQUESTED="false"
+
+if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
+  DEMO_CAPTURE_REQUESTED="true"
   export OPENCODE_DEMO_SCREENSHOT_DIR="${OPENCODE_DEMO_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/demo/screenshots}"
   export OPENCODE_DEMO_RECORD_VIDEO="${OPENCODE_DEMO_RECORD_VIDEO:-true}"
   export OPENCODE_DEMO_VIDEO_OUTPUT_PATH="${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-${ARTIFACT_ROOT}/demo/${SCENARIO}.mp4}"
 fi
 
-if [[ "${MODE}" == "visual" ]]; then
+if [[ "${MODE}" == "visual" || -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS:-}" ]]; then
+  VISUAL_CAPTURE_REQUESTED="true"
   export OPENCODE_VISUAL_VALIDATION_IDENTIFIER="${OPENCODE_VISUAL_VALIDATION_IDENTIFIER:-${VISUAL_VALIDATION_IDENTIFIER}}"
   export OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR="${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/visual/screenshots}"
 fi
@@ -274,7 +279,7 @@ sleep "${LAUNCH_SETTLE_SECONDS}"
 
 navigate_to_agents_screen "${SIMULATOR_ID}"
 
-if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
+if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
     "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --start --fps 30 --output json >/dev/null
@@ -302,7 +307,7 @@ if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; 
   fi
 fi
 
-if [[ "${MODE}" == "visual" || -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS:-}" ]]; then
+if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]]; then
   capture_visual_agents_screen "${SIMULATOR_ID}"
 fi
 
