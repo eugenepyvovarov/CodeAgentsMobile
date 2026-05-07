@@ -13,7 +13,8 @@
     "workflow": ".gitea/workflows/pr-prep.yml",
     "authoritative": true,
     "stages": [
-      "validation"
+      "validation",
+      "visual-validation"
     ],
     "handoff": {
       "review_workflow": ".gitea/workflows/review-bot.yml"
@@ -67,16 +68,16 @@
   },
   "demo": {
     "workflow": ".gitea/workflows/demo-evidence.yml",
-    "supported": false,
-    "provider": "playwright",
-    "platform": "web",
+    "supported": true,
+    "provider": "native-ios-simulator",
+    "platform": "ios-simulator",
     "record_video": true
   },
   "visual_validation": {
     "workflow": ".gitea/workflows/visual-validation.yml",
-    "supported": false,
-    "provider": "playwright",
-    "platform": "web",
+    "supported": true,
+    "provider": "native-ios-simulator",
+    "platform": "ios-simulator",
     "full_page": true
   },
   "playwright_smoke": {
