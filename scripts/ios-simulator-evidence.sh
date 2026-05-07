@@ -279,6 +279,10 @@ sleep "${LAUNCH_SETTLE_SECONDS}"
 
 navigate_to_agents_screen "${SIMULATOR_ID}"
 
+if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]]; then
+  capture_visual_agents_screen "${SIMULATOR_ID}"
+fi
+
 if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
@@ -305,10 +309,6 @@ if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
       --output json >/dev/null
     VIDEO_STARTED="false"
   fi
-fi
-
-if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]]; then
-  capture_visual_agents_screen "${SIMULATOR_ID}"
 fi
 
 "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${SIMULATOR_ID}" --output json | python_json_text >&2 || true
