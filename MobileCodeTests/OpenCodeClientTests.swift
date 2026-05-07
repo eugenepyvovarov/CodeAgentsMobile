@@ -149,6 +149,38 @@ final class OpenCodeClientTests: XCTestCase {
         }
     }
 
+    func testJSONDecodeFailureIncludesRequestAndBodyPreview() async throws {
+        let responseBody = "not json"
+        let response = [
+            "HTTP/1.1 200 OK",
+            "Content-Type: text/plain",
+            "Content-Length: \(responseBody.utf8.count)",
+            "",
+            responseBody
+        ].joined(separator: "\r\n")
+        let session = FakeSSHSession(responseChunks: [response])
+        let client = OpenCodeClient()
+
+        do {
+            _ = try await client.jsonRequest(
+                session: session,
+                method: .get,
+                path: "/session",
+                responseType: [OpenCodeSessionInfo].self
+            )
+            XCTFail("Expected decoding failure")
+        } catch let error as OpenCodeClientError {
+            guard case .decodingFailed(let message) = error else {
+                return XCTFail("Expected decoding failure, got \(error)")
+            }
+            XCTAssertTrue(message.contains("GET /session"))
+            XCTAssertTrue(message.contains("HTTP 200"))
+            XCTAssertTrue(message.contains("Body preview: not json"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testRequestTimesOutAndTerminatesHandleWhenResponseDoesNotFinish() async throws {
         let response = [
             "HTTP/1.1 200 OK",

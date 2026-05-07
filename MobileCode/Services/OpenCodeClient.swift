@@ -90,7 +90,16 @@ final class OpenCodeClient {
         do {
             return try decoder.decode(Response.self, from: data)
         } catch {
-            throw OpenCodeClientError.decodingFailed(error.localizedDescription)
+            throw OpenCodeClientError.decodingFailed(
+                decodingFailureMessage(
+                    error: error,
+                    method: method,
+                    path: path,
+                    statusCode: response.statusCode,
+                    responseType: Response.self,
+                    body: response.body
+                )
+            )
         }
     }
 
@@ -331,6 +340,48 @@ final class OpenCodeClient {
             group.cancelAll()
             return result
         }
+    }
+
+    private func decodingFailureMessage<Response>(
+        error: Error,
+        method: OpenCodeHTTPMethod,
+        path: String,
+        statusCode: Int,
+        responseType: Response.Type,
+        body: String
+    ) -> String {
+        let context = decodingContext(from: error) ?? error.localizedDescription
+        return "\(method.rawValue) \(path) returned HTTP \(statusCode) but could not decode \(responseType): \(context). Body preview: \(responsePreview(body))"
+    }
+
+    private func decodingContext(from error: Error) -> String? {
+        switch error {
+        case let DecodingError.typeMismatch(type, context):
+            return "type mismatch for \(type) at \(codingPathDescription(context.codingPath)): \(context.debugDescription)"
+        case let DecodingError.valueNotFound(type, context):
+            return "missing value for \(type) at \(codingPathDescription(context.codingPath)): \(context.debugDescription)"
+        case let DecodingError.keyNotFound(key, context):
+            return "missing key '\(key.stringValue)' at \(codingPathDescription(context.codingPath)): \(context.debugDescription)"
+        case let DecodingError.dataCorrupted(context):
+            return "data corrupted at \(codingPathDescription(context.codingPath)): \(context.debugDescription)"
+        default:
+            return nil
+        }
+    }
+
+    private func codingPathDescription(_ path: [CodingKey]) -> String {
+        let value = path.map(\.stringValue).joined(separator: ".")
+        return value.isEmpty ? "<root>" : value
+    }
+
+    private func responsePreview(_ body: String, limit: Int = 500) -> String {
+        let normalized = body
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        if normalized.count <= limit {
+            return normalized.isEmpty ? "<empty>" : normalized
+        }
+        return String(normalized.prefix(limit)) + "...<truncated>"
     }
 }
 
