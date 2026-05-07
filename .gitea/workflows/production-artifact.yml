@@ -6,6 +6,9 @@ name: OpenCode Production Artifact
       pull_request_number:
         description: Merged pull request number to build the pinned production artifact for
         required: true
+      build_commit_sha:
+        description: Optional manual repair override; defaults to the PR merge commit
+        required: false
 
 permissions:
   contents: read
