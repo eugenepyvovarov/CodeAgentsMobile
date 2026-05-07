@@ -52,6 +52,10 @@ agents-create-agent-orange
 
 /bin/bash ./scripts/ios-simulator-evidence.sh visual
 
+### Baseline SHA
+
+5771aba676c4e28942d0cd56bd1a2dee616cb50d
+
 ### Steps
 
 1. Build and launch the app in a clean native iOS simulator.
