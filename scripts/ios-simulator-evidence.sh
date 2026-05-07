@@ -104,6 +104,64 @@ for checkpoint in json.load(sys.stdin):
   done
 }
 
+copy_screenshot_to_named_checkpoint() {
+  local simulator_id="$1"
+  local checkpoints_json="$2"
+  local checkpoint_name="$3"
+  local fallback_index="${4:-}"
+
+  printf '%s' "${checkpoints_json}" | python3 -c '
+import json
+import os
+import sys
+
+checkpoint_name = sys.argv[1]
+fallback_index = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
+checkpoints = json.load(sys.stdin)
+matches = []
+for checkpoint in checkpoints:
+    path = checkpoint.get("path")
+    if not path:
+        continue
+    names = [
+        str(checkpoint.get("name", "")),
+        str(checkpoint.get("id", "")),
+        str(checkpoint.get("checkpoint", "")),
+        os.path.splitext(os.path.basename(path))[0],
+    ]
+    if checkpoint_name in names or checkpoint_name in path:
+        matches.append(path)
+if not matches and fallback_index is not None and fallback_index < len(checkpoints):
+    path = checkpoints[fallback_index].get("path")
+    if path:
+        matches.append(path)
+for path in matches:
+    print(path)
+' "${checkpoint_name}" "${fallback_index}" | while IFS= read -r checkpoint_path; do
+    capture_png "${simulator_id}" "${checkpoint_path}"
+  done
+}
+
+capture_demo_agents_screen() {
+  local simulator_id="$1"
+
+  if [[ -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
+    copy_screenshot_to_named_checkpoint "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}" "agents-empty-create-agent" "0"
+  elif [[ -n "${OPENCODE_DEMO_SCREENSHOT_DIR:-}" ]]; then
+    capture_png "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/agents-empty-create-agent.png"
+  fi
+}
+
+capture_demo_new_agent_sheet() {
+  local simulator_id="$1"
+
+  if [[ -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
+    copy_screenshot_to_named_checkpoint "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}" "new-agent-sheet" "1"
+  elif [[ -n "${OPENCODE_DEMO_SCREENSHOT_DIR:-}" ]]; then
+    capture_png "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/new-agent-sheet.png"
+  fi
+}
+
 SIMULATOR_ID="${CODEAGENTS_SIMULATOR_ID:-$(resolve_simulator_id)}"
 VIDEO_STARTED="false"
 
@@ -133,11 +191,9 @@ if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; 
     sleep 2
   fi
 
-  if [[ -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
-    copy_screenshot_to_checkpoints "${SIMULATOR_ID}" "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}"
-  elif [[ -n "${OPENCODE_DEMO_SCREENSHOT_DIR:-}" ]]; then
-    capture_png "${SIMULATOR_ID}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/home.png"
-  fi
+  capture_demo_agents_screen "${SIMULATOR_ID}"
+  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${SIMULATOR_ID}" --label "Create Agent" --post-delay 1 --output json >/dev/null
+  capture_demo_new_agent_sheet "${SIMULATOR_ID}"
 
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
     sleep 2
@@ -154,7 +210,7 @@ if [[ "${MODE}" == "visual" || -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKP
   if [[ -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS:-}" ]]; then
     copy_screenshot_to_checkpoints "${SIMULATOR_ID}" "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS}"
   elif [[ -n "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-}" ]]; then
-    capture_png "${SIMULATOR_ID}" "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR}/home.png"
+    capture_png "${SIMULATOR_ID}" "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR}/agents-empty-create-agent.png"
   fi
 fi
 
