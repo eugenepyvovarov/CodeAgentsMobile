@@ -301,11 +301,14 @@ class ChatViewModel {
         proxyPollingTask = nil
     }
 
-    func refreshProxyEvents() async {
+    func refreshProxyEvents(conversationId: String? = nil) async {
         guard let project = ProjectContext.shared.activeProject,
               projectId == project.id,
               modelContext != nil else { return }
         if activeRuntimeKind(for: project) == .openCode {
+            if project.applyOpenCodeSessionFromPush(conversationId) {
+                saveChanges()
+            }
             await hydrateOpenCodeMessagesIfNeeded(project: project)
             return
         }

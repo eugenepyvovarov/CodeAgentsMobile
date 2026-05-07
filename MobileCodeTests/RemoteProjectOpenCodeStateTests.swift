@@ -83,6 +83,36 @@ final class RemoteProjectOpenCodeStateTests: XCTestCase {
         XCTAssertEqual(project.legacyClaudeRuntimeState, legacyState)
     }
 
+    func testApplyingOpenCodePushSessionClearsHydrationAnchorsWhenSessionChanges() {
+        let project = makeProject()
+        project.selectedAgentRuntime = .openCode
+        project.openCodeSessionId = "ses_old"
+        project.updateOpenCodeHydrationState(OpenCodeHydrationState(messageIDs: ["msg_old"], partIDs: ["prt_old"]))
+
+        let didChange = project.applyOpenCodeSessionFromPush(" ses_new ")
+
+        XCTAssertTrue(didChange)
+        XCTAssertEqual(project.openCodeSessionId, "ses_new")
+        XCTAssertTrue(project.openCodeLastMessageIds.isEmpty)
+        XCTAssertTrue(project.openCodeLastPartIds.isEmpty)
+    }
+
+    func testApplyingSameOpenCodePushSessionLeavesHydrationAnchorsIntact() {
+        let project = makeProject()
+        project.selectedAgentRuntime = .openCode
+        project.openCodeSessionId = "ses_current"
+        project.updateOpenCodeHydrationState(OpenCodeHydrationState(messageIDs: ["msg_current"], partIDs: ["prt_current"]))
+
+        let didChange = project.applyOpenCodeSessionFromPush("ses_current")
+
+        XCTAssertFalse(didChange)
+        XCTAssertEqual(project.openCodeSessionId, "ses_current")
+        XCTAssertEqual(project.openCodeHydrationState, OpenCodeHydrationState(
+            messageIDs: ["msg_current"],
+            partIDs: ["prt_current"]
+        ))
+    }
+
     @MainActor
     func testOpenCodeStatePersistsInSwiftDataContainer() throws {
         let schema = CodeAgentsSwiftDataSchema.schema

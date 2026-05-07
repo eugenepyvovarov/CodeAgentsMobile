@@ -334,11 +334,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
         var didUpdateOpenCodeSession = false
         if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode,
-           let conversationId = payload.conversationId,
-           project.openCodeSessionId != conversationId {
-            project.openCodeSessionId = conversationId
-            project.openCodeLastMessageIds = []
-            project.openCodeLastPartIds = []
+           project.applyOpenCodeSessionFromPush(payload.conversationId) {
             didUpdateOpenCodeSession = true
         }
 
@@ -388,8 +384,42 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             }
         }
 
+        syncActiveProjectIfNeeded(from: project, payload: payload)
         postReplyFinishedEvent(project: project, server: matchedServer, payload: payload)
         return true
+    }
+
+    private func syncActiveProjectIfNeeded(from project: RemoteProject, payload: PushPayload) {
+        guard let activeProject = ProjectContext.shared.activeProject,
+              activeProject.id == project.id else { return }
+
+        var didUpdate = false
+        if CodingAgentRuntimeResolver.runtimeKind(for: activeProject) == .openCode,
+           activeProject.applyOpenCodeSessionFromPush(payload.conversationId) {
+            didUpdate = true
+        }
+
+        if activeProject.unreadConversationId != project.unreadConversationId {
+            activeProject.unreadConversationId = project.unreadConversationId
+            didUpdate = true
+        }
+        if activeProject.lastKnownUnreadCursor != project.lastKnownUnreadCursor {
+            activeProject.lastKnownUnreadCursor = project.lastKnownUnreadCursor
+            didUpdate = true
+        }
+        if activeProject.lastReadUnreadCursor != project.lastReadUnreadCursor {
+            activeProject.lastReadUnreadCursor = project.lastReadUnreadCursor
+            didUpdate = true
+        }
+
+        guard didUpdate else { return }
+        do {
+            try modelContainer?.mainContext.save()
+        } catch {
+            #if DEBUG
+            SSHLogger.log("Failed to save active project push sync: \(error)", level: .warning)
+            #endif
+        }
     }
 
     private func postReplyFinishedEvent(project: RemoteProject, server: Server, payload: PushPayload) {

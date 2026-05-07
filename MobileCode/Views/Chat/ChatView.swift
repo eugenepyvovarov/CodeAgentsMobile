@@ -201,8 +201,9 @@ struct ChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .replyFinishedPushReceived)) { notification in
             guard let projectId = notification.userInfo?[ReplyFinishedPushEventKey.projectId] as? UUID else { return }
             guard projectContext.activeProject?.id == projectId else { return }
+            let conversationId = notification.userInfo?[ReplyFinishedPushEventKey.conversationId] as? String
             Task {
-                await viewModel.refreshProxyEvents()
+                await viewModel.refreshProxyEvents(conversationId: conversationId)
             }
         }
         .sheet(isPresented: $showingMCPServers) {

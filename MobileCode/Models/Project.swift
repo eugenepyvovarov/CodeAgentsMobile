@@ -135,6 +135,24 @@ final class RemoteProject {
         updateLastModified()
     }
 
+    @discardableResult
+    func applyOpenCodeSessionFromPush(_ sessionId: String?) -> Bool {
+        guard let sessionId = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty else {
+            return false
+        }
+
+        guard openCodeSessionId != sessionId else {
+            return false
+        }
+
+        openCodeSessionId = sessionId
+        openCodeLastMessageIds = []
+        openCodeLastPartIds = []
+        updateLastModified()
+        return true
+    }
+
     func resetOpenCodeRuntimeState() {
         openCodeSessionId = nil
         openCodeLastMessageIds = []
