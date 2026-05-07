@@ -282,6 +282,11 @@ if [[ "${MODE}" == "demo" || -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; 
 
   capture_demo_agents_screen "${SIMULATOR_ID}"
   "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${SIMULATOR_ID}" --label "Create Agent" --post-delay 1 --output json >/dev/null
+  if ! wait_for_ui_label "${SIMULATOR_ID}" "New Agent" 8 1; then
+    echo "Create Agent did not present the New Agent sheet for ${SCENARIO}." >&2
+    ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
+    exit 1
+  fi
   capture_demo_new_agent_sheet "${SIMULATOR_ID}"
 
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
