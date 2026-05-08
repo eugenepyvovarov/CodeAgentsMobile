@@ -10,6 +10,7 @@ import SwiftData
 
 struct OpenCodeAIProviderSettingsView: View {
     let server: Server?
+    let navigationTitle: String?
 
     @Query(sort: \Server.name) private var servers: [Server]
     @StateObject private var providerService = OpenCodeProviderService.shared
@@ -42,8 +43,9 @@ struct OpenCodeAIProviderSettingsView: View {
 
     private let settingsStore = OpenCodeAIProviderSettingsStore()
 
-    init(server: Server? = nil) {
+    init(server: Server? = nil, navigationTitle: String? = nil) {
         self.server = server
+        self.navigationTitle = navigationTitle
     }
 
     var body: some View {
@@ -55,7 +57,7 @@ struct OpenCodeAIProviderSettingsView: View {
             applySection
             statusSection
         }
-        .navigationTitle(server == nil ? "OpenCode AI" : "Server AI")
+        .navigationTitle(navigationTitle ?? (server == nil ? "OpenCode AI" : "Server AI"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadSettings()
