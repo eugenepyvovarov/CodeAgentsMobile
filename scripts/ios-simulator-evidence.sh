@@ -152,8 +152,17 @@ capture_png() {
 
   mkdir -p "$(dirname "${output_path}")"
   screenshot_json="$("${XCODEBUILDMCP_BIN}" ui-automation screenshot --simulator-id "${simulator_id}" --return-format path --output json)"
-  source_path="$(printf '%s' "${screenshot_json}" | extract_screenshot_path)"
-  sips -s format png "${source_path}" --out "${output_path}" >/dev/null
+  if source_path="$(printf '%s' "${screenshot_json}" | extract_screenshot_path 2>/dev/null)" \
+    && [[ -n "${source_path}" && -f "${source_path}" ]]; then
+    sips -s format png "${source_path}" --out "${output_path}" >/dev/null
+    return 0
+  fi
+
+  # Some xcodebuildmcp versions can return a successful capture payload without
+  # the temporary screenshot path. Keep evidence generation deterministic by
+  # falling back to the simulator screenshot command for the already-resolved
+  # simulator, while retaining xcodebuildmcp as the primary capture path.
+  xcrun simctl io "${simulator_id}" screenshot "${output_path}" >/dev/null
 }
 
 ui_snapshot_text() {
