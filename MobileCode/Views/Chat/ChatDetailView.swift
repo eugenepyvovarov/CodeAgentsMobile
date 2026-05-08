@@ -325,9 +325,7 @@ struct ChatDetailView: View {
             )
             .sheet(isPresented: $showingProviderSettings) {
                 NavigationStack {
-                    ClaudeProviderSettingsView()
-                        .navigationTitle("Legacy Claude Provider")
-                        .navigationBarTitleDisplayMode(.inline)
+                    AIProviderSettingsView(initialMode: .claudeProxy)
                 }
             }
             .sheet(isPresented: $showingSkillPicker) {

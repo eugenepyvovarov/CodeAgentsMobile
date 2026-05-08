@@ -129,7 +129,7 @@ struct RegularTasksView: View {
         }
         .sheet(isPresented: $showingProviderSettings) {
             NavigationStack {
-                ClaudeProviderSettingsView()
+                AIProviderSettingsView(initialMode: .claudeProxy)
             }
         }
     }

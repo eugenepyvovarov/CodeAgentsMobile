@@ -67,6 +67,24 @@ final class CodeAgentsMobileUITests: XCTestCase {
         XCTAssertTrue((runtimePicker.value as? String)?.contains("Claude Proxy (Legacy)") == true)
     }
 
+    func testSettingsUseUnifiedAIProvidersEntryDefaultingToOpenCode() throws {
+        try openSettingsFromAgentsScreen()
+
+        XCTAssertFalse(app.staticTexts["OpenCode AI Providers"].exists)
+        XCTAssertFalse(app.staticTexts["Legacy Claude Provider"].exists)
+
+        let providersLink = app.buttons["settings-ai-providers-link"].firstMatch
+        XCTAssertTrue(providersLink.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["AI Providers"].exists)
+        providersLink.tap()
+
+        XCTAssertTrue(app.navigationBars["AI Providers"].waitForExistence(timeout: 5))
+        let modePicker = app.descendants(matching: .any)["ai-provider-settings-mode-picker"].firstMatch
+        XCTAssertTrue(modePicker.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls.buttons["OpenCode"].isSelected)
+        XCTAssertTrue(app.segmentedControls.buttons["Claude Code Proxy"].exists)
+    }
+
     func testSettingsExposeMCPAndSkillsManagement() throws {
         try openSettingsFromAgentsScreen()
 

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-var-requires */
 const assert = require("node:assert/strict");
 const {readFileSync} = require("node:fs");
 const {join} = require("node:path");

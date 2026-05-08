@@ -66,6 +66,9 @@ struct ContentView: View {
         .onChange(of: projectContext.activeProject?.id) { _, _ in
             configureManagers()
         }
+        .task {
+            seedAIProvidersEvidenceStateIfNeeded()
+        }
     }
     
     private func configureManagers() {
@@ -101,6 +104,43 @@ struct ContentView: View {
     
     private func startCloudInitMonitoring() {
         cloudInitMonitor.startMonitoring(modelContext: modelContext)
+    }
+
+    private func seedAIProvidersEvidenceStateIfNeeded() {
+        let processInfo = ProcessInfo.processInfo
+        guard processInfo.arguments.contains("--ui-testing") else { return }
+
+        if processInfo.arguments.contains("--ui-test-ai-providers-legacy-key") {
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: "anthropic")
+            try? KeychainManager.shared.storeAPIKey("codeagents-ui-test-anthropic-key", provider: .anthropic)
+        }
+
+        guard processInfo.arguments.contains("--ui-test-ai-providers-legacy-project"),
+              projectContext.activeProject == nil else {
+            return
+        }
+
+        let server = Server(
+            name: "Evidence Legacy Server",
+            host: "127.0.0.1",
+            username: "codeagents"
+        )
+        let project = RemoteProject(
+            name: "legacy-claude-proxy-agent",
+            displayName: "Legacy Claude Proxy Agent",
+            serverId: server.id,
+            basePath: "/tmp/codeagents-evidence"
+        )
+        project.selectedAgentRuntime = .claudeProxy
+        project.lastSuccessfulClaudeProviderRawValue = ClaudeModelProvider.miniMax.rawValue
+
+        modelContext.insert(server)
+        modelContext.insert(project)
+        try? modelContext.save()
+
+        serverManager.loadServers(from: modelContext)
+        ClaudeCodeService.shared.claudeInstallationStatus[server.id] = true
+        projectContext.setActiveProject(project)
     }
 }
 

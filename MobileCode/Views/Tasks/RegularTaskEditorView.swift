@@ -276,7 +276,7 @@ struct RegularTaskEditorView: View {
             }
             .sheet(isPresented: $showingProviderSettings) {
                 NavigationStack {
-                    ClaudeProviderSettingsView()
+                    AIProviderSettingsView(initialMode: .claudeProxy)
                 }
             }
             .sheet(isPresented: $showingSkillPicker) {
