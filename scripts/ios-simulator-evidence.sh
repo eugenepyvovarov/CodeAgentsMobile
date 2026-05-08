@@ -184,6 +184,19 @@ raise SystemExit(0 if label in text else 1)
 ' "${label}"
 }
 
+clear_stale_video_recording() {
+  local simulator_id="$1"
+  local output_path="$2"
+
+  # Evidence preflight can reuse a simulator after an interrupted recording. Stop
+  # any orphaned session first so the requested demo recording can start cleanly.
+  "${XCODEBUILDMCP_BIN}" simulator record-video \
+    --simulator-id "${simulator_id}" \
+    --stop \
+    --output-file "${output_path}.stale.mp4" \
+    --output json >/dev/null 2>&1 || true
+}
+
 wait_for_ui_label() {
   local simulator_id="$1"
   local label="$2"
@@ -410,6 +423,7 @@ run_push_notification_preview_sanitizer() {
     && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" \
     && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    clear_stale_video_recording "${simulator_id}" "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}"
     "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${simulator_id}" --start --fps 30 --output json >/dev/null
     VIDEO_STARTED="true"
     sleep 1
@@ -475,6 +489,7 @@ fi
 if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    clear_stale_video_recording "${SIMULATOR_ID}" "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}"
     "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --start --fps 30 --output json >/dev/null
     VIDEO_STARTED="true"
     sleep 2
