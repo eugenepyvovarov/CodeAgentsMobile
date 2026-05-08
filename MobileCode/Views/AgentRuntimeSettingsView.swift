@@ -88,22 +88,22 @@ struct AgentRuntimeSettingsView: View {
 
             Section {
                 NavigationLink {
-                    OpenCodeAIProviderSettingsView()
+                    AIProviderSettingsView(initialMode: .openCode)
                 } label: {
                     Label("Global Provider & Models", systemImage: "sparkles")
                 }
-                .accessibilityIdentifier("agent-runtime-opencode-global-ai-link")
+                .accessibilityIdentifier("agent-runtime-ai-providers-global-link")
 
                 if let activeServer = projectContext.activeServer {
                     NavigationLink {
-                        OpenCodeAIProviderSettingsView(server: activeServer)
+                        AIProviderSettingsView(initialMode: .openCode, server: activeServer)
                     } label: {
                         Label("This Server Override", systemImage: "server.rack")
                     }
-                    .accessibilityIdentifier("agent-runtime-opencode-server-ai-link")
+                    .accessibilityIdentifier("agent-runtime-ai-providers-server-link")
                 }
             } header: {
-                Text("OpenCode AI Defaults")
+                Text("AI Provider Defaults")
             } footer: {
                 Text("Store provider credentials on this device and sync the selected provider/model profile to each OpenCode server.")
             }
@@ -384,7 +384,7 @@ struct AgentRuntimeSettingsView: View {
             )
             .accessibilityIdentifier("opencode-save-custom-provider-button")
 
-            Text("Project-level custom providers still support API-key OpenAI-compatible endpoints. Use OpenCode AI Defaults above for global/server settings and OpenAI ChatGPT Plus/Pro mode.")
+            Text("Project-level custom providers still support API-key OpenAI-compatible endpoints. Use AI Provider Defaults above for global/server settings and OpenAI ChatGPT Plus/Pro mode.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

@@ -13,7 +13,6 @@ import Crypto
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
-    @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
     @AppStorage(CodingAgentRuntimeSelectionStore.selectedRuntimeKey) private var selectedRuntimeRawValue = CodingAgentRuntimeSelectionStore.defaultRuntime.rawValue
     @Query private var servers: [Server]
     @Query(sort: \SSHKey.createdAt, order: .reverse) private var sshKeys: [SSHKey]
@@ -24,20 +23,6 @@ struct SettingsView: View {
     @State private var showingImportSSHKey = false
     @State private var selectedProvider: ServerProvider?
     @State private var selectedSSHKey: SSHKey?
-
-    private var claudeProviderDisplayName: String {
-        guard
-            !claudeProviderConfigurationData.isEmpty,
-            let configuration = try? JSONDecoder().decode(
-                ClaudeProviderConfiguration.self,
-                from: claudeProviderConfigurationData
-            )
-        else {
-            return ClaudeProviderConfiguration.defaults().selectedProvider.displayName
-        }
-
-        return configuration.selectedProvider.displayName
-    }
 
     private var runtimeDisplayName: String {
         (CodingAgentRuntimeKind(rawValue: selectedRuntimeRawValue) ?? CodingAgentRuntimeSelectionStore.defaultRuntime).displayName
@@ -50,19 +35,6 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form(content: {
-                Section("Legacy Claude Provider") {
-                    NavigationLink {
-                        ClaudeProviderSettingsView()
-                    } label: {
-                        HStack {
-                            Label("Provider", systemImage: "brain")
-                            Spacer()
-                            Text(claudeProviderDisplayName)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
                 Section("Agent Runtime") {
                     NavigationLink {
                         AgentRuntimeSettingsView()
@@ -77,11 +49,11 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings-agent-runtime-link")
 
                     NavigationLink {
-                        OpenCodeAIProviderSettingsView()
+                        AIProviderSettingsView(initialMode: .openCode)
                     } label: {
-                        Label("OpenCode AI Providers", systemImage: "sparkles")
+                        Label("AI Providers", systemImage: "sparkles")
                     }
-                    .accessibilityIdentifier("settings-opencode-ai-providers-link")
+                    .accessibilityIdentifier("settings-ai-providers-link")
                 }
                 
                 Section("Cloud Providers") {

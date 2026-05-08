@@ -24,9 +24,11 @@ enum AIProviderSettingsMode: String, CaseIterable, Identifiable {
 }
 
 struct AIProviderSettingsView: View {
+    let server: Server?
     @State private var selectedMode: AIProviderSettingsMode
 
-    init(initialMode: AIProviderSettingsMode = .openCode) {
+    init(initialMode: AIProviderSettingsMode = .openCode, server: Server? = nil) {
+        self.server = server
         _selectedMode = State(initialValue: initialMode)
     }
 
@@ -44,7 +46,7 @@ struct AIProviderSettingsView: View {
             Group {
                 switch selectedMode {
                 case .openCode:
-                    OpenCodeAIProviderSettingsView(navigationTitle: "AI Providers")
+                    OpenCodeAIProviderSettingsView(server: server, navigationTitle: "AI Providers")
                 case .claudeProxy:
                     ClaudeProviderSettingsView(navigationTitle: "AI Providers")
                 }
