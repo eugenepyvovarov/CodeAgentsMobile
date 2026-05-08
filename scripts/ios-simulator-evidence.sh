@@ -116,8 +116,28 @@ import re
 import sys
 
 data = json.load(sys.stdin)
+
+def walk(value):
+    if isinstance(value, dict):
+        for key in ("path", "screenshotPath", "screenshot_path", "outputPath", "output_path", "filePath", "file_path"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                yield candidate
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+    elif isinstance(value, str):
+        yield value
+
+for candidate in walk(data.get("data", data)):
+    if re.search(r"\.(png|jpg|jpeg|heic|tiff?)$", candidate, re.IGNORECASE):
+        print(candidate)
+        raise SystemExit(0)
+
 text = "\n".join(item.get("text", "") for item in data.get("content", []) if isinstance(item, dict))
-match = re.search(r"Screenshot captured:\s+(.+?)\s+\(", text)
+match = re.search(r"Screenshot captured:\s+(.+?)(?:\s+\(|$)", text)
 if not match:
     raise SystemExit(f"Unable to parse screenshot path from xcodebuildmcp output: {text}")
 print(match.group(1))
