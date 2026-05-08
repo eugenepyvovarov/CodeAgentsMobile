@@ -10,7 +10,8 @@
     "build:watch": "tsc -p tsconfig.json --watch",
     "serve": "npm run build && firebase emulators:start --only functions,firestore",
     "deploy": "npm run build && firebase deploy --only functions,firestore",
-    "lint": "eslint --max-warnings=0 ."
+    "lint": "eslint --max-warnings=0 .",
+    "test": "npm run build && node --test test/*.test.js"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0",

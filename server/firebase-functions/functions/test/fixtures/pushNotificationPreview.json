@@ -1,0 +1,3 @@
+{
+  "issueShapedPreview": "Checked all stored domains with threshold `10` days. All sites are healthy and no alerts were triggered.\n```codeagents-ui\n{\"type\":\"codeagents_ui\",\"version\":1,\"title\":\"Domain Health\",\"elements\":[]}\n```"
+}
