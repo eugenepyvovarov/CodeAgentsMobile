@@ -168,40 +168,6 @@ jobs:
           ref: ${{ inputs.head_sha }}
           fetch-depth: 0
 
-      - name: Set up Python
-        run: |
-          HOST_HOME="$(eval echo "~$(whoami)")"
-          echo "HOST_HOME=$HOST_HOME" >> "$GITHUB_ENV"
-          echo "$HOST_HOME/.opencode/bin" >> "$GITHUB_PATH"
-          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
-          export PATH="$HOST_HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
-          resolve_python_bin() {
-            local resolved=""
-            local candidate
-
-            if [[ -n "${OPENCODE_PYTHON_BIN:-}" ]]; then
-              if [[ ! -x "${OPENCODE_PYTHON_BIN}" ]]; then
-                echo "Configured OPENCODE_PYTHON_BIN is not executable: ${OPENCODE_PYTHON_BIN}" >&2
-                exit 1
-              fi
-              printf '%s\n' "${OPENCODE_PYTHON_BIN}"
-              return 0
-            fi
-
-            for candidate in python3.14 python3.13 python3.12 python3; do
-              resolved="$(command -v "${candidate}" 2>/dev/null || true)"
-              if [[ -n "${resolved}" ]]; then
-                printf '%s\n' "${resolved}"
-                return 0
-              fi
-            done
-
-            echo "No supported Python interpreter found in PATH." >&2
-            exit 1
-          }
-          PYTHON_BIN="$(resolve_python_bin)"
-          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
-
       - name: Load managed visual validation settings
         run: |
           python3 - <<'PY'
@@ -274,6 +240,18 @@ jobs:
           token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
           fetch-depth: 0
 
+      - name: Resolve Python with working venv
+        if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
+        run: |
+          HOST_HOME="$(eval echo "~$(whoami)")"
+          echo "HOST_HOME=$HOST_HOME" >> "$GITHUB_ENV"
+          echo "$HOST_HOME/.opencode/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="$HOST_HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
+          source controller/scripts/lib/python_runtime.sh
+          opencode_export_python_bin
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
       - name: Configure live preview state access on host runners
         if: ${{ env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB == 'true' }}
         run: |
@@ -345,9 +323,17 @@ jobs:
           token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
           fetch-depth: 0
 
+      - name: Resolve Python with working venv
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:$PATH"
+          source controller/scripts/lib/python_runtime.sh
+          opencode_export_python_bin
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+
       - name: Explicit review handoff
         run: |
-          python3 controller/scripts/pr_prep_worker.py \
+          "$PYTHON_BIN" controller/scripts/pr_prep_worker.py \
             --repo-root "$PWD" \
             --automation-config "$PWD/controller/automation.json" \
             --managed-config "$PWD/project/opencode-managed.json" \
