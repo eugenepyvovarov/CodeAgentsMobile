@@ -20,6 +20,8 @@ SCHEME="${CODEAGENTS_XCODE_SCHEME:-CodeAgentsMobile}"
 SIMULATOR_NAME="${CODEAGENTS_SIMULATOR_NAME:-iPhone 17}"
 CONFIGURATION="${CODEAGENTS_CONFIGURATION:-Debug}"
 BUNDLE_ID="${CODEAGENTS_BUNDLE_ID:-lifeisgoodlabs.CodeAgentsMobile}"
+FUNCTIONS_DIR="${ROOT_DIR}/server/firebase-functions/functions"
+PUSH_PREVIEW_FIXTURE="${CODEAGENTS_PUSH_PREVIEW_FIXTURE:-${FUNCTIONS_DIR}/test/fixtures/pushNotificationPreview.json}"
 DERIVED_ROOT="${OPENCODE_EVIDENCE_BUILD_ROOT:-${ROOT_DIR}/.build/opencode-evidence}"
 DERIVED_DATA_PATH="${CODEAGENTS_DERIVED_DATA_PATH:-${DERIVED_ROOT}/DerivedData}"
 LAUNCH_SETTLE_SECONDS="${CODEAGENTS_EVIDENCE_LAUNCH_SETTLE_SECONDS:-4}"
@@ -28,6 +30,7 @@ SCENARIO="${OPENCODE_EVIDENCE_SCENARIO:-${CODEAGENTS_EVIDENCE_SCENARIO:-agents-c
 VISUAL_VALIDATION_IDENTIFIER="agents-create-agent-orange"
 AGENTS_CTA_CHECKPOINT="agents-empty-create-agent"
 NEW_AGENT_SHEET_CHECKPOINT="new-agent-sheet"
+PUSH_NOTIFICATION_CHECKPOINT="push-notification-sanitized-preview"
 AI_PROVIDERS_VISUAL_VALIDATION_IDENTIFIER="ai-providers-settings-unified"
 SETTINGS_AI_PROVIDERS_ENTRY_CHECKPOINT="settings-ai-providers-entry"
 AI_PROVIDERS_OPENCODE_DEFAULT_CHECKPOINT="ai-providers-opencode-default"
@@ -38,6 +41,9 @@ ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SC
 
 case "${SCENARIO}" in
   agents-create-agent-flow)
+    ;;
+  push-notification-preview-sanitizer)
+    VISUAL_VALIDATION_IDENTIFIER="push-notification-preview-sanitizer"
     ;;
   ai-providers-settings-unified)
     VISUAL_VALIDATION_IDENTIFIER="${AI_PROVIDERS_VISUAL_VALIDATION_IDENTIFIER}"
@@ -369,6 +375,50 @@ capture_visual_agents_screen() {
   fi
 }
 
+build_push_notification_payload() {
+  local output_path="$1"
+  local preview_output_path="$2"
+
+  mkdir -p "$(dirname "${output_path}")"
+  npm --prefix "${FUNCTIONS_DIR}" run build >/dev/null
+
+  node - "${PUSH_PREVIEW_FIXTURE}" "${FUNCTIONS_DIR}/lib/notificationPreview.js" "${BUNDLE_ID}" "${output_path}" "${preview_output_path}" <<'NODE'
+const fs = require("fs");
+
+const [fixturePath, sanitizerPath, bundleId, outputPath, previewOutputPath] = process.argv.slice(2);
+const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+const { sanitizeNotificationPreview } = require(sanitizerPath);
+
+const sanitizedBody = sanitizeNotificationPreview(fixture.issueShapedPreview) || "CodeAgents reply finished.";
+const payload = {
+  "Simulator Target Bundle": bundleId,
+  aps: {
+    alert: {
+      title: "@op",
+      body: sanitizedBody,
+    },
+    sound: "default",
+    badge: 1,
+  },
+  conversation_id: "evidence-conversation",
+  server_id: "evidence-server",
+  project_path: "/tmp/codeagents-evidence",
+  agent_display_name: "op",
+  event_type: "reply_finished",
+};
+
+fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+fs.writeFileSync(previewOutputPath, `${sanitizedBody}\n`);
+NODE
+}
+
+deliver_synthetic_push_notification() {
+  local simulator_id="$1"
+  local payload_path="$2"
+
+  xcrun simctl push "${simulator_id}" "${BUNDLE_ID}" "${payload_path}" >/dev/null
+}
+
 capture_named_visual_checkpoint() {
   local simulator_id="$1"
   local checkpoint_name="$2"
@@ -411,6 +461,56 @@ capture_ai_providers_checkpoint() {
   fi
   if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
     capture_named_demo_checkpoint "${simulator_id}" "${checkpoint_name}" "${fallback_index}"
+  fi
+}
+
+capture_push_notification_checkpoint() {
+  local simulator_id="$1"
+
+  if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_visual_checkpoint "${simulator_id}" "${PUSH_NOTIFICATION_CHECKPOINT}" "0"
+  fi
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_demo_checkpoint "${simulator_id}" "${PUSH_NOTIFICATION_CHECKPOINT}" "0"
+  fi
+}
+
+run_push_notification_preview_sanitizer() {
+  local simulator_id="$1"
+  local payload_path="${ARTIFACT_ROOT}/synthetic-push/push-notification-preview-sanitizer.apns"
+  local preview_output_path="${ARTIFACT_ROOT}/synthetic-push/sanitized-preview.txt"
+
+  build_push_notification_payload "${payload_path}" "${preview_output_path}"
+
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" \
+    && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" \
+    && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
+    mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    "${XCODEBUILDMCP_BIN}" simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
+      --output json >/dev/null 2>&1 || true
+    "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${simulator_id}" --start --fps 30 --output json >/dev/null
+    VIDEO_STARTED="true"
+    sleep 1
+  fi
+
+  "${XCODEBUILDMCP_BIN}" ui-automation button --simulator-id "${simulator_id}" --button-type lock --output json >/dev/null || true
+  sleep 1
+  deliver_synthetic_push_notification "${simulator_id}" "${payload_path}"
+  sleep 2
+
+  capture_push_notification_checkpoint "${simulator_id}"
+
+  if [[ "${VIDEO_STARTED}" == "true" ]]; then
+    sleep 2
+    "${XCODEBUILDMCP_BIN}" simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" \
+      --output json >/dev/null
+    VIDEO_STARTED="false"
   fi
 }
 
@@ -522,6 +622,12 @@ fi
   --output json >/dev/null
 
 sleep "${LAUNCH_SETTLE_SECONDS}"
+
+if [[ "${SCENARIO}" == "push-notification-preview-sanitizer" ]]; then
+  run_push_notification_preview_sanitizer "${SIMULATOR_ID}"
+  "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${SIMULATOR_ID}" --output json | python_json_text >&2 || true
+  exit 0
+fi
 
 navigate_to_agents_screen "${SIMULATOR_ID}"
 
