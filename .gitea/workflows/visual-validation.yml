@@ -48,40 +48,6 @@ jobs:
           ref: ${{ inputs.head_sha }}
           fetch-depth: 0
 
-      - name: Set up Python
-        run: |
-          HOST_HOME="$(eval echo "~$(whoami)")"
-          echo "HOST_HOME=$HOST_HOME" >> "$GITHUB_ENV"
-          echo "$HOST_HOME/.opencode/bin" >> "$GITHUB_PATH"
-          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
-          export PATH="$HOST_HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
-          resolve_python_bin() {
-            local resolved=""
-            local candidate
-
-            if [[ -n "${OPENCODE_PYTHON_BIN:-}" ]]; then
-              if [[ ! -x "${OPENCODE_PYTHON_BIN}" ]]; then
-                echo "Configured OPENCODE_PYTHON_BIN is not executable: ${OPENCODE_PYTHON_BIN}" >&2
-                exit 1
-              fi
-              printf '%s\n' "${OPENCODE_PYTHON_BIN}"
-              return 0
-            fi
-
-            for candidate in python3.14 python3.13 python3.12 python3; do
-              resolved="$(command -v "${candidate}" 2>/dev/null || true)"
-              if [[ -n "${resolved}" ]]; then
-                printf '%s\n' "${resolved}"
-                return 0
-              fi
-            done
-
-            echo "No supported Python interpreter found in PATH." >&2
-            exit 1
-          }
-          PYTHON_BIN="$(resolve_python_bin)"
-          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
-
       - name: Load managed visual validation settings
         run: |
           python3 - <<'PY'
@@ -149,6 +115,15 @@ jobs:
         if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB == 'true' }}
         run: echo "${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}" | docker login git.ultramac.work -u "review-bot" --password-stdin
 
+      - name: Require shared Playwright evidence runner image
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB == 'true' }}
+        run: |
+          if [[ -z "${OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE:-}" ]]; then
+            echo "OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE is required for Playwright/web visual validation; host Playwright/node_modules fallback is not supported." >&2
+            exit 1
+          fi
+          docker pull "$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE"
+
       - name: Check out controller repository
         if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
         uses: actions/checkout@v4
@@ -157,6 +132,18 @@ jobs:
           path: controller
           token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
           fetch-depth: 0
+
+      - name: Resolve Python with working venv
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
+        run: |
+          HOST_HOME="$(eval echo "~$(whoami)")"
+          echo "HOST_HOME=$HOST_HOME" >> "$GITHUB_ENV"
+          echo "$HOST_HOME/.opencode/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="$HOST_HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
+          source controller/scripts/lib/python_runtime.sh
+          opencode_export_python_bin
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
 
       - name: Configure live preview state access on host runners
         if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB == 'true' }}

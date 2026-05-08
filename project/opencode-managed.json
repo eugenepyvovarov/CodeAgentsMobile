@@ -44,8 +44,12 @@
     "result": {
       "format": "json",
       "transport": "stdout",
-      "required_fields": ["published_artifacts"],
-      "optional_fields": ["summary"]
+      "required_fields": [
+        "published_artifacts"
+      ],
+      "optional_fields": [
+        "summary"
+      ]
     }
   },
   "preview": {
@@ -59,11 +63,20 @@
     "destroy": {
       "command": "/bin/bash ./scripts/destroy-preview.sh"
     },
+    "reviewer_access": {
+      "required": false
+    },
     "result": {
       "format": "json",
       "transport": "stdout",
-      "required_fields": ["backend_url"],
-      "optional_fields": ["health_url", "reviewer_notes"]
+      "required_fields": [
+        "backend_url"
+      ],
+      "optional_fields": [
+        "health_url",
+        "reviewer_notes",
+        "reviewer_access"
+      ]
     }
   },
   "demo": {
