@@ -21,6 +21,15 @@ enum AIProviderSettingsMode: String, CaseIterable, Identifiable {
             return "Claude Code Proxy"
         }
     }
+
+    var accessibilityIdentifier: String {
+        switch self {
+        case .openCode:
+            return "ai-provider-mode-opencode"
+        case .claudeProxy:
+            return "ai-provider-mode-claude-proxy"
+        }
+    }
 }
 
 struct AIProviderSettingsView: View {
@@ -36,7 +45,9 @@ struct AIProviderSettingsView: View {
         VStack(spacing: 0) {
             Picker("Provider Mode", selection: $selectedMode) {
                 ForEach(AIProviderSettingsMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
+                    Text(mode.displayName)
+                        .tag(mode)
+                        .accessibilityIdentifier(mode.accessibilityIdentifier)
                 }
             }
             .pickerStyle(.segmented)

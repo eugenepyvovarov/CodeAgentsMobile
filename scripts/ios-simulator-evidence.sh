@@ -205,7 +205,7 @@ launch_app() {
   local launch_command=("${XCODEBUILDMCP_BIN}" simulator launch-app --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}")
 
   for launch_arg in "$@"; do
-    launch_command+=(--args "${launch_arg}")
+    launch_command+=("--args=${launch_arg}")
   done
 
   "${launch_command[@]}" --output json >/dev/null
@@ -216,6 +216,7 @@ build_install_and_launch_app() {
   shift
   local app_path_json
   local app_path
+  local derived_app_path
 
   "${XCODEBUILDMCP_BIN}" simulator build \
     --project-path "${PROJECT_PATH}" \
@@ -233,7 +234,12 @@ build_install_and_launch_app() {
     --configuration "${CONFIGURATION}" \
     --output json)"
   app_path="$(printf '%s' "${app_path_json}" | extract_app_path)"
+  derived_app_path="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}-iphonesimulator/${SCHEME}.app"
+  if [[ ! -d "${app_path}" && -d "${derived_app_path}" ]]; then
+    app_path="${derived_app_path}"
+  fi
 
+  "${XCODEBUILDMCP_BIN}" simulator-management boot --simulator-id "${simulator_id}" --output json >/dev/null
   "${XCODEBUILDMCP_BIN}" simulator install --simulator-id "${simulator_id}" --app-path "${app_path}" --output json >/dev/null
   launch_app "${simulator_id}" "$@"
 }
@@ -408,6 +414,11 @@ run_ai_providers_settings_unified_scenario() {
 
   if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    "${XCODEBUILDMCP_BIN}" simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
+      --output json >/dev/null 2>&1 || true
     "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${simulator_id}" --start --fps 30 --output json >/dev/null
     VIDEO_STARTED="true"
     sleep 2
@@ -428,7 +439,8 @@ run_ai_providers_settings_unified_scenario() {
     capture_named_demo_checkpoint "${simulator_id}" "${USE_FOR_OPENCODE_COPY_OFFER_CHECKPOINT}" "4"
   fi
 
-  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --label "Claude Code Proxy" --post-delay 1 --output json >/dev/null
+  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --id "ai-provider-mode-claude-proxy" --post-delay 1 --output json >/dev/null \
+    || "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" -x 280 -y 115 --post-delay 1 --output json >/dev/null
   if ! wait_for_ui_label "${simulator_id}" "Provider" 8 1; then
     echo "Claude Code Proxy mode did not become visible for ${SCENARIO}." >&2
     ui_snapshot_text "${simulator_id}" >&2 || true
@@ -446,7 +458,7 @@ run_ai_providers_settings_unified_scenario() {
     exit 1
   fi
   "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --label "Change Provider" --post-delay 1 --output json >/dev/null
-  if ! wait_for_ui_label "${simulator_id}" "Claude Code Proxy" 8 1; then
+  if ! wait_for_ui_label "${simulator_id}" "Endpoint, timeouts, and model defaults are preconfigured for each provider." 8 1; then
     echo "Legacy Change Provider did not open AI Providers in Claude Code Proxy mode for ${SCENARIO}." >&2
     ui_snapshot_text "${simulator_id}" >&2 || true
     exit 1
@@ -481,7 +493,13 @@ VIDEO_STARTED="false"
 
 cleanup() {
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
-    "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --stop >/dev/null 2>&1 || true
+    if [[ -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
+      mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+      "${XCODEBUILDMCP_BIN}" simulator record-video \
+        --simulator-id "${SIMULATOR_ID}" \
+        --stop \
+        --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null 2>&1 || true
+    fi
   fi
   "${XCODEBUILDMCP_BIN}" simulator stop --simulator-id "${SIMULATOR_ID}" --bundle-id "${BUNDLE_ID}" >/dev/null 2>&1 || true
 }
@@ -514,6 +532,11 @@ fi
 if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    "${XCODEBUILDMCP_BIN}" simulator record-video \
+      --simulator-id "${SIMULATOR_ID}" \
+      --stop \
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
+      --output json >/dev/null 2>&1 || true
     "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --start --fps 30 --output json >/dev/null
     VIDEO_STARTED="true"
     sleep 2
