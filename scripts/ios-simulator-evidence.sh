@@ -36,6 +36,18 @@ LEGACY_ENTRY_AI_PROVIDERS_CLAUDE_PROXY_CHECKPOINT="legacy-entry-ai-providers-cla
 USE_FOR_OPENCODE_COPY_OFFER_CHECKPOINT="use-for-opencode-copy-offer"
 ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SCENARIO}}"
 
+case "${SCENARIO}" in
+  agents-create-agent-flow)
+    ;;
+  ai-providers-settings-unified)
+    VISUAL_VALIDATION_IDENTIFIER="${AI_PROVIDERS_VISUAL_VALIDATION_IDENTIFIER}"
+    ;;
+  *)
+    echo "Unsupported iOS simulator evidence scenario: ${SCENARIO}" >&2
+    exit 1
+    ;;
+esac
+
 DEMO_CAPTURE_REQUESTED="false"
 VISUAL_CAPTURE_REQUESTED="false"
 
@@ -475,18 +487,6 @@ run_ai_providers_settings_unified_scenario() {
     VIDEO_STARTED="false"
   fi
 }
-
-case "${SCENARIO}" in
-  agents-create-agent-flow)
-    ;;
-  ai-providers-settings-unified)
-    VISUAL_VALIDATION_IDENTIFIER="${AI_PROVIDERS_VISUAL_VALIDATION_IDENTIFIER}"
-    ;;
-  *)
-  echo "Unsupported iOS simulator evidence scenario: ${SCENARIO}" >&2
-  exit 1
-    ;;
-esac
 
 SIMULATOR_ID="${CODEAGENTS_SIMULATOR_ID:-$(resolve_simulator_id)}"
 VIDEO_STARTED="false"
