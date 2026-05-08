@@ -6,6 +6,8 @@ import { getMessaging } from "firebase-admin/messaging";
 import { onRequest } from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
 
+import { sanitizeNotificationPreview } from "./notificationPreview";
+
 admin.initializeApp();
 
 type JsonObject = Record<string, unknown>;
@@ -58,25 +60,6 @@ function normalizeString(value: unknown): string | null {
   }
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
-}
-
-function normalizePreview(value: unknown, maxLength = 240): string | null {
-  const raw = normalizeString(value);
-  if (!raw) {
-    return null;
-  }
-
-  const condensed = raw.replace(/\s+/g, " ").trim();
-  if (!condensed) {
-    return null;
-  }
-
-  if (condensed.length <= maxLength) {
-    return condensed;
-  }
-
-  const sliceLength = Math.max(0, maxLength - 1);
-  return condensed.slice(0, sliceLength).trimEnd() + "…";
 }
 
 function normalizeInt(value: unknown): number | null {
@@ -192,7 +175,7 @@ export const triggerReplyFinished = onRequest({ region: "us-central1", invoker: 
 
     const cwd = normalizeString(body["cwd"]);
     const conversationId = normalizeString(body["conversation_id"]);
-    const messagePreview = normalizePreview(body["message_preview"]);
+    const messagePreview = sanitizeNotificationPreview(body["message_preview"]);
     const renderableAssistantCount = normalizeInt(body["renderable_assistant_count"]);
 
     if (!cwd) {

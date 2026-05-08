@@ -58,6 +58,16 @@ notifications from the CodeAgents daemon.
 For OpenCode scheduled tasks, `conversation_id` should be the OpenCode session id so iOS unread tracking
 and chat hydration refer to the same session.
 
+## Notification preview sanitization
+
+`triggerReplyFinished` accepts an optional `message_preview` for the visible push notification body. The
+gateway removes fenced `codeagents-ui` and `codeagents_ui` blocks from that preview before whitespace
+normalization and truncation, then uses the sanitized text for both the FCM notification body and the
+APNs alert body. Text outside those render-only UI blocks is preserved in order.
+
+If sanitization leaves no readable preview text, notifications keep using the existing safe fallback body
+instead of exposing raw UI JSON.
+
 ## Validate
 
 ```bash
