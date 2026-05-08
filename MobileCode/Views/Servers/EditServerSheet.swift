@@ -180,7 +180,7 @@ struct EditServerSheet: View {
 
                 Section {
                     NavigationLink {
-                        OpenCodeAIProviderSettingsView(server: server)
+                        AIProviderSettingsView(initialMode: .openCode, server: server)
                     } label: {
                         HStack {
                             Label("Provider & Models", systemImage: "sparkles")
@@ -189,9 +189,9 @@ struct EditServerSheet: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    .accessibilityIdentifier("server-opencode-ai-provider-link")
+                    .accessibilityIdentifier("server-ai-provider-link")
                 } header: {
-                    Text("OpenCode AI Provider")
+                    Text("AI Provider")
                 } footer: {
                     Text("Override the global OpenCode provider for this server, or sync the global profile to its OpenCode runtime.")
                 }

@@ -10,6 +10,7 @@ import SwiftData
 struct ClaudeProviderSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Query private var servers: [Server]
+    let navigationTitle: String
 
     @State private var selectedProvider: ClaudeModelProvider
     @State private var selectedAuthMethod: ClaudeAuthMethod
@@ -18,7 +19,8 @@ struct ClaudeProviderSettingsView: View {
     @State private var showError = false
     @State private var errorMessage: String?
 
-    init() {
+    init(navigationTitle: String = "Legacy Claude Provider") {
+        self.navigationTitle = navigationTitle
         let configuration = ClaudeProviderConfigurationStore.load()
         _selectedProvider = State(initialValue: configuration.selectedProvider)
         _selectedAuthMethod = State(initialValue: ClaudeCodeService.shared.getCurrentAuthMethod())
@@ -60,7 +62,7 @@ struct ClaudeProviderSettingsView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .navigationTitle("Legacy Claude Provider")
+        .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {

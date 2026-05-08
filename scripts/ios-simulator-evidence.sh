@@ -28,7 +28,25 @@ SCENARIO="${OPENCODE_EVIDENCE_SCENARIO:-${CODEAGENTS_EVIDENCE_SCENARIO:-agents-c
 VISUAL_VALIDATION_IDENTIFIER="agents-create-agent-orange"
 AGENTS_CTA_CHECKPOINT="agents-empty-create-agent"
 NEW_AGENT_SHEET_CHECKPOINT="new-agent-sheet"
+AI_PROVIDERS_VISUAL_VALIDATION_IDENTIFIER="ai-providers-settings-unified"
+SETTINGS_AI_PROVIDERS_ENTRY_CHECKPOINT="settings-ai-providers-entry"
+AI_PROVIDERS_OPENCODE_DEFAULT_CHECKPOINT="ai-providers-opencode-default"
+AI_PROVIDERS_CLAUDE_PROXY_MODE_CHECKPOINT="ai-providers-claude-proxy-mode"
+LEGACY_ENTRY_AI_PROVIDERS_CLAUDE_PROXY_CHECKPOINT="legacy-entry-ai-providers-claude-proxy"
+USE_FOR_OPENCODE_COPY_OFFER_CHECKPOINT="use-for-opencode-copy-offer"
 ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SCENARIO}}"
+
+case "${SCENARIO}" in
+  agents-create-agent-flow)
+    ;;
+  ai-providers-settings-unified)
+    VISUAL_VALIDATION_IDENTIFIER="${AI_PROVIDERS_VISUAL_VALIDATION_IDENTIFIER}"
+    ;;
+  *)
+    echo "Unsupported iOS simulator evidence scenario: ${SCENARIO}" >&2
+    exit 1
+    ;;
+esac
 
 DEMO_CAPTURE_REQUESTED="false"
 VISUAL_CAPTURE_REQUESTED="false"
@@ -101,6 +119,21 @@ print(match.group(1))
 '
 }
 
+extract_app_path() {
+  python3 -c '
+import json
+import re
+import sys
+
+data = json.load(sys.stdin)
+text = "\n".join(item.get("text", "") for item in data.get("content", []) if isinstance(item, dict))
+match = re.search(r"(/[^\n]+?\.app)", text)
+if not match:
+    raise SystemExit(f"Unable to parse app path from xcodebuildmcp output: {text}")
+print(match.group(1))
+'
+}
+
 capture_png() {
   local simulator_id="$1"
   local output_path="$2"
@@ -164,6 +197,63 @@ navigate_to_agents_screen() {
     ui_snapshot_text "${simulator_id}" >&2 || true
     exit 1
   fi
+}
+
+navigate_to_settings_screen() {
+  local simulator_id="$1"
+
+  navigate_to_agents_screen "${simulator_id}"
+  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --id "agents-settings-button" --post-delay 1 --output json >/dev/null
+  if ! wait_for_ui_label "${simulator_id}" "Settings" 8 1; then
+    echo "Unable to navigate to Settings for ${SCENARIO}." >&2
+    ui_snapshot_text "${simulator_id}" >&2 || true
+    exit 1
+  fi
+}
+
+launch_app() {
+  local simulator_id="$1"
+  shift
+  local launch_command=("${XCODEBUILDMCP_BIN}" simulator launch-app --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}")
+
+  for launch_arg in "$@"; do
+    launch_command+=("--args=${launch_arg}")
+  done
+
+  "${launch_command[@]}" --output json >/dev/null
+}
+
+build_install_and_launch_app() {
+  local simulator_id="$1"
+  shift
+  local app_path_json
+  local app_path
+  local derived_app_path
+
+  "${XCODEBUILDMCP_BIN}" simulator build \
+    --project-path "${PROJECT_PATH}" \
+    --scheme "${SCHEME}" \
+    --simulator-id "${simulator_id}" \
+    --configuration "${CONFIGURATION}" \
+    --derived-data-path "${DERIVED_DATA_PATH}" \
+    --output json >/dev/null
+
+  app_path_json="$("${XCODEBUILDMCP_BIN}" simulator get-app-path \
+    --project-path "${PROJECT_PATH}" \
+    --scheme "${SCHEME}" \
+    --platform "iOS Simulator" \
+    --simulator-id "${simulator_id}" \
+    --configuration "${CONFIGURATION}" \
+    --output json)"
+  app_path="$(printf '%s' "${app_path_json}" | extract_app_path)"
+  derived_app_path="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}-iphonesimulator/${SCHEME}.app"
+  if [[ ! -d "${app_path}" && -d "${derived_app_path}" ]]; then
+    app_path="${derived_app_path}"
+  fi
+
+  "${XCODEBUILDMCP_BIN}" simulator-management boot --simulator-id "${simulator_id}" --output json >/dev/null
+  "${XCODEBUILDMCP_BIN}" simulator install --simulator-id "${simulator_id}" --app-path "${app_path}" --output json >/dev/null
+  launch_app "${simulator_id}" "$@"
 }
 
 copy_screenshot_to_checkpoints() {
@@ -279,23 +369,150 @@ capture_visual_agents_screen() {
   fi
 }
 
-if [[ "${SCENARIO}" != "agents-create-agent-flow" ]]; then
-  echo "Unsupported iOS simulator evidence scenario: ${SCENARIO}" >&2
-  exit 1
-fi
+capture_named_visual_checkpoint() {
+  local simulator_id="$1"
+  local checkpoint_name="$2"
+  local fallback_index="$3"
+
+  if [[ -n "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS:-}" ]]; then
+    copy_screenshot_to_named_checkpoint \
+      "${simulator_id}" \
+      "${OPENCODE_VISUAL_VALIDATION_FULL_PAGE_CHECKPOINTS}" \
+      "${checkpoint_name}" \
+      "${fallback_index}"
+  elif [[ -n "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-}" ]]; then
+    capture_png "${simulator_id}" "${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR}/${checkpoint_name}.png"
+  fi
+}
+
+capture_named_demo_checkpoint() {
+  local simulator_id="$1"
+  local checkpoint_name="$2"
+  local fallback_index="$3"
+
+  if [[ -n "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS:-}" ]]; then
+    copy_screenshot_to_named_checkpoint \
+      "${simulator_id}" \
+      "${OPENCODE_DEMO_SCREENSHOT_CHECKPOINTS}" \
+      "${checkpoint_name}" \
+      "${fallback_index}"
+  elif [[ -n "${OPENCODE_DEMO_SCREENSHOT_DIR:-}" ]]; then
+    capture_png "${simulator_id}" "${OPENCODE_DEMO_SCREENSHOT_DIR}/${checkpoint_name}.png"
+  fi
+}
+
+capture_ai_providers_checkpoint() {
+  local simulator_id="$1"
+  local checkpoint_name="$2"
+  local fallback_index="$3"
+
+  if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_visual_checkpoint "${simulator_id}" "${checkpoint_name}" "${fallback_index}"
+  fi
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_demo_checkpoint "${simulator_id}" "${checkpoint_name}" "${fallback_index}"
+  fi
+}
+
+run_ai_providers_settings_unified_scenario() {
+  local simulator_id="$1"
+  local normal_launch_args=(--ui-testing --reset-ui-test-defaults)
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
+    normal_launch_args+=(--ui-test-ai-providers-legacy-key)
+  fi
+
+  build_install_and_launch_app "${simulator_id}" "${normal_launch_args[@]}"
+  sleep "${LAUNCH_SETTLE_SECONDS}"
+
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
+    mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    "${XCODEBUILDMCP_BIN}" simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
+      --output json >/dev/null 2>&1 || true
+    "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${simulator_id}" --start --fps 30 --output json >/dev/null
+    VIDEO_STARTED="true"
+    sleep 2
+  fi
+
+  navigate_to_settings_screen "${simulator_id}"
+  capture_ai_providers_checkpoint "${simulator_id}" "${SETTINGS_AI_PROVIDERS_ENTRY_CHECKPOINT}" "0"
+
+  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --id "settings-ai-providers-link" --post-delay 1 --output json >/dev/null
+  if ! wait_for_ui_label "${simulator_id}" "OpenCode" 8 1; then
+    echo "AI Providers did not open in OpenCode mode for ${SCENARIO}." >&2
+    ui_snapshot_text "${simulator_id}" >&2 || true
+    exit 1
+  fi
+  capture_ai_providers_checkpoint "${simulator_id}" "${AI_PROVIDERS_OPENCODE_DEFAULT_CHECKPOINT}" "1"
+
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_demo_checkpoint "${simulator_id}" "${USE_FOR_OPENCODE_COPY_OFFER_CHECKPOINT}" "4"
+  fi
+
+  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --id "ai-provider-mode-claude-proxy" --post-delay 1 --output json >/dev/null \
+    || "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" -x 280 -y 115 --post-delay 1 --output json >/dev/null
+  if ! wait_for_ui_label "${simulator_id}" "Provider" 8 1; then
+    echo "Claude Code Proxy mode did not become visible for ${SCENARIO}." >&2
+    ui_snapshot_text "${simulator_id}" >&2 || true
+    exit 1
+  fi
+  capture_ai_providers_checkpoint "${simulator_id}" "${AI_PROVIDERS_CLAUDE_PROXY_MODE_CHECKPOINT}" "2"
+
+  "${XCODEBUILDMCP_BIN}" simulator stop --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}" --output json >/dev/null || true
+  launch_app "${simulator_id}" --ui-testing --reset-ui-test-defaults --ui-test-ai-providers-legacy-project
+  sleep "${LAUNCH_SETTLE_SECONDS}"
+
+  if ! wait_for_ui_label "${simulator_id}" "Change Provider" 10 1; then
+    echo "Legacy Change Provider route was not visible for ${SCENARIO}." >&2
+    ui_snapshot_text "${simulator_id}" >&2 || true
+    exit 1
+  fi
+  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --label "Change Provider" --post-delay 1 --output json >/dev/null
+  if ! wait_for_ui_label "${simulator_id}" "Endpoint, timeouts, and model defaults are preconfigured for each provider." 8 1; then
+    echo "Legacy Change Provider did not open AI Providers in Claude Code Proxy mode for ${SCENARIO}." >&2
+    ui_snapshot_text "${simulator_id}" >&2 || true
+    exit 1
+  fi
+  capture_ai_providers_checkpoint "${simulator_id}" "${LEGACY_ENTRY_AI_PROVIDERS_CLAUDE_PROXY_CHECKPOINT}" "3"
+
+  if [[ "${VIDEO_STARTED}" == "true" ]]; then
+    sleep 2
+    "${XCODEBUILDMCP_BIN}" simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" \
+      --output json >/dev/null
+    VIDEO_STARTED="false"
+  fi
+}
 
 SIMULATOR_ID="${CODEAGENTS_SIMULATOR_ID:-$(resolve_simulator_id)}"
 VIDEO_STARTED="false"
 
 cleanup() {
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
-    "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --stop >/dev/null 2>&1 || true
+    if [[ -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
+      mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+      "${XCODEBUILDMCP_BIN}" simulator record-video \
+        --simulator-id "${SIMULATOR_ID}" \
+        --stop \
+        --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null 2>&1 || true
+    fi
   fi
   "${XCODEBUILDMCP_BIN}" simulator stop --simulator-id "${SIMULATOR_ID}" --bundle-id "${BUNDLE_ID}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 "${XCODEBUILDMCP_BIN}" simulator-management erase --simulator-id "${SIMULATOR_ID}" --shutdown-first --output json >/dev/null
+
+if [[ "${SCENARIO}" == "ai-providers-settings-unified" ]]; then
+  run_ai_providers_settings_unified_scenario "${SIMULATOR_ID}"
+  "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${SIMULATOR_ID}" --output json | python_json_text >&2 || true
+  exit 0
+fi
+
 "${XCODEBUILDMCP_BIN}" simulator build-and-run \
   --project-path "${PROJECT_PATH}" \
   --scheme "${SCHEME}" \
@@ -315,6 +532,11 @@ fi
 if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    "${XCODEBUILDMCP_BIN}" simulator record-video \
+      --simulator-id "${SIMULATOR_ID}" \
+      --stop \
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
+      --output json >/dev/null 2>&1 || true
     "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --start --fps 30 --output json >/dev/null
     VIDEO_STARTED="true"
     sleep 2

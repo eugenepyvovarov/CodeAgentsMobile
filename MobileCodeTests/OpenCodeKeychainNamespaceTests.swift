@@ -69,11 +69,121 @@ final class OpenCodeKeychainNamespaceTests: XCTestCase {
         )
     }
 
-    func testLegacyClaudeProviderMappingForOpenCodeFallback() {
-        XCTAssertEqual(KeychainManager.legacyClaudeProvider(forOpenCodeProviderID: "anthropic"), .anthropic)
-        XCTAssertEqual(KeychainManager.legacyClaudeProvider(forOpenCodeProviderID: "z.ai"), .zAI)
-        XCTAssertEqual(KeychainManager.legacyClaudeProvider(forOpenCodeProviderID: "minimax"), .miniMax)
-        XCTAssertEqual(KeychainManager.legacyClaudeProvider(forOpenCodeProviderID: "moonshot"), .moonshot)
-        XCTAssertNil(KeychainManager.legacyClaudeProvider(forOpenCodeProviderID: "openai"))
+    func testLegacyClaudeProviderMappingForExplicitOpenCodeCopy() {
+        XCTAssertEqual(AIProviderCredentialMigration.compatibleLegacyClaudeProvider(forOpenCodeProviderID: "anthropic"), .anthropic)
+        XCTAssertEqual(AIProviderCredentialMigration.compatibleLegacyClaudeProvider(forOpenCodeProviderID: "z.ai"), .zAI)
+        XCTAssertEqual(AIProviderCredentialMigration.compatibleLegacyClaudeProvider(forOpenCodeProviderID: "minimax"), .miniMax)
+        XCTAssertEqual(AIProviderCredentialMigration.compatibleLegacyClaudeProvider(forOpenCodeProviderID: "moonshot"), .moonshot)
+        XCTAssertNil(AIProviderCredentialMigration.compatibleLegacyClaudeProvider(forOpenCodeProviderID: "openai"))
+    }
+
+    func testOpenCodeAPIKeyLookupDoesNotFallBackToLegacyClaudeKey() throws {
+        let providerID = "minimax"
+        defer {
+            try? KeychainManager.shared.deleteAPIKey(provider: .miniMax)
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+        }
+        try? KeychainManager.shared.deleteAPIKey(provider: .miniMax)
+        try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+
+        try KeychainManager.shared.storeAPIKey("legacy-minimax-key", provider: .miniMax)
+
+        XCTAssertThrowsError(try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID)) { error in
+            guard case KeychainManager.KeychainError.itemNotFound = error else {
+                return XCTFail("Expected missing OpenCode key, got \(error)")
+            }
+        }
+        XCTAssertFalse(KeychainManager.shared.hasOpenCodeAPIKey(providerID: providerID))
+        XCTAssertTrue(KeychainManager.shared.hasAPIKey(provider: .miniMax))
+    }
+
+    func testLegacyAPIKeyCopyWritesOpenCodeNamespaceAndLeavesLegacyKey() throws {
+        let providerID = "moonshot"
+        defer {
+            try? KeychainManager.shared.deleteAPIKey(provider: .moonshot)
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+        }
+        try? KeychainManager.shared.deleteAPIKey(provider: .moonshot)
+        try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+
+        try KeychainManager.shared.storeAPIKey("legacy-moonshot-key", provider: .moonshot)
+
+        XCTAssertTrue(AIProviderCredentialMigration.canCopyLegacyAPIKeyForOpenCode(providerID: providerID))
+        let copiedProvider = try AIProviderCredentialMigration.copyLegacyAPIKeyForOpenCode(providerID: providerID)
+
+        XCTAssertEqual(copiedProvider, .moonshot)
+        XCTAssertEqual(try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID), "legacy-moonshot-key")
+        XCTAssertEqual(try KeychainManager.shared.retrieveAPIKey(provider: .moonshot), "legacy-moonshot-key")
+        XCTAssertFalse(AIProviderCredentialMigration.canCopyLegacyAPIKeyForOpenCode(providerID: providerID))
+    }
+
+    func testLegacyAPIKeyCopyIsUnavailableWithoutMatchingLegacyKey() throws {
+        let providerID = "z.ai"
+        defer {
+            try? KeychainManager.shared.deleteAPIKey(provider: .zAI)
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+        }
+        try? KeychainManager.shared.deleteAPIKey(provider: .zAI)
+        try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+
+        XCTAssertFalse(AIProviderCredentialMigration.canCopyLegacyAPIKeyForOpenCode(providerID: providerID))
+        XCTAssertThrowsError(try AIProviderCredentialMigration.copyLegacyAPIKeyForOpenCode(providerID: providerID)) { error in
+            guard case KeychainManager.KeychainError.itemNotFound = error else {
+                return XCTFail("Expected missing legacy key, got \(error)")
+            }
+        }
+        XCTAssertFalse(KeychainManager.shared.hasOpenCodeAPIKey(providerID: providerID))
+    }
+
+    func testLegacyAPIKeyCopyIsUnavailableForUnmappedOpenCodeProvider() throws {
+        let providerID = "openai"
+        defer {
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+        }
+        try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+
+        XCTAssertFalse(AIProviderCredentialMigration.canCopyLegacyAPIKeyForOpenCode(providerID: providerID))
+        XCTAssertThrowsError(try AIProviderCredentialMigration.copyLegacyAPIKeyForOpenCode(providerID: providerID)) { error in
+            guard case KeychainManager.KeychainError.itemNotFound = error else {
+                return XCTFail("Expected unmapped provider to be unavailable, got \(error)")
+            }
+        }
+    }
+
+    func testLegacyAuthTokenIsNotCopiedToOpenCodeCredentials() throws {
+        let providerID = "anthropic"
+        defer {
+            try? KeychainManager.shared.deleteAuthToken()
+            try? KeychainManager.shared.deleteAPIKey(provider: .anthropic)
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+        }
+        try? KeychainManager.shared.deleteAuthToken()
+        try? KeychainManager.shared.deleteAPIKey(provider: .anthropic)
+        try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+
+        try KeychainManager.shared.storeAuthToken("legacy-oauth-token")
+
+        XCTAssertFalse(AIProviderCredentialMigration.canCopyLegacyAPIKeyForOpenCode(providerID: providerID))
+        XCTAssertThrowsError(try AIProviderCredentialMigration.copyLegacyAPIKeyForOpenCode(providerID: providerID))
+        XCTAssertEqual(try KeychainManager.shared.retrieveAuthToken(), "legacy-oauth-token")
+        XCTAssertFalse(KeychainManager.shared.hasOpenCodeAPIKey(providerID: providerID))
+    }
+
+    func testLegacyAPIKeyCopyDoesNotOverwriteExistingOpenCodeKey() throws {
+        let providerID = "anthropic"
+        defer {
+            try? KeychainManager.shared.deleteAPIKey(provider: .anthropic)
+            try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+        }
+        try? KeychainManager.shared.deleteAPIKey(provider: .anthropic)
+        try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
+
+        try KeychainManager.shared.storeAPIKey("legacy-anthropic-key", provider: .anthropic)
+        try KeychainManager.shared.storeOpenCodeAPIKey("opencode-anthropic-key", providerID: providerID)
+
+        XCTAssertFalse(AIProviderCredentialMigration.canCopyLegacyAPIKeyForOpenCode(providerID: providerID))
+        XCTAssertThrowsError(try AIProviderCredentialMigration.copyLegacyAPIKeyForOpenCode(providerID: providerID))
+        XCTAssertEqual(try KeychainManager.shared.retrieveOpenCodeAPIKey(providerID: providerID), "opencode-anthropic-key")
+        XCTAssertEqual(try KeychainManager.shared.retrieveAPIKey(provider: .anthropic), "legacy-anthropic-key")
     }
 }
