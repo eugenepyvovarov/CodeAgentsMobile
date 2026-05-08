@@ -93,6 +93,14 @@ import sys
 
 name = sys.argv[1]
 data = json.load(sys.stdin)
+
+for simulator in data.get("data", {}).get("simulators", []):
+    if simulator.get("name") == name and simulator.get("isAvailable", True):
+        simulator_id = simulator.get("simulatorId")
+        if simulator_id:
+            print(simulator_id)
+            raise SystemExit(0)
+
 text = "\n".join(item.get("text", "") for item in data.get("content", []) if isinstance(item, dict))
 match = re.search(r"- " + re.escape(name) + r" \(([A-Fa-f0-9-]+)\)", text)
 if not match:
