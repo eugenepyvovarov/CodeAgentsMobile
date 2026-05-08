@@ -209,6 +209,19 @@ struct OpenCodeAIProviderSettingsView: View {
                     .autocorrectionDisabled()
                     .disabled(editsDisabled)
                     .accessibilityIdentifier("opencode-ai-api-key-field")
+
+                if canUseLegacyAPIKeyForOpenCode {
+                    Button {
+                        useLegacyAPIKeyForOpenCode()
+                    } label: {
+                        Label("Use for OpenCode", systemImage: "doc.on.doc")
+                    }
+                    .accessibilityIdentifier("opencode-ai-use-legacy-key-button")
+
+                    Text("Copies the matching Claude Code Proxy API key into OpenCode storage and leaves the legacy key unchanged.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             } else {
                 chatGPTConnectionView
             }
@@ -680,6 +693,15 @@ struct OpenCodeAIProviderSettingsView: View {
         providerStatus?.isAuthenticated(providerID: profile.normalizedProviderID) == true
     }
 
+    private var canUseLegacyAPIKeyForOpenCode: Bool {
+        guard profile.requiresAPIKeyCredential,
+              !customProviderEnabled,
+              !profile.normalizedProviderID.isEmpty else {
+            return false
+        }
+        return AIProviderCredentialMigration.canCopyLegacyAPIKeyForOpenCode(providerID: profile.normalizedProviderID)
+    }
+
     private var canRemoveProviderAuth: Bool {
         guard !selectedProviderUsesNoCredential,
               !profile.normalizedProviderID.isEmpty else {
@@ -1129,6 +1151,17 @@ struct OpenCodeAIProviderSettingsView: View {
         try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID)
         for targetServer in targetServers {
             try? KeychainManager.shared.deleteOpenCodeAPIKey(providerID: providerID, serverID: targetServer.id)
+        }
+    }
+
+    private func useLegacyAPIKeyForOpenCode() {
+        do {
+            let legacyProvider = try AIProviderCredentialMigration.copyLegacyAPIKeyForOpenCode(
+                providerID: profile.normalizedProviderID
+            )
+            statusMessage = "Copied the existing \(legacyProvider.displayName) API key for OpenCode."
+        } catch {
+            present(error)
         }
     }
 

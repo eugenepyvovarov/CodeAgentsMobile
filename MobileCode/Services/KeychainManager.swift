@@ -144,20 +144,13 @@ class KeychainManager {
         try store(data: data, for: Self.openCodeAPIKeyAccount(for: providerID, serverID: serverID))
     }
 
-    /// Retrieve an OpenCode provider API key, falling back to matching legacy Claude provider keys.
+    /// Retrieve an OpenCode provider API key from the runtime-specific namespace.
     func retrieveOpenCodeAPIKey(providerID: String) throws -> String {
-        do {
-            let data = try retrieve(for: Self.openCodeAPIKeyAccount(for: providerID))
-            guard let apiKey = String(data: data, encoding: .utf8) else {
-                throw KeychainError.invalidData
-            }
-            return apiKey
-        } catch KeychainError.itemNotFound {
-            if let legacyProvider = Self.legacyClaudeProvider(forOpenCodeProviderID: providerID) {
-                return try retrieveAPIKey(provider: legacyProvider)
-            }
-            throw KeychainError.itemNotFound
+        let data = try retrieve(for: Self.openCodeAPIKeyAccount(for: providerID))
+        guard let apiKey = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
         }
+        return apiKey
     }
 
     /// Retrieve a server-scoped OpenCode provider API key, falling back to the global key.
@@ -183,7 +176,7 @@ class KeychainManager {
         try delete(for: Self.openCodeAPIKeyAccount(for: providerID, serverID: serverID))
     }
 
-    /// Check if an OpenCode provider API key exists in the new namespace or a compatible legacy key.
+    /// Check if an OpenCode provider API key exists in the runtime-specific namespace.
     func hasOpenCodeAPIKey(providerID: String) -> Bool {
         do {
             _ = try retrieveOpenCodeAPIKey(providerID: providerID)
