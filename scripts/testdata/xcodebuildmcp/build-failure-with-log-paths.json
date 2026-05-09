@@ -1,0 +1,23 @@
+{
+  "didError": true,
+  "data": {
+    "summary": {
+      "status": "failed"
+    },
+    "artifacts": {
+      "buildLogPath": "/tmp/xcodebuildmcp/build-failure.log",
+      "runtimeLogPath": "/tmp/xcodebuildmcp/runtime.log",
+      "osLogPath": "/tmp/xcodebuildmcp/os.log"
+    },
+    "diagnostics": {
+      "errors": [
+        {
+          "message": "Swift compile failed"
+        }
+      ],
+      "warnings": [
+        "Deployment target warning"
+      ]
+    }
+  }
+}

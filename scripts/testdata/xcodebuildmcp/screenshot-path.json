@@ -1,0 +1,11 @@
+{
+  "didError": false,
+  "data": {
+    "artifacts": {
+      "screenshotPath": "/tmp/xcodebuildmcp/screenshot.png"
+    },
+    "summary": {
+      "status": "success"
+    }
+  }
+}

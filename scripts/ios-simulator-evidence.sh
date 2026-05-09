@@ -79,96 +79,10 @@ xcbmcp_require_min_version
 
 mkdir -p "${DERIVED_DATA_PATH}"
 
-python_json_text() {
-  python3 -c '
-import json
-import sys
-
-def walk(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, list):
-        for item in value:
-            yield from walk(item)
-    elif isinstance(value, dict):
-        for key in ("label", "title", "value", "text", "name", "identifier"):
-            item = value.get(key)
-            if isinstance(item, str):
-                yield item
-        for item in value.values():
-            if isinstance(item, (dict, list)):
-                yield from walk(item)
-
-payload = json.load(sys.stdin)
-texts = []
-data = payload.get("data") if isinstance(payload, dict) else None
-if data is not None:
-    texts.extend(walk(data))
-
-content = payload.get("content") if isinstance(payload, dict) else None
-if isinstance(content, list):
-    for item in content:
-        if isinstance(item, dict) and isinstance(item.get("text"), str):
-            texts.append(item["text"])
-
-print("\n".join(texts))
-'
-}
-
 resolve_simulator_id() {
   local simulator_json
   simulator_json="$(xcbmcp_run_json simulator list)"
-  printf '%s' "${simulator_json}" | python3 -c '
-import json
-import sys
-
-name = sys.argv[1]
-payload = json.load(sys.stdin)
-data = payload.get("data") if isinstance(payload, dict) else {}
-simulators = data.get("simulators") if isinstance(data, dict) else []
-for simulator in simulators:
-    if not isinstance(simulator, dict):
-        continue
-    if simulator.get("name") == name and simulator.get("simulatorId"):
-        print(simulator["simulatorId"])
-        raise SystemExit(0)
-available = ", ".join(
-    str(simulator.get("name"))
-    for simulator in simulators
-    if isinstance(simulator, dict) and simulator.get("name")
-)
-raise SystemExit(f"Simulator named {name!r} was not found in data.simulators[]. Available: {available or '(none)'}")
-' "${SIMULATOR_NAME}"
-}
-
-extract_screenshot_path() {
-  python3 -c '
-import json
-import sys
-
-payload = json.load(sys.stdin)
-data = payload.get("data") if isinstance(payload, dict) else {}
-artifacts = data.get("artifacts") if isinstance(data, dict) else {}
-path = artifacts.get("screenshotPath") if isinstance(artifacts, dict) else None
-if not path:
-    raise SystemExit("Unable to read screenshot path from data.artifacts.screenshotPath")
-print(path)
-'
-}
-
-extract_app_path() {
-  python3 -c '
-import json
-import sys
-
-payload = json.load(sys.stdin)
-data = payload.get("data") if isinstance(payload, dict) else {}
-artifacts = data.get("artifacts") if isinstance(data, dict) else {}
-path = artifacts.get("appPath") if isinstance(artifacts, dict) else None
-if not path:
-    raise SystemExit("Unable to read app path from data.artifacts.appPath")
-print(path)
-'
+  printf '%s' "${simulator_json}" | xcbmcp_extract_simulator_id "${SIMULATOR_NAME}"
 }
 
 capture_png() {
@@ -179,14 +93,14 @@ capture_png() {
 
   mkdir -p "$(dirname "${output_path}")"
   screenshot_json="$(xcbmcp_run_json ui-automation screenshot --simulator-id "${simulator_id}" --return-format path)"
-  source_path="$(printf '%s' "${screenshot_json}" | extract_screenshot_path)"
+  source_path="$(printf '%s' "${screenshot_json}" | xcbmcp_extract_screenshot_path)"
   sips -s format png "${source_path}" --out "${output_path}" >/dev/null
 }
 
 ui_snapshot_text() {
   local simulator_id="$1"
 
-  xcbmcp_run_json ui-automation snapshot-ui --simulator-id "${simulator_id}" | python_json_text
+  xcbmcp_run_json ui-automation snapshot-ui --simulator-id "${simulator_id}" | xcbmcp_extract_json_text
 }
 
 ui_contains_label() {
@@ -280,7 +194,7 @@ build_install_and_launch_app() {
     --platform "iOS Simulator" \
     --simulator-id "${simulator_id}" \
     --configuration "${CONFIGURATION}")"
-  app_path="$(printf '%s' "${app_path_json}" | extract_app_path)"
+  app_path="$(printf '%s' "${app_path_json}" | xcbmcp_extract_app_path)"
   derived_app_path="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}-iphonesimulator/${SCHEME}.app"
   if [[ ! -d "${app_path}" && -d "${derived_app_path}" ]]; then
     app_path="${derived_app_path}"

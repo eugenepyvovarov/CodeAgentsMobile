@@ -1,0 +1,11 @@
+{
+  "didError": false,
+  "data": {
+    "summary": {
+      "status": "success"
+    },
+    "artifacts": {
+      "buildLogPath": "/tmp/xcodebuildmcp/build-success.log"
+    }
+  }
+}

@@ -21,6 +21,8 @@ SIMULATOR_NAME="${CODEAGENTS_SIMULATOR_NAME:-iPhone 17}"
 CONFIGURATION="${CODEAGENTS_CONFIGURATION:-Debug}"
 DERIVED_DATA_PATH="${CODEAGENTS_DERIVED_DATA_PATH:-${ROOT_DIR}/.build/opencode-ci/DerivedData}"
 
+"${ROOT_DIR}/scripts/test-xcodebuildmcp-fixtures.sh"
+
 xcbmcp_require_min_version
 
 if [[ -n "${GOOGLE_SERVICE_INFO_PLIST_BASE64:-}" ]]; then

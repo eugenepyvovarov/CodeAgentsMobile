@@ -171,6 +171,100 @@ for obj in objects:
 PY
 }
 
+xcbmcp_extract_simulator_id() {
+  local simulator_name="$1"
+
+  python3 -c '
+import json
+import sys
+
+name = sys.argv[1]
+payload = json.load(sys.stdin)
+data = payload.get("data") if isinstance(payload, dict) else {}
+simulators = data.get("simulators") if isinstance(data, dict) else []
+for simulator in simulators:
+    if not isinstance(simulator, dict):
+        continue
+    if simulator.get("name") == name and simulator.get("simulatorId"):
+        print(simulator["simulatorId"])
+        raise SystemExit(0)
+available = ", ".join(
+    str(simulator.get("name"))
+    for simulator in simulators
+    if isinstance(simulator, dict) and simulator.get("name")
+)
+if not available:
+    available = "(none)"
+raise SystemExit(f"Simulator named {name!r} was not found in data.simulators[]. Available: {available}")
+' "${simulator_name}"
+}
+
+xcbmcp_extract_screenshot_path() {
+  python3 -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+data = payload.get("data") if isinstance(payload, dict) else {}
+artifacts = data.get("artifacts") if isinstance(data, dict) else {}
+path = artifacts.get("screenshotPath") if isinstance(artifacts, dict) else None
+if not path:
+    raise SystemExit("Unable to read screenshot path from data.artifacts.screenshotPath")
+print(path)
+'
+}
+
+xcbmcp_extract_app_path() {
+  python3 -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+data = payload.get("data") if isinstance(payload, dict) else {}
+artifacts = data.get("artifacts") if isinstance(data, dict) else {}
+path = artifacts.get("appPath") if isinstance(artifacts, dict) else None
+if not path:
+    raise SystemExit("Unable to read app path from data.artifacts.appPath")
+print(path)
+'
+}
+
+xcbmcp_extract_json_text() {
+  python3 -c '
+import json
+import sys
+
+def walk(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from walk(item)
+    elif isinstance(value, dict):
+        for key in ("label", "title", "value", "text", "name", "identifier"):
+            item = value.get(key)
+            if isinstance(item, str):
+                yield item
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                yield from walk(item)
+
+payload = json.load(sys.stdin)
+texts = []
+data = payload.get("data") if isinstance(payload, dict) else None
+if data is not None:
+    texts.extend(walk(data))
+
+content = payload.get("content") if isinstance(payload, dict) else None
+if isinstance(content, list):
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            texts.append(item["text"])
+
+print("\n".join(texts))
+'
+}
+
 xcbmcp_run_json() {
   local response_path
   response_path="$(mktemp "${TMPDIR:-/tmp}/xcodebuildmcp-json.XXXXXX")"
