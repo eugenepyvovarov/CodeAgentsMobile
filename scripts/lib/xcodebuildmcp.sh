@@ -241,13 +241,8 @@ def walk(value):
         for item in value:
             yield from walk(item)
     elif isinstance(value, dict):
-        for key in ("label", "title", "value", "text", "name", "identifier"):
-            item = value.get(key)
-            if isinstance(item, str):
-                yield item
         for item in value.values():
-            if isinstance(item, (dict, list)):
-                yield from walk(item)
+            yield from walk(item)
 
 payload = json.load(sys.stdin)
 texts = []

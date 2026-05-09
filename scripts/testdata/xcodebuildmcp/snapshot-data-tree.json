@@ -12,7 +12,7 @@
         },
         {
           "identifier": "agents-create-button",
-          "label": "Create Agent"
+          "accessibilityLabel": "Create Agent"
         }
       ]
     }
