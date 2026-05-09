@@ -14,7 +14,7 @@ if [[ -z "${DEVELOPER_DIR:-}" ]]; then
   done
 fi
 
-XCODEBUILDMCP_BIN="${XCODEBUILDMCP_BIN:-xcodebuildmcp}"
+source "${ROOT_DIR}/scripts/lib/xcodebuildmcp.sh"
 PROJECT_PATH="${CODEAGENTS_XCODE_PROJECT:-${ROOT_DIR}/CodeAgentsMobile.xcodeproj}"
 SCHEME="${CODEAGENTS_XCODE_SCHEME:-CodeAgentsMobile}"
 SIMULATOR_NAME="${CODEAGENTS_SIMULATOR_NAME:-iPhone 17}"
@@ -75,10 +75,7 @@ if [[ "${MODE}" == "visual" \
   export OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR="${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/visual/screenshots}"
 fi
 
-if ! command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
-  echo "xcodebuildmcp is required for iOS simulator evidence capture." >&2
-  exit 1
-fi
+xcbmcp_require_min_version
 
 mkdir -p "${DERIVED_DATA_PATH}"
 
