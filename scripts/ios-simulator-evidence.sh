@@ -171,13 +171,25 @@ navigate_to_settings_screen() {
 launch_app() {
   local simulator_id="$1"
   shift
-  local launch_command=(simulator launch-app --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}")
+  local launch_json
 
-  for launch_arg in "$@"; do
-    launch_command+=("--args=${launch_arg}")
-  done
+  launch_json="$(python3 - "${simulator_id}" "${BUNDLE_ID}" "$@" <<'PY'
+import json
+import sys
 
-  xcbmcp_run_json "${launch_command[@]}" >/dev/null
+simulator_id = sys.argv[1]
+bundle_id = sys.argv[2]
+launch_args = sys.argv[3:]
+
+print(json.dumps({
+    "simulatorId": simulator_id,
+    "bundleId": bundle_id,
+    "launchArgs": launch_args,
+}))
+PY
+)"
+
+  xcbmcp_run_json simulator launch-app --json "${launch_json}" >/dev/null
 }
 
 build_install_and_launch_app() {
@@ -206,7 +218,7 @@ build_install_and_launch_app() {
     app_path="${derived_app_path}"
   fi
 
-  xcbmcp_run_json simulator-management boot --simulator-id "${simulator_id}" >/dev/null
+  xcbmcp_run_json simulator-management boot --simulator-id "${simulator_id}" >/dev/null || true
   xcbmcp_run_json simulator install --simulator-id "${simulator_id}" --app-path "${app_path}" >/dev/null
   launch_app "${simulator_id}" "$@"
 }
