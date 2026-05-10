@@ -17,6 +17,7 @@
 ### Fixes
 - Fix attachment chip clearing.
 - Fix heatmap layout issues.
+- Make Settings lists for Cloud Providers and SSH Keys use consistent grouped row styling.
 
 ## 1.5 (2026-01-30)
 
