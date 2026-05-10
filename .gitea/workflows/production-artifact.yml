@@ -170,8 +170,7 @@ jobs:
             echo "REGISTRY_USER=${REGISTRY_USERNAME}" >> "$GITHUB_ENV"
             echo "REGISTRY_PASSWORD=${REGISTRY_PASSWORD}" >> "$GITHUB_ENV"
           else
-            echo "No production registry credentials configured. Configure either OPENCODE_REGISTRY_USER/OPENCODE_REGISTRY_TOKEN or REGISTRY_USERNAME/REGISTRY_PASSWORD repository secrets." >&2
-            exit 1
+            echo "No production registry credentials configured; continuing because non-registry production artifacts do not require them." >&2
           fi
 
       - name: Run pinned production-artifact worker
