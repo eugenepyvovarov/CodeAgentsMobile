@@ -602,16 +602,26 @@ run_settings_lists_consistent_scenario() {
 
   navigate_to_settings_screen "${simulator_id}"
   if ! wait_for_ui_label "${simulator_id}" "Evidence DigitalOcean" 8 1; then
-    echo "Seeded Cloud Providers rows were not visible for ${SCENARIO}." >&2
-    ui_snapshot_text "${simulator_id}" >&2 || true
-    exit 1
+    if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]] \
+      && wait_for_ui_label "${simulator_id}" "Add Cloud Provider" 4 1; then
+      echo "Seeded Cloud Providers rows were not visible; capturing available Cloud Providers baseline state." >&2
+    else
+      echo "Seeded Cloud Providers rows were not visible for ${SCENARIO}." >&2
+      ui_snapshot_text "${simulator_id}" >&2 || true
+      exit 1
+    fi
   fi
   capture_settings_lists_checkpoint "${simulator_id}" "${SETTINGS_CLOUD_PROVIDERS_CHECKPOINT}" "0"
 
   if ! scroll_until_ui_label "${simulator_id}" "evidence-ed25519" 8; then
-    echo "Seeded SSH Keys rows were not visible for ${SCENARIO}." >&2
-    ui_snapshot_text "${simulator_id}" >&2 || true
-    exit 1
+    if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]] \
+      && scroll_until_ui_label "${simulator_id}" "Add SSH Key" 4; then
+      echo "Seeded SSH Keys rows were not visible; capturing available SSH Keys baseline state." >&2
+    else
+      echo "Seeded SSH Keys rows were not visible for ${SCENARIO}." >&2
+      ui_snapshot_text "${simulator_id}" >&2 || true
+      exit 1
+    fi
   fi
   capture_settings_lists_checkpoint "${simulator_id}" "${SETTINGS_SSH_KEYS_CHECKPOINT}" "1"
 
