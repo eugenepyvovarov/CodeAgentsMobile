@@ -101,6 +101,13 @@ final class CodeAgentsMobileUITests: XCTestCase {
         )
     }
 
+    func testSettingsExposeAddSSHKeyEntry() throws {
+        try openSettingsFromAgentsScreen()
+
+        let addSSHKeyButton = app.buttons["settings-add-ssh-key-button"].firstMatch
+        XCTAssertTrue(scrollToElement(addSSHKeyButton, timeout: 10), "Settings did not expose the Add SSH Key entry.")
+    }
+
     func testManualServerFlowIncludesOpenCodeServerAuthSetup() throws {
         try openSettingsFromAgentsScreen()
 
