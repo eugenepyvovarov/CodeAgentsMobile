@@ -101,6 +101,28 @@ final class CodeAgentsMobileUITests: XCTestCase {
         )
     }
 
+    func testSettingsExposeAffectedListSectionsAndAddEntries() throws {
+        try openSettingsFromAgentsScreen()
+
+        let cloudProvidersSection = app.staticTexts["Cloud Providers"].firstMatch
+        XCTAssertTrue(
+            cloudProvidersSection.waitForExistence(timeout: 5),
+            "Settings did not expose the Cloud Providers section."
+        )
+
+        let addCloudProviderButton = app.buttons["settings-add-cloud-provider-button"].firstMatch
+        XCTAssertTrue(
+            addCloudProviderButton.waitForExistence(timeout: 5),
+            "Settings did not expose the Add Cloud Provider entry."
+        )
+
+        let sshKeysSection = app.staticTexts["SSH Keys"].firstMatch
+        XCTAssertTrue(scrollToElement(sshKeysSection, timeout: 10), "Settings did not expose the SSH Keys section.")
+
+        let addSSHKeyButton = app.buttons["settings-add-ssh-key-button"].firstMatch
+        XCTAssertTrue(scrollToElement(addSSHKeyButton, timeout: 10), "Settings did not expose the Add SSH Key entry.")
+    }
+
     func testManualServerFlowIncludesOpenCodeServerAuthSetup() throws {
         try openSettingsFromAgentsScreen()
 

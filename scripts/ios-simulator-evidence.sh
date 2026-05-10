@@ -37,6 +37,9 @@ AI_PROVIDERS_OPENCODE_DEFAULT_CHECKPOINT="ai-providers-opencode-default"
 AI_PROVIDERS_CLAUDE_PROXY_MODE_CHECKPOINT="ai-providers-claude-proxy-mode"
 LEGACY_ENTRY_AI_PROVIDERS_CLAUDE_PROXY_CHECKPOINT="legacy-entry-ai-providers-claude-proxy"
 USE_FOR_OPENCODE_COPY_OFFER_CHECKPOINT="use-for-opencode-copy-offer"
+SETTINGS_LISTS_VISUAL_VALIDATION_IDENTIFIER="settings-lists-consistent"
+SETTINGS_CLOUD_PROVIDERS_CHECKPOINT="settings-cloud-providers-grouped"
+SETTINGS_SSH_KEYS_CHECKPOINT="settings-ssh-keys-grouped"
 ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SCENARIO}}"
 
 case "${SCENARIO}" in
@@ -47,6 +50,9 @@ case "${SCENARIO}" in
     ;;
   ai-providers-settings-unified)
     VISUAL_VALIDATION_IDENTIFIER="${AI_PROVIDERS_VISUAL_VALIDATION_IDENTIFIER}"
+    ;;
+  settings-lists-consistent)
+    VISUAL_VALIDATION_IDENTIFIER="${SETTINGS_LISTS_VISUAL_VALIDATION_IDENTIFIER}"
     ;;
   *)
     echo "Unsupported iOS simulator evidence scenario: ${SCENARIO}" >&2
@@ -165,13 +171,25 @@ navigate_to_settings_screen() {
 launch_app() {
   local simulator_id="$1"
   shift
-  local launch_command=(simulator launch-app --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}")
+  local launch_json
 
-  for launch_arg in "$@"; do
-    launch_command+=("--args=${launch_arg}")
-  done
+  launch_json="$(python3 - "${simulator_id}" "${BUNDLE_ID}" "$@" <<'PY'
+import json
+import sys
 
-  xcbmcp_run_json "${launch_command[@]}" >/dev/null
+simulator_id = sys.argv[1]
+bundle_id = sys.argv[2]
+launch_args = sys.argv[3:]
+
+print(json.dumps({
+    "simulatorId": simulator_id,
+    "bundleId": bundle_id,
+    "launchArgs": launch_args,
+}))
+PY
+)"
+
+  xcbmcp_run_json simulator launch-app --json "${launch_json}" >/dev/null
 }
 
 build_install_and_launch_app() {
@@ -200,7 +218,7 @@ build_install_and_launch_app() {
     app_path="${derived_app_path}"
   fi
 
-  xcbmcp_run_json simulator-management boot --simulator-id "${simulator_id}" >/dev/null
+  xcbmcp_run_json simulator-management boot --simulator-id "${simulator_id}" >/dev/null || true
   xcbmcp_run_json simulator install --simulator-id "${simulator_id}" --app-path "${app_path}" >/dev/null
   launch_app "${simulator_id}" "$@"
 }
@@ -407,6 +425,38 @@ capture_ai_providers_checkpoint() {
   fi
 }
 
+capture_settings_lists_checkpoint() {
+  local simulator_id="$1"
+  local checkpoint_name="$2"
+  local fallback_index="$3"
+
+  if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_visual_checkpoint "${simulator_id}" "${checkpoint_name}" "${fallback_index}"
+  fi
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_demo_checkpoint "${simulator_id}" "${checkpoint_name}" "${fallback_index}"
+  fi
+}
+
+scroll_until_ui_label() {
+  local simulator_id="$1"
+  local label="$2"
+  local attempts="${3:-6}"
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if ui_contains_label "${simulator_id}" "${label}"; then
+      return 0
+    fi
+    xcbmcp_run_json ui-automation swipe \
+      --simulator-id "${simulator_id}" \
+      --x1 200 --y1 720 --x2 200 --y2 260 \
+      --duration 0.45 \
+      --post-delay 1 >/dev/null || true
+  done
+
+  ui_contains_label "${simulator_id}" "${label}"
+}
+
 capture_push_notification_checkpoint() {
   local simulator_id="$1"
 
@@ -527,6 +577,64 @@ run_ai_providers_settings_unified_scenario() {
   fi
 }
 
+run_settings_lists_consistent_scenario() {
+  local simulator_id="$1"
+
+  build_install_and_launch_app \
+    "${simulator_id}" \
+    --ui-testing \
+    --reset-ui-test-defaults \
+    --ui-test-settings-lists-consistent
+  sleep "${LAUNCH_SETTLE_SECONDS}"
+
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" \
+    && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" \
+    && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
+    mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    xcbmcp_run_json simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" >/dev/null 2>&1 || true
+    xcbmcp_run_json simulator record-video --simulator-id "${simulator_id}" --start --fps 30 >/dev/null
+    VIDEO_STARTED="true"
+    sleep 2
+  fi
+
+  navigate_to_settings_screen "${simulator_id}"
+  if ! wait_for_ui_label "${simulator_id}" "Evidence DigitalOcean" 8 1; then
+    if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]] \
+      && wait_for_ui_label "${simulator_id}" "Add Cloud Provider" 4 1; then
+      echo "Seeded Cloud Providers rows were not visible; capturing available Cloud Providers baseline state." >&2
+    else
+      echo "Seeded Cloud Providers rows were not visible for ${SCENARIO}." >&2
+      ui_snapshot_text "${simulator_id}" >&2 || true
+      exit 1
+    fi
+  fi
+  capture_settings_lists_checkpoint "${simulator_id}" "${SETTINGS_CLOUD_PROVIDERS_CHECKPOINT}" "0"
+
+  if ! scroll_until_ui_label "${simulator_id}" "evidence-ed25519" 8; then
+    if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]] \
+      && scroll_until_ui_label "${simulator_id}" "Add SSH Key" 4; then
+      echo "Seeded SSH Keys rows were not visible; capturing available SSH Keys baseline state." >&2
+    else
+      echo "Seeded SSH Keys rows were not visible for ${SCENARIO}." >&2
+      ui_snapshot_text "${simulator_id}" >&2 || true
+      exit 1
+    fi
+  fi
+  capture_settings_lists_checkpoint "${simulator_id}" "${SETTINGS_SSH_KEYS_CHECKPOINT}" "1"
+
+  if [[ "${VIDEO_STARTED}" == "true" ]]; then
+    sleep 2
+    xcbmcp_run_json simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null
+    VIDEO_STARTED="false"
+  fi
+}
+
 SIMULATOR_ID="${CODEAGENTS_SIMULATOR_ID:-$(resolve_simulator_id)}"
 VIDEO_STARTED="false"
 
@@ -548,6 +656,12 @@ xcbmcp_run_json simulator-management erase --simulator-id "${SIMULATOR_ID}" --sh
 
 if [[ "${SCENARIO}" == "ai-providers-settings-unified" ]]; then
   run_ai_providers_settings_unified_scenario "${SIMULATOR_ID}"
+  ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
+  exit 0
+fi
+
+if [[ "${SCENARIO}" == "settings-lists-consistent" ]]; then
+  run_settings_lists_consistent_scenario "${SIMULATOR_ID}"
   ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
   exit 0
 fi

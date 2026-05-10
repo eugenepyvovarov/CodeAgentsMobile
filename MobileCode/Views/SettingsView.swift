@@ -62,23 +62,15 @@ struct SettingsView: View {
                             selectedProvider = provider
                         }
                         .deleteDisabled(getServerCount(for: provider) > 0)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                        .listRowBackground(Color.clear)
                     }
                     .onDelete(perform: deleteProvider)
                     
                     Button {
                         showingCloudProviders = true
                     } label: {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                                .foregroundColor(.accentColor)
-                            Text("Add Cloud Provider")
-                                .foregroundColor(.accentColor)
-                        }
+                        SettingsAddRow(title: "Add Cloud Provider")
                     }
                     .accessibilityIdentifier("settings-add-cloud-provider-button")
-                    .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
                 }
                 
                 Section("Servers") {
@@ -91,12 +83,7 @@ struct SettingsView: View {
                     Button {
                         showingAddServer = true
                     } label: {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                                .foregroundColor(.accentColor)
-                            Text("Add Server")
-                                .foregroundColor(.accentColor)
-                        }
+                        SettingsAddRow(title: "Add Server")
                     }
                     .accessibilityIdentifier("settings-add-server-button")
                 }
@@ -107,22 +94,15 @@ struct SettingsView: View {
                             selectedSSHKey = key
                         }
                         .deleteDisabled(getUsageCount(for: key) > 0)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                        .listRowBackground(Color.clear)
                     }
                     .onDelete(perform: deleteSSHKey)
                     
                     Button {
                         showingImportSSHKey = true
                     } label: {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                                .foregroundColor(.accentColor)
-                            Text("Add SSH Key")
-                                .foregroundColor(.accentColor)
-                        }
+                        SettingsAddRow(title: "Add SSH Key")
                     }
-                    .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
+                    .accessibilityIdentifier("settings-add-ssh-key-button")
                 }
 
                 Section("MCP & Skills") {
@@ -259,6 +239,34 @@ struct SettingsView: View {
     }
 }
 
+private struct SettingsAddRow: View {
+    let title: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: "plus.circle.fill")
+            Text(title)
+        }
+        .foregroundColor(.accentColor)
+    }
+}
+
+private struct SettingsUsageIndicator: View {
+    let count: Int
+    let noun: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "lock.fill")
+                .font(.caption)
+                .foregroundColor(.orange)
+            Text("\(count) \(noun)\(count == 1 ? "" : "s")")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
 struct CloudProviderRow: View {
     let provider: ServerProvider
     let serverCount: Int
@@ -288,14 +296,7 @@ struct CloudProviderRow: View {
             
             // Server count and lock icon
             if serverCount > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "lock.fill")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                    Text("\(serverCount) server\(serverCount == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                SettingsUsageIndicator(count: serverCount, noun: "server")
             } else {
                 // Provider type label
                 Text(provider.providerType == "digitalocean" ? "DigitalOcean" : "Hetzner")
@@ -303,9 +304,6 @@ struct CloudProviderRow: View {
                     .foregroundColor(.secondary)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(Color(.systemBackground))
         .contentShape(Rectangle())
         .onTapGesture {
             onTap()
@@ -329,19 +327,9 @@ struct SSHKeyRow: View {
             
             // Right side - usage indicator
             if usageCount > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "lock.fill")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                    Text("\(usageCount) server\(usageCount == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                SettingsUsageIndicator(count: usageCount, noun: "server")
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(Color(.systemBackground))
         .contentShape(Rectangle())
         .onTapGesture {
             onTap()
@@ -924,5 +912,5 @@ struct AuthTokenEntrySheet: View {
 
 #Preview {
     SettingsView()
-        .modelContainer(for: [Server.self], inMemory: true)
+        .modelContainer(for: [Server.self, SSHKey.self, RemoteProject.self, ServerProvider.self], inMemory: true)
 }
