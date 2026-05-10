@@ -68,6 +68,7 @@ struct ContentView: View {
         }
         .task {
             seedAIProvidersEvidenceStateIfNeeded()
+            seedSettingsListsEvidenceStateIfNeeded()
         }
     }
     
@@ -141,6 +142,49 @@ struct ContentView: View {
         serverManager.loadServers(from: modelContext)
         ClaudeCodeService.shared.claudeInstallationStatus[server.id] = true
         projectContext.setActiveProject(project)
+    }
+
+    private func seedSettingsListsEvidenceStateIfNeeded() {
+        let processInfo = ProcessInfo.processInfo
+        guard processInfo.arguments.contains("--ui-testing"),
+              processInfo.arguments.contains("--ui-test-settings-lists-consistent") else {
+            return
+        }
+
+        let providerName = "Evidence DigitalOcean"
+        let keyName = "evidence-ed25519"
+
+        let providerDescriptor = FetchDescriptor<ServerProvider>(
+            predicate: #Predicate { $0.name == providerName }
+        )
+        if (try? modelContext.fetch(providerDescriptor).isEmpty) == false {
+            return
+        }
+
+        let activeProvider = ServerProvider(providerType: "digitalocean", name: providerName)
+        let unusedProvider = ServerProvider(providerType: "hetzner", name: "Evidence Hetzner")
+        let sshKey = SSHKey(
+            name: keyName,
+            keyType: "Ed25519",
+            privateKeyIdentifier: "ui-test-settings-lists-consistent-key"
+        )
+        sshKey.publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEvidenceOnlySettingsLists codeagents-ui-test"
+
+        let server = Server(
+            name: "Evidence Server",
+            host: "127.0.0.1",
+            username: "codeagents",
+            authMethodType: "key"
+        )
+        server.providerId = activeProvider.id
+        server.sshKeyId = sshKey.id
+
+        modelContext.insert(activeProvider)
+        modelContext.insert(unusedProvider)
+        modelContext.insert(sshKey)
+        modelContext.insert(server)
+        try? modelContext.save()
+        serverManager.loadServers(from: modelContext)
     }
 }
 
