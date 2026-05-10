@@ -62,8 +62,6 @@ struct SettingsView: View {
                             selectedProvider = provider
                         }
                         .deleteDisabled(getServerCount(for: provider) > 0)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                        .listRowBackground(Color.clear)
                     }
                     .onDelete(perform: deleteProvider)
                     
@@ -78,7 +76,6 @@ struct SettingsView: View {
                         }
                     }
                     .accessibilityIdentifier("settings-add-cloud-provider-button")
-                    .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
                 }
                 
                 Section("Servers") {
@@ -303,9 +300,6 @@ struct CloudProviderRow: View {
                     .foregroundColor(.secondary)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(Color(.systemBackground))
         .contentShape(Rectangle())
         .onTapGesture {
             onTap()
