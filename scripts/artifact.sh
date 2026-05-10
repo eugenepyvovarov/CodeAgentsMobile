@@ -14,7 +14,7 @@ if [[ -z "${DEVELOPER_DIR:-}" ]]; then
   done
 fi
 
-XCODEBUILDMCP_BIN="${XCODEBUILDMCP_BIN:-xcodebuildmcp}"
+source "${ROOT_DIR}/scripts/lib/xcodebuildmcp.sh"
 ASC_BIN="${ASC_BIN:-asc}"
 PROJECT_PATH="${CODEAGENTS_XCODE_PROJECT:-${ROOT_DIR}/CodeAgentsMobile.xcodeproj}"
 PROJECT_FILE="${PROJECT_PATH}/project.pbxproj"
@@ -250,18 +250,14 @@ print(json.dumps({
   exit 0
 fi
 
-if ! command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
-  echo "xcodebuildmcp is required for review artifacts." >&2
-  exit 1
-fi
+xcbmcp_require_min_version
 
-"${XCODEBUILDMCP_BIN}" simulator build \
+xcbmcp_run_json simulator build \
   --project-path "${PROJECT_PATH}" \
   --scheme "${SCHEME}" \
   --simulator-name "${SIMULATOR_NAME}" \
   --configuration Debug \
-  --derived-data-path "${DERIVED_DATA_PATH}" \
-  --output json >/dev/null
+  --derived-data-path "${DERIVED_DATA_PATH}" >/dev/null
 
 APP_PATH="${DERIVED_DATA_PATH}/Build/Products/Debug-iphonesimulator/${SCHEME}.app"
 if [[ ! -d "${APP_PATH}" ]]; then

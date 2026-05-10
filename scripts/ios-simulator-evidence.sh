@@ -14,7 +14,7 @@ if [[ -z "${DEVELOPER_DIR:-}" ]]; then
   done
 fi
 
-XCODEBUILDMCP_BIN="${XCODEBUILDMCP_BIN:-xcodebuildmcp}"
+source "${ROOT_DIR}/scripts/lib/xcodebuildmcp.sh"
 PROJECT_PATH="${CODEAGENTS_XCODE_PROJECT:-${ROOT_DIR}/CodeAgentsMobile.xcodeproj}"
 SCHEME="${CODEAGENTS_XCODE_SCHEME:-CodeAgentsMobile}"
 SIMULATOR_NAME="${CODEAGENTS_SIMULATOR_NAME:-iPhone 17}"
@@ -75,69 +75,14 @@ if [[ "${MODE}" == "visual" \
   export OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR="${OPENCODE_VISUAL_VALIDATION_SCREENSHOT_DIR:-${ARTIFACT_ROOT}/visual/screenshots}"
 fi
 
-if ! command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
-  echo "xcodebuildmcp is required for iOS simulator evidence capture." >&2
-  exit 1
-fi
+xcbmcp_require_min_version
 
 mkdir -p "${DERIVED_DATA_PATH}"
 
-python_json_text() {
-  python3 -c '
-import json
-import sys
-
-data = json.load(sys.stdin)
-print("\n".join(item.get("text", "") for item in data.get("content", []) if isinstance(item, dict)))
-'
-}
-
 resolve_simulator_id() {
   local simulator_json
-  simulator_json="$("${XCODEBUILDMCP_BIN}" simulator list --output json)"
-  printf '%s' "${simulator_json}" | python3 -c '
-import json
-import re
-import sys
-
-name = sys.argv[1]
-data = json.load(sys.stdin)
-text = "\n".join(item.get("text", "") for item in data.get("content", []) if isinstance(item, dict))
-match = re.search(r"- " + re.escape(name) + r" \(([A-Fa-f0-9-]+)\)", text)
-if not match:
-    raise SystemExit(f"Simulator named {name!r} was not found.")
-print(match.group(1))
-' "${SIMULATOR_NAME}"
-}
-
-extract_screenshot_path() {
-  python3 -c '
-import json
-import re
-import sys
-
-data = json.load(sys.stdin)
-text = "\n".join(item.get("text", "") for item in data.get("content", []) if isinstance(item, dict))
-match = re.search(r"Screenshot captured:\s+(.+?)\s+\(", text)
-if not match:
-    raise SystemExit(f"Unable to parse screenshot path from xcodebuildmcp output: {text}")
-print(match.group(1))
-'
-}
-
-extract_app_path() {
-  python3 -c '
-import json
-import re
-import sys
-
-data = json.load(sys.stdin)
-text = "\n".join(item.get("text", "") for item in data.get("content", []) if isinstance(item, dict))
-match = re.search(r"(/[^\n]+?\.app)", text)
-if not match:
-    raise SystemExit(f"Unable to parse app path from xcodebuildmcp output: {text}")
-print(match.group(1))
-'
+  simulator_json="$(xcbmcp_run_json simulator list)"
+  printf '%s' "${simulator_json}" | xcbmcp_extract_simulator_id "${SIMULATOR_NAME}"
 }
 
 capture_png() {
@@ -147,15 +92,15 @@ capture_png() {
   local source_path
 
   mkdir -p "$(dirname "${output_path}")"
-  screenshot_json="$("${XCODEBUILDMCP_BIN}" ui-automation screenshot --simulator-id "${simulator_id}" --return-format path --output json)"
-  source_path="$(printf '%s' "${screenshot_json}" | extract_screenshot_path)"
+  screenshot_json="$(xcbmcp_run_json ui-automation screenshot --simulator-id "${simulator_id}" --return-format path)"
+  source_path="$(printf '%s' "${screenshot_json}" | xcbmcp_extract_screenshot_path)"
   sips -s format png "${source_path}" --out "${output_path}" >/dev/null
 }
 
 ui_snapshot_text() {
   local simulator_id="$1"
 
-  "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${simulator_id}" --output json | python_json_text
+  xcbmcp_run_json ui-automation snapshot-ui --simulator-id "${simulator_id}" | xcbmcp_extract_json_text
 }
 
 ui_contains_label() {
@@ -195,7 +140,7 @@ navigate_to_agents_screen() {
   fi
 
   if ui_contains_label "${simulator_id}" "Agents"; then
-    "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --label "Agents" --post-delay 1 --output json >/dev/null || true
+    xcbmcp_run_json ui-automation tap --simulator-id "${simulator_id}" --label "Agents" --post-delay 1 >/dev/null || true
   fi
 
   if ! wait_for_ui_label "${simulator_id}" "Create Agent" 8 1; then
@@ -209,7 +154,7 @@ navigate_to_settings_screen() {
   local simulator_id="$1"
 
   navigate_to_agents_screen "${simulator_id}"
-  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --id "agents-settings-button" --post-delay 1 --output json >/dev/null
+  xcbmcp_run_json ui-automation tap --simulator-id "${simulator_id}" --id "agents-settings-button" --post-delay 1 >/dev/null
   if ! wait_for_ui_label "${simulator_id}" "Settings" 8 1; then
     echo "Unable to navigate to Settings for ${SCENARIO}." >&2
     ui_snapshot_text "${simulator_id}" >&2 || true
@@ -220,13 +165,13 @@ navigate_to_settings_screen() {
 launch_app() {
   local simulator_id="$1"
   shift
-  local launch_command=("${XCODEBUILDMCP_BIN}" simulator launch-app --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}")
+  local launch_command=(simulator launch-app --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}")
 
   for launch_arg in "$@"; do
     launch_command+=("--args=${launch_arg}")
   done
 
-  "${launch_command[@]}" --output json >/dev/null
+  xcbmcp_run_json "${launch_command[@]}" >/dev/null
 }
 
 build_install_and_launch_app() {
@@ -236,29 +181,27 @@ build_install_and_launch_app() {
   local app_path
   local derived_app_path
 
-  "${XCODEBUILDMCP_BIN}" simulator build \
+  xcbmcp_run_json simulator build \
     --project-path "${PROJECT_PATH}" \
     --scheme "${SCHEME}" \
     --simulator-id "${simulator_id}" \
     --configuration "${CONFIGURATION}" \
-    --derived-data-path "${DERIVED_DATA_PATH}" \
-    --output json >/dev/null
+    --derived-data-path "${DERIVED_DATA_PATH}" >/dev/null
 
-  app_path_json="$("${XCODEBUILDMCP_BIN}" simulator get-app-path \
+  app_path_json="$(xcbmcp_run_json simulator get-app-path \
     --project-path "${PROJECT_PATH}" \
     --scheme "${SCHEME}" \
     --platform "iOS Simulator" \
     --simulator-id "${simulator_id}" \
-    --configuration "${CONFIGURATION}" \
-    --output json)"
-  app_path="$(printf '%s' "${app_path_json}" | extract_app_path)"
+    --configuration "${CONFIGURATION}")"
+  app_path="$(printf '%s' "${app_path_json}" | xcbmcp_extract_app_path)"
   derived_app_path="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}-iphonesimulator/${SCHEME}.app"
   if [[ ! -d "${app_path}" && -d "${derived_app_path}" ]]; then
     app_path="${derived_app_path}"
   fi
 
-  "${XCODEBUILDMCP_BIN}" simulator-management boot --simulator-id "${simulator_id}" --output json >/dev/null
-  "${XCODEBUILDMCP_BIN}" simulator install --simulator-id "${simulator_id}" --app-path "${app_path}" --output json >/dev/null
+  xcbmcp_run_json simulator-management boot --simulator-id "${simulator_id}" >/dev/null
+  xcbmcp_run_json simulator install --simulator-id "${simulator_id}" --app-path "${app_path}" >/dev/null
   launch_app "${simulator_id}" "$@"
 }
 
@@ -486,17 +429,16 @@ run_push_notification_preview_sanitizer() {
     && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" \
     && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
-    "${XCODEBUILDMCP_BIN}" simulator record-video \
+    xcbmcp_run_json simulator record-video \
       --simulator-id "${simulator_id}" \
       --stop \
-      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
-      --output json >/dev/null 2>&1 || true
-    "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${simulator_id}" --start --fps 30 --output json >/dev/null
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" >/dev/null 2>&1 || true
+    xcbmcp_run_json simulator record-video --simulator-id "${simulator_id}" --start --fps 30 >/dev/null
     VIDEO_STARTED="true"
     sleep 1
   fi
 
-  "${XCODEBUILDMCP_BIN}" ui-automation button --simulator-id "${simulator_id}" --button-type lock --output json >/dev/null || true
+  xcbmcp_run_json ui-automation button --simulator-id "${simulator_id}" --button-type lock >/dev/null || true
   sleep 1
   deliver_synthetic_push_notification "${simulator_id}" "${payload_path}"
   sleep 2
@@ -505,11 +447,10 @@ run_push_notification_preview_sanitizer() {
 
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
     sleep 2
-    "${XCODEBUILDMCP_BIN}" simulator record-video \
+    xcbmcp_run_json simulator record-video \
       --simulator-id "${simulator_id}" \
       --stop \
-      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" \
-      --output json >/dev/null
+      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null
     VIDEO_STARTED="false"
   fi
 }
@@ -526,12 +467,11 @@ run_ai_providers_settings_unified_scenario() {
 
   if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
-    "${XCODEBUILDMCP_BIN}" simulator record-video \
+    xcbmcp_run_json simulator record-video \
       --simulator-id "${simulator_id}" \
       --stop \
-      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
-      --output json >/dev/null 2>&1 || true
-    "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${simulator_id}" --start --fps 30 --output json >/dev/null
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" >/dev/null 2>&1 || true
+    xcbmcp_run_json simulator record-video --simulator-id "${simulator_id}" --start --fps 30 >/dev/null
     VIDEO_STARTED="true"
     sleep 2
   fi
@@ -539,7 +479,7 @@ run_ai_providers_settings_unified_scenario() {
   navigate_to_settings_screen "${simulator_id}"
   capture_ai_providers_checkpoint "${simulator_id}" "${SETTINGS_AI_PROVIDERS_ENTRY_CHECKPOINT}" "0"
 
-  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --id "settings-ai-providers-link" --post-delay 1 --output json >/dev/null
+  xcbmcp_run_json ui-automation tap --simulator-id "${simulator_id}" --id "settings-ai-providers-link" --post-delay 1 >/dev/null
   if ! wait_for_ui_label "${simulator_id}" "OpenCode" 8 1; then
     echo "AI Providers did not open in OpenCode mode for ${SCENARIO}." >&2
     ui_snapshot_text "${simulator_id}" >&2 || true
@@ -551,8 +491,8 @@ run_ai_providers_settings_unified_scenario() {
     capture_named_demo_checkpoint "${simulator_id}" "${USE_FOR_OPENCODE_COPY_OFFER_CHECKPOINT}" "4"
   fi
 
-  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --id "ai-provider-mode-claude-proxy" --post-delay 1 --output json >/dev/null \
-    || "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" -x 280 -y 115 --post-delay 1 --output json >/dev/null
+  xcbmcp_run_json ui-automation tap --simulator-id "${simulator_id}" --id "ai-provider-mode-claude-proxy" --post-delay 1 >/dev/null \
+    || xcbmcp_run_json ui-automation tap --simulator-id "${simulator_id}" -x 280 -y 115 --post-delay 1 >/dev/null
   if ! wait_for_ui_label "${simulator_id}" "Provider" 8 1; then
     echo "Claude Code Proxy mode did not become visible for ${SCENARIO}." >&2
     ui_snapshot_text "${simulator_id}" >&2 || true
@@ -560,7 +500,7 @@ run_ai_providers_settings_unified_scenario() {
   fi
   capture_ai_providers_checkpoint "${simulator_id}" "${AI_PROVIDERS_CLAUDE_PROXY_MODE_CHECKPOINT}" "2"
 
-  "${XCODEBUILDMCP_BIN}" simulator stop --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}" --output json >/dev/null || true
+  xcbmcp_run_json simulator stop --simulator-id "${simulator_id}" --bundle-id "${BUNDLE_ID}" >/dev/null || true
   launch_app "${simulator_id}" --ui-testing --reset-ui-test-defaults --ui-test-ai-providers-legacy-project
   sleep "${LAUNCH_SETTLE_SECONDS}"
 
@@ -569,7 +509,7 @@ run_ai_providers_settings_unified_scenario() {
     ui_snapshot_text "${simulator_id}" >&2 || true
     exit 1
   fi
-  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${simulator_id}" --label "Change Provider" --post-delay 1 --output json >/dev/null
+  xcbmcp_run_json ui-automation tap --simulator-id "${simulator_id}" --label "Change Provider" --post-delay 1 >/dev/null
   if ! wait_for_ui_label "${simulator_id}" "Endpoint, timeouts, and model defaults are preconfigured for each provider." 8 1; then
     echo "Legacy Change Provider did not open AI Providers in Claude Code Proxy mode for ${SCENARIO}." >&2
     ui_snapshot_text "${simulator_id}" >&2 || true
@@ -579,11 +519,10 @@ run_ai_providers_settings_unified_scenario() {
 
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
     sleep 2
-    "${XCODEBUILDMCP_BIN}" simulator record-video \
+    xcbmcp_run_json simulator record-video \
       --simulator-id "${simulator_id}" \
       --stop \
-      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" \
-      --output json >/dev/null
+      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null
     VIDEO_STARTED="false"
   fi
 }
@@ -595,37 +534,36 @@ cleanup() {
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
     if [[ -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
       mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
-      "${XCODEBUILDMCP_BIN}" simulator record-video \
+      xcbmcp_run_json simulator record-video \
         --simulator-id "${SIMULATOR_ID}" \
         --stop \
         --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null 2>&1 || true
     fi
   fi
-  "${XCODEBUILDMCP_BIN}" simulator stop --simulator-id "${SIMULATOR_ID}" --bundle-id "${BUNDLE_ID}" >/dev/null 2>&1 || true
+  xcbmcp_run_json simulator stop --simulator-id "${SIMULATOR_ID}" --bundle-id "${BUNDLE_ID}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-"${XCODEBUILDMCP_BIN}" simulator-management erase --simulator-id "${SIMULATOR_ID}" --shutdown-first --output json >/dev/null
+xcbmcp_run_json simulator-management erase --simulator-id "${SIMULATOR_ID}" --shutdown-first >/dev/null
 
 if [[ "${SCENARIO}" == "ai-providers-settings-unified" ]]; then
   run_ai_providers_settings_unified_scenario "${SIMULATOR_ID}"
-  "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${SIMULATOR_ID}" --output json | python_json_text >&2 || true
+  ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
   exit 0
 fi
 
-"${XCODEBUILDMCP_BIN}" simulator build-and-run \
+xcbmcp_run_json simulator build-and-run \
   --project-path "${PROJECT_PATH}" \
   --scheme "${SCHEME}" \
   --simulator-id "${SIMULATOR_ID}" \
   --configuration "${CONFIGURATION}" \
-  --derived-data-path "${DERIVED_DATA_PATH}" \
-  --output json >/dev/null
+  --derived-data-path "${DERIVED_DATA_PATH}" >/dev/null
 
 sleep "${LAUNCH_SETTLE_SECONDS}"
 
 if [[ "${SCENARIO}" == "push-notification-preview-sanitizer" ]]; then
   run_push_notification_preview_sanitizer "${SIMULATOR_ID}"
-  "${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${SIMULATOR_ID}" --output json | python_json_text >&2 || true
+  ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
   exit 0
 fi
 
@@ -638,18 +576,17 @@ fi
 if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
   if [[ "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
     mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
-    "${XCODEBUILDMCP_BIN}" simulator record-video \
+    xcbmcp_run_json simulator record-video \
       --simulator-id "${SIMULATOR_ID}" \
       --stop \
-      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" \
-      --output json >/dev/null 2>&1 || true
-    "${XCODEBUILDMCP_BIN}" simulator record-video --simulator-id "${SIMULATOR_ID}" --start --fps 30 --output json >/dev/null
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" >/dev/null 2>&1 || true
+    xcbmcp_run_json simulator record-video --simulator-id "${SIMULATOR_ID}" --start --fps 30 >/dev/null
     VIDEO_STARTED="true"
     sleep 2
   fi
 
   capture_demo_agents_screen "${SIMULATOR_ID}"
-  "${XCODEBUILDMCP_BIN}" ui-automation tap --simulator-id "${SIMULATOR_ID}" --label "Create Agent" --post-delay 1 --output json >/dev/null
+  xcbmcp_run_json ui-automation tap --simulator-id "${SIMULATOR_ID}" --label "Create Agent" --post-delay 1 >/dev/null
   if ! wait_for_ui_label "${SIMULATOR_ID}" "New Agent" 8 1; then
     echo "Create Agent did not present the New Agent sheet for ${SCENARIO}." >&2
     ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
@@ -659,13 +596,12 @@ if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
 
   if [[ "${VIDEO_STARTED}" == "true" ]]; then
     sleep 2
-    "${XCODEBUILDMCP_BIN}" simulator record-video \
+    xcbmcp_run_json simulator record-video \
       --simulator-id "${SIMULATOR_ID}" \
       --stop \
-      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" \
-      --output json >/dev/null
+      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null
     VIDEO_STARTED="false"
   fi
 fi
 
-"${XCODEBUILDMCP_BIN}" ui-automation snapshot-ui --simulator-id "${SIMULATOR_ID}" --output json | python_json_text >&2 || true
+ui_snapshot_text "${SIMULATOR_ID}" >&2 || true

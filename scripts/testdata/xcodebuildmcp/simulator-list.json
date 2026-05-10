@@ -1,0 +1,18 @@
+{
+  "didError": false,
+  "data": {
+    "simulators": [
+      {
+        "name": "iPhone 16",
+        "simulatorId": "SIM-16"
+      },
+      {
+        "name": "iPhone 17",
+        "simulatorId": "SIM-17"
+      }
+    ],
+    "summary": {
+      "status": "success"
+    }
+  }
+}

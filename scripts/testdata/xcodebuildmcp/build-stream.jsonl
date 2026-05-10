@@ -1,0 +1,3 @@
+{"event":"build-run-result.invocation","didError":false,"data":{"summary":{"status":"running"}}}
+{"event":"build-run-result.build-stage","didError":false,"data":{"summary":{"status":"running"}}}
+{"event":"build-run-result.build-summary","didError":false,"data":{"summary":{"status":"success"},"artifacts":{"buildLogPath":"/tmp/xcodebuildmcp/build-stream.log"}}}

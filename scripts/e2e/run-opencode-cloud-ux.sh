@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${1:-${MOBILECODE_E2E_ENV_FILE:-$HOME/.mobilecode-e2e.env}}"
+source "${ROOT_DIR}/scripts/lib/xcodebuildmcp.sh"
 
 load_env_file() {
   local file_path="$1"
@@ -375,21 +376,22 @@ print(json.dumps(payload))
 PY
 }
 
-if command -v xcodebuildmcp >/dev/null 2>&1; then
+if command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
+  xcbmcp_require_min_version
   XCODEBUILDMCP_EXTRA_ARGS_JSON="$(build_xcodebuildmcp_extra_args_json)"
   if [[ -n "$SIMULATOR_ID" ]]; then
-    xcodebuildmcp simulator test \
+    xcbmcp_run_jsonl simulator test \
       --project-path "$ROOT_DIR/CodeAgentsMobile.xcodeproj" \
       --scheme CodeAgentsMobile \
       --simulator-id "$SIMULATOR_ID" \
-      --json "$XCODEBUILDMCP_EXTRA_ARGS_JSON"
+      --json "$XCODEBUILDMCP_EXTRA_ARGS_JSON" >/dev/null
   else
-    xcodebuildmcp simulator test \
+    xcbmcp_run_jsonl simulator test \
       --project-path "$ROOT_DIR/CodeAgentsMobile.xcodeproj" \
       --scheme CodeAgentsMobile \
       --simulator-name "$SIMULATOR_DEVICE" \
       --use-latest-os \
-      --json "$XCODEBUILDMCP_EXTRA_ARGS_JSON"
+      --json "$XCODEBUILDMCP_EXTRA_ARGS_JSON" >/dev/null
   fi
 else
   xcodebuild test \

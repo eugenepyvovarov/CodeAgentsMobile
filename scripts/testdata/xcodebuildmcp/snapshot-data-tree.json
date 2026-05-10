@@ -1,0 +1,20 @@
+{
+  "didError": false,
+  "data": {
+    "summary": {
+      "status": "success"
+    },
+    "tree": {
+      "label": "CodeAgents",
+      "children": [
+        {
+          "title": "Agents"
+        },
+        {
+          "identifier": "agents-create-button",
+          "accessibilityLabel": "Create Agent"
+        }
+      ]
+    }
+  }
+}
