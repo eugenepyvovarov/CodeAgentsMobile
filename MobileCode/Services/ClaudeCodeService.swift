@@ -1016,8 +1016,7 @@ class ClaudeCodeService: ObservableObject {
         var receivedSessionId: String?
 
         for try await event in stream {
-            if let eventId = event.eventId {
-                project.proxyLastEventId = eventId
+            if ProxyEventRecovery.advanceLastEventId(project: project, to: event.eventId) {
                 project.updateLastModified()
             }
 
@@ -1094,8 +1093,7 @@ class ClaudeCodeService: ObservableObject {
             var sawResult = false
             var sawSwitch = false
             for event in replayEvents {
-                if let eventId = event.eventId {
-                    project.proxyLastEventId = eventId
+                if ProxyEventRecovery.advanceLastEventId(project: project, to: event.eventId) {
                     project.updateLastModified()
                 }
 
@@ -1383,8 +1381,7 @@ class ClaudeCodeService: ObservableObject {
             var hasResult = false
             let lines = events.map { $0.jsonLine }
             for event in events {
-                if let eventId = event.eventId {
-                    project.proxyLastEventId = eventId
+                if ProxyEventRecovery.advanceLastEventId(project: project, to: event.eventId) {
                     project.updateLastModified()
                 }
                 if let chunk = StreamingJSONParser.parseStreamingLine(event.jsonLine),
