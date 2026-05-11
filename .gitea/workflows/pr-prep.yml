@@ -56,6 +56,10 @@ jobs:
           import urllib.request
           from pathlib import Path
 
+          def normalize_head_sha(value):
+              match = re.search(r"[0-9a-fA-F]{40}", str(value or ""))
+              return match.group(0) if match else ""
+
           def extract_issue_number(values):
               for value in values:
                   match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
@@ -64,6 +68,7 @@ jobs:
               return None
 
           def resolve_issue_from_head_sha(head_sha):
+              head_sha = normalize_head_sha(head_sha)
               if not head_sha:
                   return None
               try:
@@ -112,6 +117,7 @@ jobs:
               return False
 
           def spec_requests_visual_validation(issue_number, head_sha):
+              head_sha = normalize_head_sha(head_sha)
               if not issue_number:
                   print("No linked issue number found for visual validation gating")
                   return False
@@ -136,7 +142,7 @@ jobs:
                   except Exception as error:
                       print(f"Unable to inspect PR head spec for visual validation gating: {error}")
               print(f"No linked issue spec found for visual validation gating: issue {issue_number}")
-              return True
+              return False
 
           config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
           assert config["schema_version"] == 1
@@ -279,6 +285,10 @@ jobs:
           import urllib.request
           from pathlib import Path
 
+          def normalize_head_sha(value):
+              match = re.search(r"[0-9a-fA-F]{40}", str(value or ""))
+              return match.group(0) if match else ""
+
           def extract_issue_number(values):
               for value in values:
                   match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
@@ -287,6 +297,7 @@ jobs:
               return None
 
           def resolve_issue_from_head_sha(head_sha):
+              head_sha = normalize_head_sha(head_sha)
               if not head_sha:
                   return None
               try:
@@ -335,6 +346,7 @@ jobs:
               return False
 
           def spec_requests_visual_validation(issue_number, head_sha):
+              head_sha = normalize_head_sha(head_sha)
               if not issue_number:
                   print("No linked issue number found for visual validation gating")
                   return False
@@ -359,7 +371,7 @@ jobs:
                   except Exception as error:
                       print(f"Unable to inspect PR head spec for visual validation gating: {error}")
               print(f"No linked issue spec found for visual validation gating: issue {issue_number}")
-              return True
+              return False
 
           config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
           assert config["schema_version"] == 1
