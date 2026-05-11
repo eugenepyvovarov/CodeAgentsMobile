@@ -20,6 +20,28 @@ extension Notification.Name {
     static let projectChatDidReset = Notification.Name("projectChatDidReset")
 }
 
+enum OpenCodeHydratedMessageMergeAction: Equatable {
+    case insert
+    case updateExisting
+    case skipLocalUserDuplicate
+}
+
+enum OpenCodeHydratedMessageMerge {
+    static func action(
+        for hydrated: CodingAgentRuntimeHydratedMessage,
+        existingRuntimeMessageIDs: Set<String>,
+        hasLocalUserMessage: Bool
+    ) -> OpenCodeHydratedMessageMergeAction {
+        if existingRuntimeMessageIDs.contains(hydrated.runtimeMessageID) {
+            return .updateExisting
+        }
+        if hydrated.role == .user, hasLocalUserMessage {
+            return .skipLocalUserDuplicate
+        }
+        return .insert
+    }
+}
+
 
 /// ViewModel for the chat interface
 /// Handles message display, streaming, and persistence
@@ -1417,14 +1439,20 @@ class ChatViewModel {
         }
     }
 
+    private func updateOpenCodeMessage(_ message: Message, with hydrated: CodingAgentRuntimeHydratedMessage) {
+        updateMessageWithJSON(
+            message,
+            content: hydrated.text.isEmpty ? message.content : hydrated.text,
+            originalJSON: hydrated.originalPayload,
+            replaceOriginalJSON: true
+        )
+        message.isStreaming = false
+        message.isComplete = true
+    }
+
     private func hydrateOpenCodeMessagesIfNeeded(project: RemoteProject) async {
         guard activeRuntimeKind(for: project) == .openCode else { return }
         guard project.openCodeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
-
-        isLoadingPreviousSession = true
-        defer {
-            isLoadingPreviousSession = false
-        }
 
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
@@ -1456,6 +1484,23 @@ class ChatViewModel {
                 )
                 throw error
             }
+
+            let showVisibleRecovery: Bool
+            switch sessionState.status {
+            case .busy, .retrying:
+                showVisibleRecovery = true
+            case .idle, .unknown:
+                showVisibleRecovery = false
+            }
+            if showVisibleRecovery {
+                isLoadingPreviousSession = true
+            }
+            defer {
+                if showVisibleRecovery {
+                    isLoadingPreviousSession = false
+                }
+            }
+
             let hydrateStart = DispatchTime.now().uptimeNanoseconds
             let hydratedMessages: [CodingAgentRuntimeHydratedMessage]
             do {
@@ -1488,21 +1533,34 @@ class ChatViewModel {
             var skippedDuplicateMessages = 0
             var skippedLocalUserMessages = 0
             var insertedMessages = 0
+            var updatedMessages = 0
             let existingRuntimeMessageCount = existingRuntimeMessageIDs.count
             let dedupeStart = DispatchTime.now().uptimeNanoseconds
             for hydrated in hydratedMessages {
-                if existingRuntimeMessageIDs.contains(hydrated.runtimeMessageID) {
-                    skippedDuplicateMessages += 1
+                let mergeAction = OpenCodeHydratedMessageMerge.action(
+                    for: hydrated,
+                    existingRuntimeMessageIDs: existingRuntimeMessageIDs,
+                    hasLocalUserMessage: hasLocalUserMessage(matching: hydrated.text)
+                )
+                switch mergeAction {
+                case .updateExisting:
+                    if let existingMessage = messages.first(where: { openCodeRuntimeMessageID(from: $0) == hydrated.runtimeMessageID }) {
+                        updateOpenCodeMessage(existingMessage, with: hydrated)
+                        updatedMessages += 1
+                    } else {
+                        skippedDuplicateMessages += 1
+                    }
                     continue
-                }
-                if hydrated.role == .user, hasLocalUserMessage(matching: hydrated.text) {
+                case .skipLocalUserDuplicate:
                     skippedLocalUserMessages += 1
                     continue
+                case .insert:
+                    break
                 }
 
                 let message = createMessage(content: hydrated.text, role: hydrated.role, timestamp: hydrated.createdAt)
                 if let originalPayload = hydrated.originalPayload {
-                    updateMessageWithJSON(message, content: hydrated.text, originalJSON: originalPayload)
+                    updateMessageWithJSON(message, content: hydrated.text, originalJSON: originalPayload, replaceOriginalJSON: true)
                 }
                 existingRuntimeMessageIDs.insert(hydrated.runtimeMessageID)
                 insertedMessages += 1
@@ -1520,6 +1578,7 @@ class ChatViewModel {
                     "localMessages": .count(messages.count - insertedMessages),
                     "skippedDuplicateMessages": .count(skippedDuplicateMessages),
                     "skippedLocalUserMessages": .count(skippedLocalUserMessages),
+                    "updatedMessages": .count(updatedMessages),
                     "status": .status(.complete)
                 ]
             )

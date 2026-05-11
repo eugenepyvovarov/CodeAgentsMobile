@@ -83,6 +83,42 @@ final class OpenCodeHydrationDiffTests: XCTestCase {
         XCTAssertEqual(merged.partIDs, ["prt_current"])
     }
 
+    func testExistingHydratedRuntimeMessageUpdatesInsteadOfInsertingDuplicate() {
+        let hydrated = hydratedMessage(id: "msg_existing", role: .assistant, text: "updated")
+
+        let action = OpenCodeHydratedMessageMerge.action(
+            for: hydrated,
+            existingRuntimeMessageIDs: ["msg_existing"],
+            hasLocalUserMessage: false
+        )
+
+        XCTAssertEqual(action, .updateExisting)
+    }
+
+    func testHydratedLocalUserPromptEchoSkipsInsertionWhenRuntimeMessageIsNew() {
+        let hydrated = hydratedMessage(id: "msg_remote_echo", role: .user, text: "same prompt")
+
+        let action = OpenCodeHydratedMessageMerge.action(
+            for: hydrated,
+            existingRuntimeMessageIDs: [],
+            hasLocalUserMessage: true
+        )
+
+        XCTAssertEqual(action, .skipLocalUserDuplicate)
+    }
+
+    func testNewHydratedAssistantMessageInsertsWhenNoDuplicateExists() {
+        let hydrated = hydratedMessage(id: "msg_new", role: .assistant, text: "new reply")
+
+        let action = OpenCodeHydratedMessageMerge.action(
+            for: hydrated,
+            existingRuntimeMessageIDs: [],
+            hasLocalUserMessage: false
+        )
+
+        XCTAssertEqual(action, .insert)
+    }
+
     private func messages(_ definitions: [(messageID: String, partIDs: [String])]) throws -> [OpenCodeSessionMessage] {
         let json = definitions.map { definition in
             let parts = definition.partIDs.map { partID in
@@ -97,5 +133,16 @@ final class OpenCodeHydrationDiffTests: XCTestCase {
         }.joined(separator: ",")
 
         return try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("[\(json)]".utf8))
+    }
+
+    private func hydratedMessage(id: String, role: MessageRole, text: String) -> CodingAgentRuntimeHydratedMessage {
+        CodingAgentRuntimeHydratedMessage(
+            runtimeMessageID: id,
+            runtimePartIDs: ["prt_\(id)"],
+            role: role,
+            text: text,
+            createdAt: nil,
+            originalPayload: nil
+        )
     }
 }
