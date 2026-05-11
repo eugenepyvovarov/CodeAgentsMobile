@@ -293,12 +293,8 @@ jobs:
 
       - name: Check out controller repository
         if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
-          path: controller
-          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-          fetch-depth: 0
+        run: |
+          git clone "https://review-bot:${GITEA_TOKEN}@git.ultramac.work/${OPENCODE_CONTROLLER_REPOSITORY}.git" controller
 
       - name: Resolve Python with working venv
         if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
@@ -408,12 +404,8 @@ jobs:
           PY
 
       - name: Check out controller repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
-          path: controller
-          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-          fetch-depth: 0
+        run: |
+          git clone "https://review-bot:${GITEA_TOKEN}@git.ultramac.work/${OPENCODE_CONTROLLER_REPOSITORY}.git" controller
 
       - name: Resolve Python with working venv
         run: |
