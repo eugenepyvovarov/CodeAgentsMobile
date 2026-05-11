@@ -145,6 +145,14 @@ jobs:
           source controller/scripts/lib/python_runtime.sh
           opencode_export_python_bin
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "DEMO_EVIDENCE_VENV=$PWD/.demo-evidence-venv" >> "$GITHUB_ENV"
+
+      - name: Install controller dependencies
+        run: |
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m venv "$DEMO_EVIDENCE_VENV"
+          "$DEMO_EVIDENCE_VENV/bin/python" --version
+          "$DEMO_EVIDENCE_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
 
       - name: Run retained-preview final demo media worker
         run: |
@@ -155,7 +163,7 @@ jobs:
             "repo_name": "$OPENCODE_REPO_NAME"
           }
           EOF
-          "$PYTHON_BIN" controller/scripts/demo_evidence_worker.py \
+          "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-demo-project.json" \
             --automation-config "$PWD/controller/automation.json" \
@@ -203,6 +211,14 @@ jobs:
           source controller/scripts/lib/python_runtime.sh
           opencode_export_python_bin
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "DEMO_EVIDENCE_VENV=$PWD/.demo-evidence-venv" >> "$GITHUB_ENV"
+
+      - name: Install controller dependencies
+        run: |
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m venv "$DEMO_EVIDENCE_VENV"
+          "$DEMO_EVIDENCE_VENV/bin/python" --version
+          "$DEMO_EVIDENCE_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
 
       - name: Run native final demo media worker
         run: |
@@ -215,7 +231,7 @@ jobs:
             "repo_name": "$OPENCODE_REPO_NAME"
           }
           EOF
-          "$PYTHON_BIN" controller/scripts/demo_evidence_worker.py \
+          "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-demo-project.json" \
             --automation-config "$PWD/controller/automation.json" \
@@ -263,6 +279,14 @@ jobs:
           source controller/scripts/lib/python_runtime.sh
           opencode_export_python_bin
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "DEMO_EVIDENCE_VENV=$PWD/.demo-evidence-venv" >> "$GITHUB_ENV"
+
+      - name: Install controller dependencies
+        run: |
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m venv "$DEMO_EVIDENCE_VENV"
+          "$DEMO_EVIDENCE_VENV/bin/python" --version
+          "$DEMO_EVIDENCE_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
 
       - name: Run native iOS simulator final demo media worker
         run: |
@@ -275,7 +299,7 @@ jobs:
             "repo_name": "$OPENCODE_REPO_NAME"
           }
           EOF
-          "$PYTHON_BIN" controller/scripts/demo_evidence_worker.py \
+          "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-demo-project.json" \
             --automation-config "$PWD/controller/automation.json" \

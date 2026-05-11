@@ -144,6 +144,15 @@ jobs:
           source controller/scripts/lib/python_runtime.sh
           opencode_export_python_bin
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "VISUAL_VALIDATION_VENV=$PWD/.visual-validation-venv" >> "$GITHUB_ENV"
+
+      - name: Install controller dependencies
+        if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
+        run: |
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m venv "$VISUAL_VALIDATION_VENV"
+          "$VISUAL_VALIDATION_VENV/bin/python" --version
+          "$VISUAL_VALIDATION_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
 
       - name: Configure live preview state access on host runners
         if: ${{ (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) && env.OPENCODE_PREVIEW_SUPPORTED == 'true' && env.OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB == 'true' }}
@@ -171,7 +180,7 @@ jobs:
             "repo_name": "$OPENCODE_REPO_NAME"
           }
           EOF
-          "$PYTHON_BIN" controller/scripts/visual_validation_worker.py \
+          "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/visual_validation_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-visual-validation-project.json" \
             --automation-config "$PWD/controller/automation.json" \
