@@ -56,7 +56,31 @@ jobs:
           import urllib.request
           from pathlib import Path
 
-          def resolve_issue_number(owner, repo, pull_request_number):
+          def extract_issue_number(values):
+              for value in values:
+                  match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
+                  if match:
+                      return match.group(1)
+              return None
+
+          def resolve_issue_from_head_sha(head_sha):
+              if not head_sha:
+                  return None
+              try:
+                  branches = subprocess.check_output(
+                      ["git", "branch", "-r", "--contains", head_sha],
+                      text=True,
+                      stderr=subprocess.DEVNULL,
+                  )
+              except Exception as error:
+                  print(f"Unable to inspect PR head branches for visual validation gating: {error}")
+                  return None
+              return extract_issue_number(branch.strip().lstrip("* ") for branch in branches.splitlines())
+
+          def resolve_issue_number(owner, repo, pull_request_number, head_sha):
+              issue_number = resolve_issue_from_head_sha(head_sha)
+              if issue_number:
+                  return issue_number
               if not owner or not repo or not pull_request_number:
                   return None
               token = os.environ.get("GITEA_TOKEN", "").strip()
@@ -79,11 +103,7 @@ jobs:
                   str(pull.get("title", "")),
                   str(pull.get("body", "")),
               ]
-              for value in values:
-                  match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
-                  if match:
-                      return match.group(1)
-              return None
+              return extract_issue_number(values)
 
           def spec_has_visual_validation(text):
               for line in text.splitlines():
@@ -93,7 +113,8 @@ jobs:
 
           def spec_requests_visual_validation(issue_number, head_sha):
               if not issue_number:
-                  return True
+                  print("No linked issue number found for visual validation gating")
+                  return False
               specs_dir = Path("docs/specs/issues")
               for spec_path in sorted(specs_dir.glob(f"{issue_number}-*.md")):
                   return spec_has_visual_validation(spec_path.read_text(encoding="utf-8"))
@@ -149,7 +170,12 @@ jobs:
           visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          issue_number = resolve_issue_number(owner, repo, os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip())
+          issue_number = resolve_issue_number(
+              owner,
+              repo,
+              os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip(),
+              os.environ.get("OPENCODE_HEAD_SHA", "").strip(),
+          )
           visual_spec_required = spec_requests_visual_validation(issue_number, os.environ.get("OPENCODE_HEAD_SHA", "").strip())
           visual_stage = (
               "visual-validation" in stages
@@ -253,7 +279,31 @@ jobs:
           import urllib.request
           from pathlib import Path
 
-          def resolve_issue_number(owner, repo, pull_request_number):
+          def extract_issue_number(values):
+              for value in values:
+                  match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
+                  if match:
+                      return match.group(1)
+              return None
+
+          def resolve_issue_from_head_sha(head_sha):
+              if not head_sha:
+                  return None
+              try:
+                  branches = subprocess.check_output(
+                      ["git", "branch", "-r", "--contains", head_sha],
+                      text=True,
+                      stderr=subprocess.DEVNULL,
+                  )
+              except Exception as error:
+                  print(f"Unable to inspect PR head branches for visual validation gating: {error}")
+                  return None
+              return extract_issue_number(branch.strip().lstrip("* ") for branch in branches.splitlines())
+
+          def resolve_issue_number(owner, repo, pull_request_number, head_sha):
+              issue_number = resolve_issue_from_head_sha(head_sha)
+              if issue_number:
+                  return issue_number
               if not owner or not repo or not pull_request_number:
                   return None
               token = os.environ.get("GITEA_TOKEN", "").strip()
@@ -276,11 +326,7 @@ jobs:
                   str(pull.get("title", "")),
                   str(pull.get("body", "")),
               ]
-              for value in values:
-                  match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
-                  if match:
-                      return match.group(1)
-              return None
+              return extract_issue_number(values)
 
           def spec_has_visual_validation(text):
               for line in text.splitlines():
@@ -290,7 +336,8 @@ jobs:
 
           def spec_requests_visual_validation(issue_number, head_sha):
               if not issue_number:
-                  return True
+                  print("No linked issue number found for visual validation gating")
+                  return False
               specs_dir = Path("docs/specs/issues")
               for spec_path in sorted(specs_dir.glob(f"{issue_number}-*.md")):
                   return spec_has_visual_validation(spec_path.read_text(encoding="utf-8"))
@@ -339,7 +386,12 @@ jobs:
           visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          issue_number = resolve_issue_number(owner, repo, os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip())
+          issue_number = resolve_issue_number(
+              owner,
+              repo,
+              os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip(),
+              os.environ.get("OPENCODE_HEAD_SHA", "").strip(),
+          )
           visual_spec_required = spec_requests_visual_validation(issue_number, os.environ.get("OPENCODE_HEAD_SHA", "").strip())
           visual_evidence_supported = (
               visual_validation["supported"] is True
