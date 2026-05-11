@@ -411,13 +411,49 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
         let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
         let client = client(for: project)
-        let messages = try await client.sessionMessages(
-            sshSession: sshSession,
-            sessionID: sessionID,
-            directory: project.path
-        )
+        let fetchStart = DispatchTime.now().uptimeNanoseconds
+        let messages: [OpenCodeSessionMessage]
+        do {
+            messages = try await client.sessionMessages(
+                sshSession: sshSession,
+                sessionID: sessionID,
+                directory: project.path
+            )
+            ChatRecoveryTiming.log(
+                runtime: kind.rawValue,
+                projectID: project.id.uuidString,
+                operation: "opencode.sessionMessages.fetch",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - fetchStart,
+                metadata: [
+                    "remoteMessages": .count(messages.count),
+                    "status": .status(.complete)
+                ]
+            )
+        } catch {
+            ChatRecoveryTiming.log(
+                runtime: kind.rawValue,
+                projectID: project.id.uuidString,
+                operation: "opencode.sessionMessages.fetch",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - fetchStart,
+                metadata: ["status": .status(.failed)]
+            )
+            throw error
+        }
         project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
-        return OpenCodeChatMapper.hydratedMessages(from: messages)
+        let mapperStart = DispatchTime.now().uptimeNanoseconds
+        let hydratedMessages = OpenCodeChatMapper.hydratedMessages(from: messages)
+        ChatRecoveryTiming.log(
+            runtime: kind.rawValue,
+            projectID: project.id.uuidString,
+            operation: "opencode.sessionMessages.map",
+            elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - mapperStart,
+            metadata: [
+                "hydratedMessages": .count(hydratedMessages.count),
+                "remoteMessages": .count(messages.count),
+                "status": .status(.complete)
+            ]
+        )
+        return hydratedMessages
     }
 
     func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState {

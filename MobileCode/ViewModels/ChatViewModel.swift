@@ -1428,14 +1428,75 @@ class ChatViewModel {
 
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
-            let sessionState = try await runtime.sessionState(for: project)
-            let hydratedMessages = try await runtime.hydrateMessages(for: project)
+            let sessionStateStart = DispatchTime.now().uptimeNanoseconds
+            let sessionState: CodingAgentRuntimeSessionState
+            do {
+                sessionState = try await runtime.sessionState(for: project)
+                ChatRecoveryTiming.log(
+                    runtime: CodingAgentRuntimeKind.openCode.rawValue,
+                    projectID: project.id.uuidString,
+                    operation: "opencode.sessionState",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - sessionStateStart,
+                    metadata: [
+                        "localMessages": .count(messages.count),
+                        "sessionStatus": .status(timingStatus(for: sessionState.status)),
+                        "status": .status(.complete)
+                    ]
+                )
+            } catch {
+                ChatRecoveryTiming.log(
+                    runtime: CodingAgentRuntimeKind.openCode.rawValue,
+                    projectID: project.id.uuidString,
+                    operation: "opencode.sessionState",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - sessionStateStart,
+                    metadata: [
+                        "localMessages": .count(messages.count),
+                        "status": .status(.failed)
+                    ]
+                )
+                throw error
+            }
+            let hydrateStart = DispatchTime.now().uptimeNanoseconds
+            let hydratedMessages: [CodingAgentRuntimeHydratedMessage]
+            do {
+                hydratedMessages = try await runtime.hydrateMessages(for: project)
+                ChatRecoveryTiming.log(
+                    runtime: CodingAgentRuntimeKind.openCode.rawValue,
+                    projectID: project.id.uuidString,
+                    operation: "opencode.hydrateMessages",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - hydrateStart,
+                    metadata: [
+                        "hydratedMessages": .count(hydratedMessages.count),
+                        "localMessages": .count(messages.count),
+                        "status": .status(.complete)
+                    ]
+                )
+            } catch {
+                ChatRecoveryTiming.log(
+                    runtime: CodingAgentRuntimeKind.openCode.rawValue,
+                    projectID: project.id.uuidString,
+                    operation: "opencode.hydrateMessages",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - hydrateStart,
+                    metadata: [
+                        "localMessages": .count(messages.count),
+                        "status": .status(.failed)
+                    ]
+                )
+                throw error
+            }
             var existingRuntimeMessageIDs = openCodeRuntimeMessageIDs(in: messages)
+            var skippedDuplicateMessages = 0
+            var skippedLocalUserMessages = 0
+            var insertedMessages = 0
+            let existingRuntimeMessageCount = existingRuntimeMessageIDs.count
+            let dedupeStart = DispatchTime.now().uptimeNanoseconds
             for hydrated in hydratedMessages {
                 if existingRuntimeMessageIDs.contains(hydrated.runtimeMessageID) {
+                    skippedDuplicateMessages += 1
                     continue
                 }
                 if hydrated.role == .user, hasLocalUserMessage(matching: hydrated.text) {
+                    skippedLocalUserMessages += 1
                     continue
                 }
 
@@ -1444,15 +1505,57 @@ class ChatViewModel {
                     updateMessageWithJSON(message, content: hydrated.text, originalJSON: originalPayload)
                 }
                 existingRuntimeMessageIDs.insert(hydrated.runtimeMessageID)
+                insertedMessages += 1
             }
+            ChatRecoveryTiming.log(
+                runtime: CodingAgentRuntimeKind.openCode.rawValue,
+                projectID: project.id.uuidString,
+                operation: "opencode.hydration.dedupeInsert",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - dedupeStart,
+                metadata: [
+                    "existingRuntimeMessages": .count(existingRuntimeMessageCount),
+                    "finalLocalMessages": .count(messages.count),
+                    "hydratedMessages": .count(hydratedMessages.count),
+                    "insertedMessages": .count(insertedMessages),
+                    "localMessages": .count(messages.count - insertedMessages),
+                    "skippedDuplicateMessages": .count(skippedDuplicateMessages),
+                    "skippedLocalUserMessages": .count(skippedLocalUserMessages),
+                    "status": .status(.complete)
+                ]
+            )
 
             reconcileOpenCodeSessionState(sessionState, project: project)
-            prefetchCodeAgentsUIMedia(in: project, messages: messages)
+            ChatRecoveryTiming.measure(
+                runtime: CodingAgentRuntimeKind.openCode.rawValue,
+                projectID: project.id.uuidString,
+                operation: "opencode.mediaPrefetch",
+                metadata: ["localMessages": .count(messages.count)]
+            ) {
+                prefetchCodeAgentsUIMedia(in: project, messages: messages)
+            }
             project.updateLastModified()
-            saveChanges()
+            ChatRecoveryTiming.measure(
+                runtime: CodingAgentRuntimeKind.openCode.rawValue,
+                projectID: project.id.uuidString,
+                operation: "opencode.finalSave",
+                metadata: ["localMessages": .count(messages.count)]
+            ) {
+                saveChanges()
+            }
         } catch {
             print("📝 OpenCode hydration failed: \(error)")
             showActiveSessionIndicator = false
+        }
+    }
+
+    private func timingStatus(for sessionStatus: CodingAgentRuntimeSessionState.Status) -> ChatRecoveryTiming.Status {
+        switch sessionStatus {
+        case .idle:
+            return .inactive
+        case .busy, .retrying:
+            return .active
+        case .unknown:
+            return .unknown
         }
     }
 
