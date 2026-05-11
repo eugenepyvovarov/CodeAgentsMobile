@@ -6,6 +6,7 @@
 - Use the active agent name in chat UI (no more “Claude” labels).
 - When switching AI providers, existing chats now require a reset before you can continue (shows a banner with actions).
 - Render richer “embedded UI” blocks in chat messages (with more stable media loading).
+- Open existing chats local-first by deferring MCP/rules/media startup work until after chat recovery completes.
 
 ### Attachments & Media
 - Add camera + photo library pickers for image attachments.

@@ -91,6 +91,13 @@ remote recovery. The initial OpenCode recovery fetch is bounded and diffed
 against the stored message/part hydration anchors; full-session refresh can run
 later in the background when more history may exist.
 
+Chat open also defers unrelated remote startup work until after local messages
+and required active-session recovery are complete. MCP server refresh, managed
+rules setup, and broad CodeAgents UI media prefetch should run from explicit
+MCP/tool UI actions, just-in-time send/action paths, or the project-scoped
+post-ready background queue; project switches cancel that deferred work before
+it can update stale chat state.
+
 Timing metadata is limited to runtime names, project identifiers, operation
 labels, elapsed milliseconds, statuses, booleans, and counts. Do not add prompts,
 message text, raw payloads, credentials, URLs, project paths, attachment paths,
