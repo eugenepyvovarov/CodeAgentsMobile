@@ -100,6 +100,23 @@ enum ProxyStreamError: LocalizedError {
         statusCode == 404 && proxyErrorCode == "permission_not_found"
     }
 
+    var isConversationUnknown: Bool {
+        statusCode == 404 && proxyErrorCode == "conversation_unknown"
+    }
+
+    var isConversationMismatch: Bool {
+        switch proxyErrorCode {
+        case "conversation_cwd_mismatch", "conversation_group_mismatch":
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isConversationRecoveryError: Bool {
+        isConversationUnknown || isConversationMismatch
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidResponse(let message):

@@ -696,7 +696,27 @@ class ClaudeCodeService: ObservableObject {
         return allowedTools
     }
 
+    static func sanitizedStoredProxyConversationId(for project: RemoteProject) -> String? {
+        guard let conversationId = project.proxyConversationId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !conversationId.isEmpty else {
+            return nil
+        }
+        return conversationId
+    }
+
     private func resolveProxyConversationId(
+        for project: RemoteProject,
+        session: SSHSession,
+        preferStored: Bool = true
+    ) async throws -> String {
+        if preferStored, let storedId = Self.sanitizedStoredProxyConversationId(for: project) {
+            return storedId
+        }
+
+        return try await refreshProxyConversationId(for: project, session: session)
+    }
+
+    private func refreshProxyConversationId(
         for project: RemoteProject,
         session: SSHSession
     ) async throws -> String {
@@ -715,6 +735,25 @@ class ClaudeCodeService: ObservableObject {
             project.updateLastModified()
         }
         return canonicalId
+    }
+
+    private func withProxyConversationFallback<T>(
+        project: RemoteProject,
+        session: SSHSession,
+        operation: (String) async throws -> T
+    ) async throws -> T {
+        let conversationId = try await resolveProxyConversationId(for: project, session: session)
+        do {
+            return try await operation(conversationId)
+        } catch {
+            guard let proxyError = error as? ProxyStreamError,
+                  proxyError.isConversationRecoveryError else {
+                throw error
+            }
+
+            let refreshedConversationId = try await refreshProxyConversationId(for: project, session: session)
+            return try await operation(refreshedConversationId)
+        }
     }
     
     /// Check if credentials are configured for the current auth method
@@ -1040,14 +1079,17 @@ class ClaudeCodeService: ObservableObject {
         do {
             let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
             let since = project.proxyLastEventId ?? 0
-            let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
-            let (replayEvents, _) = try await proxyClient.fetchEvents(
-                session: sshSession,
-                conversationId: conversationId,
-                since: since,
-                cwd: project.path,
-                conversationGroup: project.proxyConversationGroupId
-            )
+            var conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+            let (replayEvents, _) = try await withProxyConversationFallback(project: project, session: sshSession) { resolvedConversationId in
+                conversationId = resolvedConversationId
+                return try await proxyClient.fetchEvents(
+                    session: sshSession,
+                    conversationId: resolvedConversationId,
+                    since: since,
+                    cwd: project.path,
+                    conversationGroup: project.proxyConversationGroupId
+                )
+            }
 
             var sawResult = false
             var sawSwitch = false
@@ -1327,14 +1369,15 @@ class ClaudeCodeService: ObservableObject {
         do {
             let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
             let since = project.proxyLastEventId ?? 0
-            let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
-            let (events, _) = try await proxyClient.fetchEvents(
-                session: sshSession,
-                conversationId: conversationId,
-                since: since,
-                cwd: project.path,
-                conversationGroup: project.proxyConversationGroupId
-            )
+            let (events, _) = try await withProxyConversationFallback(project: project, session: sshSession) { conversationId in
+                try await proxyClient.fetchEvents(
+                    session: sshSession,
+                    conversationId: conversationId,
+                    since: since,
+                    cwd: project.path,
+                    conversationGroup: project.proxyConversationGroupId
+                )
+            }
             eventCount = events.count
 
             var hasResult = false
@@ -1383,14 +1426,15 @@ class ClaudeCodeService: ObservableObject {
         }
         do {
             let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
-            let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
-            let result = try await proxyClient.fetchEvents(
-                session: sshSession,
-                conversationId: conversationId,
-                since: since,
-                cwd: project.path,
-                conversationGroup: project.proxyConversationGroupId
-            )
+            let result = try await withProxyConversationFallback(project: project, session: sshSession) { conversationId in
+                try await proxyClient.fetchEvents(
+                    session: sshSession,
+                    conversationId: conversationId,
+                    since: since,
+                    cwd: project.path,
+                    conversationGroup: project.proxyConversationGroupId
+                )
+            }
             eventCount = result.0.count
             return result
         } catch {
@@ -1466,31 +1510,50 @@ class ClaudeCodeService: ObservableObject {
                     let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
                     let allowedTools = buildAllowedTools(mcpServers: [])
                     let approvals = ToolApprovalStore.shared.approvalsPayload(for: project.id)
-                    let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
-                    let request = ProxyStreamRequest(
-                        agentId: project.proxyAgentId ?? project.id.uuidString,
-                        conversationId: conversationId,
-                        conversationGroup: project.proxyConversationGroupId,
-                        text: nil,
-                        cwd: project.path,
-                        allowedTools: allowedTools,
-                        systemPrompt: codeAgentsUISystemPrompt,
-                        maxTurns: nil,
-                        toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
-                    )
+                    var didRefreshConversation = false
 
-                    let stream = proxyClient.stream(
-                        session: sshSession,
-                        request: request,
-                        lastEventId: project.proxyLastEventId
-                    )
+                    while true {
+                        do {
+                            let conversationId = try await resolveProxyConversationId(
+                                for: project,
+                                session: sshSession,
+                                preferStored: !didRefreshConversation
+                            )
+                            let request = ProxyStreamRequest(
+                                agentId: project.proxyAgentId ?? project.id.uuidString,
+                                conversationId: conversationId,
+                                conversationGroup: project.proxyConversationGroupId,
+                                text: nil,
+                                cwd: project.path,
+                                allowedTools: allowedTools,
+                                systemPrompt: codeAgentsUISystemPrompt,
+                                maxTurns: nil,
+                                toolApprovals: ToolApprovalsPayload(allow: approvals.allow, deny: approvals.deny)
+                            )
 
-                    transitionConnectionState(for: project.id, to: .active)
-                    try await processProxyStream(
-                        stream,
-                        project: project,
-                        continuation: continuation
-                    )
+                            let stream = proxyClient.stream(
+                                session: sshSession,
+                                request: request,
+                                lastEventId: project.proxyLastEventId
+                            )
+
+                            transitionConnectionState(for: project.id, to: .active)
+                            try await processProxyStream(
+                                stream,
+                                project: project,
+                                continuation: continuation
+                            )
+                            break
+                        } catch {
+                            guard let proxyError = error as? ProxyStreamError,
+                                  proxyError.isConversationRecoveryError,
+                                  !didRefreshConversation else {
+                                throw error
+                            }
+                            _ = try await refreshProxyConversationId(for: project, session: sshSession)
+                            didRefreshConversation = true
+                        }
+                    }
 
                     cleanupContinuation(for: project.id)
                     continuation.finish()

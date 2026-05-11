@@ -3079,9 +3079,7 @@ class ChatViewModel {
         } catch {
             timingStatus = .failed
             if let proxyError = error as? ProxyStreamError,
-               case .httpError(let status, let body) = proxyError,
-               status == 404,
-               body.contains("conversation_unknown") {
+               proxyError.isConversationRecoveryError {
                 resetMessagesForProxySync(project: project)
                 project.proxyConversationId = nil
                 project.updateLastModified()
