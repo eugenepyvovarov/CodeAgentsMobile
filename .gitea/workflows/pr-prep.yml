@@ -174,7 +174,50 @@ jobs:
           import json
           import os
           import re
+          import ssl
+          import urllib.request
           from pathlib import Path
+
+          def resolve_issue_number(owner, repo, pull_request_number):
+              if not owner or not repo or not pull_request_number:
+                  return None
+              token = os.environ.get("GITEA_TOKEN", "").strip()
+              request = urllib.request.Request(
+                  f"https://git.ultramac.work/api/v1/repos/{owner}/{repo}/pulls/{pull_request_number}",
+                  headers={"Accept": "application/json"},
+              )
+              if token:
+                  request.add_header("Authorization", f"token {token}")
+              context = ssl._create_unverified_context() if os.environ.get("GIT_SSL_NO_VERIFY") == "1" else None
+              try:
+                  with urllib.request.urlopen(request, timeout=10, context=context) as response:
+                      pull = json.loads(response.read().decode("utf-8"))
+              except Exception as error:
+                  print(f"Unable to resolve pull request issue for visual validation gating: {error}")
+                  return None
+              values = [
+                  str(pull.get("head", {}).get("ref", "")),
+                  str(pull.get("head", {}).get("label", "")),
+                  str(pull.get("title", "")),
+                  str(pull.get("body", "")),
+              ]
+              for value in values:
+                  match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
+                  if match:
+                      return match.group(1)
+              return None
+
+          def spec_requests_visual_validation(issue_number):
+              if not issue_number:
+                  return True
+              specs_dir = Path("docs/specs/issues")
+              for spec_path in sorted(specs_dir.glob(f"{issue_number}-*.md")):
+                  for line in spec_path.read_text(encoding="utf-8").splitlines():
+                      if line.strip() == "## Visual Validation":
+                          return True
+                  return False
+              print(f"No linked issue spec found for visual validation gating: issue {issue_number}")
+              return True
 
           config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
           assert config["schema_version"] == 1
@@ -199,9 +242,15 @@ jobs:
           visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
           visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
           visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
-          visual_evidence_supported = visual_validation["supported"] is True and (visual_playwright_web or visual_native_macos or visual_native_ios_simulator)
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
+          issue_number = resolve_issue_number(owner, repo, os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip())
+          visual_spec_required = spec_requests_visual_validation(issue_number)
+          visual_evidence_supported = (
+              visual_validation["supported"] is True
+              and visual_spec_required
+              and (visual_playwright_web or visual_native_macos or visual_native_ios_simulator)
+          )
           raw = f"{owner}-{repo}".lower()
           project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
           project_key = re.sub(r"-{2,}", "-", project_key)
@@ -216,6 +265,7 @@ jobs:
               handle.write(f"OPENCODE_VISUAL_VALIDATION_SUPPORTED={'true' if visual_validation['supported'] else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PROVIDER={visual_provider}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PLATFORM={visual_platform}\n")
+              handle.write(f"OPENCODE_VISUAL_VALIDATION_SPEC_REQUIRED={'true' if visual_spec_required else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED={'true' if visual_evidence_supported else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB={'true' if visual_validation['supported'] is True and visual_playwright_web else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_MACOS={'true' if visual_validation['supported'] is True and visual_native_macos else 'false'}\n")
