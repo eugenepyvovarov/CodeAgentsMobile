@@ -24,6 +24,7 @@ jobs:
       visual_validation_supported: ${{ steps.managed-config.outputs.visual_validation_supported }}
       controller_repository: ${{ steps.managed-config.outputs.controller_repository }}
       setup_branch: ${{ steps.managed-config.outputs.setup_branch }}
+      normalized_head_sha: ${{ steps.managed-config.outputs.normalized_head_sha }}
     env:
       GIT_SSL_NO_VERIFY: "1"
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -176,13 +177,15 @@ jobs:
           visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
+          raw_head_sha = os.environ.get("OPENCODE_HEAD_SHA", "").strip()
+          normalized_head_sha = normalize_head_sha(raw_head_sha)
           issue_number = resolve_issue_number(
               owner,
               repo,
               os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip(),
-              os.environ.get("OPENCODE_HEAD_SHA", "").strip(),
+              normalized_head_sha,
           )
-          visual_spec_required = spec_requests_visual_validation(issue_number, os.environ.get("OPENCODE_HEAD_SHA", "").strip())
+          visual_spec_required = spec_requests_visual_validation(issue_number, normalized_head_sha)
           visual_stage = (
               "visual-validation" in stages
               and visual_validation["supported"] is True
@@ -195,6 +198,7 @@ jobs:
               handle.write(f"visual_validation_supported={'true' if visual_stage else 'false'}\n")
               handle.write(f"controller_repository={controller['repository']}\n")
               handle.write(f"setup_branch={controller['setup_branch']}\n")
+              handle.write(f"normalized_head_sha={normalized_head_sha}\n")
           print("managed PR-prep config ok")
           PY
 
@@ -215,7 +219,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.head_sha }}
+          ref: ${{ needs.preflight.outputs.normalized_head_sha }}
 
       - name: Load managed validation settings
         run: |
@@ -241,7 +245,7 @@ jobs:
     if: ${{ needs.preflight.outputs.playwright_smoke_supported == 'true' }}
     uses: ./.gitea/workflows/playwright-smoke.yml
     with:
-      head_sha: ${{ inputs.head_sha }}
+      head_sha: ${{ needs.preflight.outputs.normalized_head_sha }}
     secrets: inherit
 
   visual-validation:
@@ -262,7 +266,7 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
+      OPENCODE_HEAD_SHA: ${{ needs.preflight.outputs.normalized_head_sha }}
       GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
@@ -271,7 +275,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.head_sha }}
+          ref: ${{ needs.preflight.outputs.normalized_head_sha }}
           fetch-depth: 0
 
       - name: Load managed visual validation settings
@@ -532,7 +536,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.head_sha }}
+          ref: ${{ needs.preflight.outputs.normalized_head_sha }}
           fetch-depth: 0
 
       - name: Check out controller repository
@@ -567,5 +571,5 @@ jobs:
             --automation-config "$PWD/controller/automation.json" \
             --managed-config "$PWD/project/opencode-managed.json" \
             --pull-request-number "${{ inputs.pull_request_number }}" \
-            --head-sha "${{ inputs.head_sha }}" \
+            --head-sha "${{ needs.preflight.outputs.normalized_head_sha }}" \
             --handoff-review
