@@ -2749,10 +2749,6 @@ class ChatViewModel {
             return
         }
 
-        if claudeService.isProxyChatEnabled {
-            await syncProxyHistoryIfNeeded(project: project)
-        }
-        
         // Check if we have an active streaming message to recover
         guard let messageId = project.activeStreamingMessageId else {
             print("📝 Recovery: No active streaming message ID found")
@@ -2792,6 +2788,10 @@ class ChatViewModel {
                 }
                 return
             }
+        }
+
+        if claudeService.isProxyChatEnabled {
+            await syncProxyHistoryIfNeeded(project: project)
         }
 
         let sessionCheckStart = DispatchTime.now().uptimeNanoseconds
