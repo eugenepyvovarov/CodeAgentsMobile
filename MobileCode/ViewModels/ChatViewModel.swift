@@ -175,17 +175,36 @@ class ChatViewModel {
     
     /// Configure the view model with model context and project
     func configure(modelContext: ModelContext, projectId: UUID) {
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: ProjectContext.shared.activeProject),
+                projectID: projectId.uuidString,
+                operation: "chat.configure",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "localMessages": .count(messages.count),
+                    "isProcessing": .flag(isProcessing),
+                    "isLoadingPreviousSession": .flag(isLoadingPreviousSession),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
+
         print("📝 configure: Called with agentId: \(projectId)")
 
         // SwiftUI may re-enter configuration for the same project/context as the view settles. Treat that as a
         // no-op so we do not restart hydration, MCP fetches, or transient loading state.
         if self.projectId == projectId && self.modelContext === modelContext {
+            timingStatus = .skipped
             print("📝 configure: Already configured for same agent, returning")
             return
         }
         
         // Prevent concurrent configuration
         guard !isConfiguring else {
+            timingStatus = .skipped
             print("📝 configure: Already configuring, skipping")
             return
         }
@@ -1036,17 +1055,41 @@ class ChatViewModel {
         
         isFetchingMCPServers = true
         defer { isFetchingMCPServers = false }
+
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var fetchedCount = cachedMCPServers.count
+        var connectedCount = cachedMCPServers.filter { $0.status == .connected }.count
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: "chat.fetchMCPServers",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "cachedServers": .count(cachedMCPServers.count),
+                    "connectedServers": .count(connectedCount),
+                    "fetchedServers": .count(fetchedCount),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
         
         do {
             cachedMCPServers = try await mcpService.fetchServers(for: project)
+            fetchedCount = cachedMCPServers.count
             print("📝 Fetched and cached \(cachedMCPServers.count) MCP servers")
             
             // Log connected servers
             let connectedServers = cachedMCPServers.filter { $0.status == .connected }
+            connectedCount = connectedServers.count
             print("📝 Connected MCP servers: \(connectedServers.map { $0.name }.joined(separator: ", "))")
         } catch {
+            timingStatus = .failed
             print("⚠️ Failed to fetch MCP servers: \(error)")
             cachedMCPServers = []
+            fetchedCount = 0
+            connectedCount = 0
         }
     }
     
@@ -1112,6 +1155,11 @@ class ChatViewModel {
         CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: runtimeSelectionStore)
     }
 
+    private func timingRuntimeName(for project: RemoteProject?) -> String {
+        guard let project else { return CodingAgentRuntimeKind.claudeProxy.rawValue }
+        return activeRuntimeKind(for: project).rawValue
+    }
+
     private func isMessageBefore(_ lhs: Message, _ rhs: Message) -> Bool {
         switch (lhs.proxyEventId, rhs.proxyEventId) {
         case let (leftId?, rightId?):
@@ -1167,6 +1215,27 @@ class ChatViewModel {
     private func loadMessages() {
         guard let modelContext = modelContext,
               let projectId = projectId else { return }
+
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var fetchedCount = 0
+        var repairedStreamingCount = 0
+        var restoredStreamingCount = 0
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: ProjectContext.shared.activeProject),
+                projectID: projectId.uuidString,
+                operation: "chat.loadMessages",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "fetchedMessages": .count(fetchedCount),
+                    "localMessages": .count(messages.count),
+                    "repairedStreamingMessages": .count(repairedStreamingCount),
+                    "restoredStreamingMessages": .count(restoredStreamingCount),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
         
         let descriptor = FetchDescriptor<Message>(
             predicate: #Predicate { message in
@@ -1177,6 +1246,7 @@ class ChatViewModel {
         
         do {
             let fetched = try modelContext.fetch(descriptor)
+            fetchedCount = fetched.count
             messages = fetched.sorted { isMessageBefore($0, $1) }
 
             // Keep the per-project proxy event anchor in sync with persisted messages so re-opening the chat
@@ -1212,6 +1282,7 @@ class ChatViewModel {
                     // Message completed successfully, just fix the streaming flag
                     lastMessage.isStreaming = false
                     lastMessage.isComplete = true
+                    repairedStreamingCount += 1
                     if let project = ProjectContext.shared.activeProject,
                        project.activeStreamingMessageId == lastMessage.id {
                         project.activeStreamingMessageId = nil
@@ -1223,6 +1294,7 @@ class ChatViewModel {
                     streamingMessage = lastMessage
                     isProcessing = true
                     streamingRedrawToken = UUID()
+                    restoredStreamingCount += 1
                     
                     // Parse existing content to restore streaming blocks
                     if let structuredMessages = lastMessage.structuredMessages {
@@ -1246,6 +1318,7 @@ class ChatViewModel {
                 }
             }
         } catch {
+            timingStatus = .failed
             print("Failed to load messages: \(error)")
             messages = []
         }
@@ -1576,6 +1649,23 @@ class ChatViewModel {
     private func saveChanges() {
         guard let modelContext = modelContext else { return }
 
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: ProjectContext.shared.activeProject),
+                projectID: projectId?.uuidString,
+                operation: "chat.saveChanges",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "isLoadingPreviousSession": .flag(isLoadingPreviousSession),
+                    "isProcessing": .flag(isProcessing),
+                    "localMessages": .count(messages.count),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
+
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
         lastSaveTime = Date()
@@ -1583,6 +1673,7 @@ class ChatViewModel {
         do {
             try modelContext.save()
         } catch {
+            timingStatus = .failed
             print("Failed to save: \(error)")
         }
     }
@@ -2145,7 +2236,24 @@ class ChatViewModel {
     }
 
     private func prefetchCodeAgentsUIMedia(in project: RemoteProject, messages: [Message]) {
-        guard !messages.isEmpty else { return }
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var mediaCandidateCount = 0
+        var startedTaskCount = 0
+        var skippedExistingTaskCount = 0
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: "chat.prefetchCodeAgentsUIMedia",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "inputMessages": .count(messages.count),
+                    "mediaCandidates": .count(mediaCandidateCount),
+                    "skippedExistingTasks": .count(skippedExistingTaskCount),
+                    "startedTasks": .count(startedTaskCount)
+                ]
+            )
+        }
 
         let maxPrefetchSources = 40
         var seenKeys = Set<String>()
@@ -2208,9 +2316,14 @@ class ChatViewModel {
             }
         }
 
+        mediaCandidateCount = sources.count
+
         for source in sources {
             let key = mediaPrefetchKey(for: source, project: project)
-            guard mediaPrefetchTasks[key] == nil else { continue }
+            guard mediaPrefetchTasks[key] == nil else {
+                skippedExistingTaskCount += 1
+                continue
+            }
             let task = Task { [weak self] in
                 _ = await ChatMediaLoader.shared.resolveMedia(source, project: project)
                 await MainActor.run {
@@ -2218,6 +2331,7 @@ class ChatViewModel {
                 }
             }
             mediaPrefetchTasks[key] = task
+            startedTaskCount += 1
         }
 
         func appendPrefetchSource(_ source: CodeAgentsUIMediaSource) {
