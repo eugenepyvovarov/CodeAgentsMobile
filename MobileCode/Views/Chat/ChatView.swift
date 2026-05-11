@@ -138,10 +138,14 @@ struct ChatView: View {
         .task(id: projectContext.activeProject?.id) {
             guard let project = projectContext.activeProject else { return }
             if activeRuntimeKind(for: project) == .claudeProxy {
-                do {
-                    _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
-                } catch {
-                    SSHLogger.log("Failed to ensure agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
+                if shouldUseSeededAgentIdentity(for: project) {
+                    SSHLogger.log("Using seeded UI-test agent id for chat evidence (projectId=\(project.id))", level: .debug)
+                } else {
+                    do {
+                        _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
+                    } catch {
+                        SSHLogger.log("Failed to ensure agent id for chat view configure (projectId=\(project.id)): \(error)", level: .warning)
+                    }
                 }
             }
             viewModel.configure(modelContext: modelContext, projectId: project.id)
@@ -262,6 +266,11 @@ struct ChatView: View {
 
     private func activeRuntimeKind(for project: RemoteProject) -> CodingAgentRuntimeKind {
         CodingAgentRuntimeResolver.runtimeKind(for: project)
+    }
+
+    private func shouldUseSeededAgentIdentity(for project: RemoteProject) -> Bool {
+        ProcessInfo.processInfo.arguments.contains("--ui-test-chat-open-deferred-startup")
+            && project.proxyAgentId?.isEmpty == false
     }
 
     @MainActor

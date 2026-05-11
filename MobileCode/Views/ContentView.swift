@@ -69,6 +69,7 @@ struct ContentView: View {
         .task {
             seedAIProvidersEvidenceStateIfNeeded()
             seedSettingsListsEvidenceStateIfNeeded()
+            seedChatOpenDeferredStartupEvidenceStateIfNeeded()
         }
     }
     
@@ -185,6 +186,55 @@ struct ContentView: View {
         modelContext.insert(server)
         try? modelContext.save()
         serverManager.loadServers(from: modelContext)
+    }
+
+    private func seedChatOpenDeferredStartupEvidenceStateIfNeeded() {
+        let processInfo = ProcessInfo.processInfo
+        guard processInfo.arguments.contains("--ui-testing"),
+              processInfo.arguments.contains("--ui-test-chat-open-deferred-startup"),
+              projectContext.activeProject == nil else {
+            return
+        }
+
+        let server = Server(
+            name: "Evidence Deferred Startup Server",
+            host: "127.0.0.1",
+            username: "codeagents"
+        )
+        let project = RemoteProject(
+            name: "deferred-startup-agent",
+            displayName: "Deferred Startup Agent",
+            serverId: server.id,
+            basePath: "/tmp/codeagents-evidence"
+        )
+        project.selectedAgentRuntime = .claudeProxy
+        project.proxyAgentId = "evidence-deferred-startup-agent"
+        project.proxyConversationId = "evidence-deferred-startup-conversation"
+        project.lastSuccessfulClaudeProviderRawValue = ClaudeModelProvider.anthropic.rawValue
+
+        let now = Date()
+        let userMessage = Message(
+            content: "Local question ready from storage.",
+            role: .user,
+            projectId: project.id
+        )
+        userMessage.timestamp = now.addingTimeInterval(-90)
+        let assistantMessage = Message(
+            content: "Local response is visible while startup work is deferred.",
+            role: .assistant,
+            projectId: project.id
+        )
+        assistantMessage.timestamp = now.addingTimeInterval(-60)
+
+        modelContext.insert(server)
+        modelContext.insert(project)
+        modelContext.insert(userMessage)
+        modelContext.insert(assistantMessage)
+        try? modelContext.save()
+
+        serverManager.loadServers(from: modelContext)
+        ClaudeCodeService.shared.claudeInstallationStatus[server.id] = true
+        projectContext.setActiveProject(project)
     }
 }
 
