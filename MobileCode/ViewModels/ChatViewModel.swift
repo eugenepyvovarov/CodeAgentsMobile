@@ -2543,6 +2543,25 @@ class ChatViewModel {
     
     /// Check for previous session and recover if needed
     func checkForPreviousSession() async {
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        var timingHadActiveSession = false
+        var timingHadRecentOutput = false
+        defer {
+            let project = ProjectContext.shared.activeProject
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project?.id.uuidString,
+                operation: "claude.checkForPreviousSession",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "activeSession": .flag(timingHadActiveSession),
+                    "localMessages": .count(messages.count),
+                    "recentOutput": .flag(timingHadRecentOutput),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
         print("📝 checkForPreviousSession: Starting")
         
         // Set a timeout for the entire operation
@@ -2594,6 +2613,7 @@ class ChatViewModel {
         
         // Check if task was cancelled
         if Task.isCancelled {
+            timingStatus = .cancelled
             print("📝 Recovery: Task was cancelled")
             await MainActor.run {
                 isLoadingPreviousSession = false
@@ -2647,9 +2667,23 @@ class ChatViewModel {
             }
         }
 
+        let sessionCheckStart = DispatchTime.now().uptimeNanoseconds
         let sessionInfo = await claudeService.checkForPreviousSession(
             project: project,
             server: server
+        )
+        timingHadActiveSession = sessionInfo.hasActiveSession
+        timingHadRecentOutput = sessionInfo.recentOutput != nil
+        ChatRecoveryTiming.log(
+            runtime: timingRuntimeName(for: project),
+            projectID: project.id.uuidString,
+            operation: "claude.servicePreviousSessionCheck",
+            elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - sessionCheckStart,
+            metadata: [
+                "activeSession": .flag(sessionInfo.hasActiveSession),
+                "recentOutput": .flag(sessionInfo.recentOutput != nil),
+                "status": .status(.complete)
+            ]
         )
         
         print("📝 Recovery: Session check result - hasActiveSession: \(sessionInfo.hasActiveSession), hasOutput: \(sessionInfo.recentOutput != nil), messageId: \(sessionInfo.messageId?.uuidString ?? "nil")")
@@ -2763,8 +2797,31 @@ class ChatViewModel {
     }
 
     private func syncProxyHistoryIfNeeded(project: RemoteProject) async {
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        var primaryEventCount = 0
+        var fullResyncEventCount = 0
+        var repairEventCount = 0
+        var appliedEventCount = 0
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: "proxy.syncHistory",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "appliedEvents": .count(appliedEventCount),
+                    "fullResyncEvents": .count(fullResyncEventCount),
+                    "localMessages": .count(messages.count),
+                    "primaryEvents": .count(primaryEventCount),
+                    "repairEvents": .count(repairEventCount),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
         let now = Date()
         if now < proxySyncNextAttemptAt {
+            timingStatus = .skipped
             return
         }
         let syncGeneration = proxySyncGeneration
@@ -2789,7 +2846,20 @@ class ChatViewModel {
             "sync start conv=...\(conversationSuffix) messages=\(messages.count) storedLast=\(String(describing: project.proxyLastEventId)) derivedLast=\(String(describing: derivedLastEventId)) since=\(since)"
         )
         do {
+            let primaryFetchStart = DispatchTime.now().uptimeNanoseconds
             let (events, info) = try await claudeService.fetchProxyEvents(project: project, since: since)
+            primaryEventCount = events.count
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: "proxy.fetchEvents.primary",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - primaryFetchStart,
+                metadata: [
+                    "events": .count(events.count),
+                    "sinceEventId": .count(since),
+                    "status": .status(.complete)
+                ]
+            )
             guard syncGeneration == proxySyncGeneration else { return }
             proxySyncRetryCount = 0
             proxySyncNextAttemptAt = .distantPast
@@ -2834,13 +2904,31 @@ class ChatViewModel {
             let shouldRepair = hadMessages && !hadLastEventId
 
             if shouldFullResync && since != 0 {
+                let fullResyncStart = DispatchTime.now().uptimeNanoseconds
                 let (fullEvents, _) = try await claudeService.fetchProxyEvents(project: project, since: 0)
+                fullResyncEventCount = fullEvents.count
+                ChatRecoveryTiming.log(
+                    runtime: timingRuntimeName(for: project),
+                    projectID: project.id.uuidString,
+                    operation: "proxy.fetchEvents.fullResync",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - fullResyncStart,
+                    metadata: ["events": .count(fullEvents.count), "status": .status(.complete)]
+                )
                 eventsToApply = fullEvents
             }
 
             if shouldRepair && since != 0 {
                 // Non-destructive repair: replay the full conversation and upsert/dedupe locally.
+                let repairStart = DispatchTime.now().uptimeNanoseconds
                 let (fullEvents, _) = try await claudeService.fetchProxyEvents(project: project, since: 0)
+                repairEventCount = fullEvents.count
+                ChatRecoveryTiming.log(
+                    runtime: timingRuntimeName(for: project),
+                    projectID: project.id.uuidString,
+                    operation: "proxy.fetchEvents.repair",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - repairStart,
+                    metadata: ["events": .count(fullEvents.count), "status": .status(.complete)]
+                )
                 eventsToApply = fullEvents
             }
 
@@ -2859,8 +2947,10 @@ class ChatViewModel {
             project.updateLastModified()
 
             let messageId = project.activeStreamingMessageId ?? UUID()
+            appliedEventCount = eventsToApply.count
             await applyProxyEvents(eventsToApply, project: project, messageId: messageId)
         } catch {
+            timingStatus = .failed
             if let proxyError = error as? ProxyStreamError,
                case .httpError(let status, let body) = proxyError,
                status == 404,
@@ -3129,6 +3219,29 @@ class ChatViewModel {
     }
 
     private func applyProxyEvents(_ events: [ProxyStreamEvent], project: RemoteProject, messageId: UUID) async {
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var skippedDuplicateEventIds = 0
+        var skippedDuplicateLines = 0
+        var insertedMessages = 0
+        var updatedMessages = 0
+        var resultEvents = 0
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: "proxy.applyEvents",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "events": .count(events.count),
+                    "finalLocalMessages": .count(messages.count),
+                    "insertedMessages": .count(insertedMessages),
+                    "resultEvents": .count(resultEvents),
+                    "skippedDuplicateEventIds": .count(skippedDuplicateEventIds),
+                    "skippedDuplicateLines": .count(skippedDuplicateLines),
+                    "updatedMessages": .count(updatedMessages)
+                ]
+            )
+        }
         let sortedEvents = events.sorted { lhs, rhs in
             switch (lhs.eventId, rhs.eventId) {
             case let (left?, right?):
@@ -3162,6 +3275,7 @@ class ChatViewModel {
 
         for event in sortedEvents {
             if let eventId = event.eventId, seenEventIds.contains(eventId) {
+                skippedDuplicateEventIds += 1
                 continue
             }
 
@@ -3175,6 +3289,7 @@ class ChatViewModel {
 
             guard let jsonLine = persistedJSONLine(from: enrichedChunk) else { continue }
             if seenLines.contains(jsonLine) {
+                skippedDuplicateLines += 1
                 if let metadata = enrichedChunk.metadata {
                     let didApply = applyProxyEventIdToExistingMessageIfPossible(
                         jsonLine: jsonLine,
@@ -3183,6 +3298,7 @@ class ChatViewModel {
                     )
                     if didApply, let eventId = event.eventId {
                         seenEventIds.insert(eventId)
+                        updatedMessages += 1
                     }
                 }
                 continue
@@ -3193,7 +3309,13 @@ class ChatViewModel {
             }
             seenLines.insert(jsonLine)
 
+            let messageCountBeforeUpsert = messages.count
             if let message = upsertStreamMessage(from: enrichedChunk, reuseMessage: placeholderMessage) {
+                if messages.count > messageCountBeforeUpsert {
+                    insertedMessages += 1
+                } else {
+                    updatedMessages += 1
+                }
                 placeholderMessage = nil
                 lastMessage = message
                 if message.role == .assistant {
@@ -3202,6 +3324,7 @@ class ChatViewModel {
             }
 
             if let type = enrichedChunk.metadata?["type"] as? String, type == "result" {
+                resultEvents += 1
                 hasResultMessage = true
             }
         }
@@ -3223,6 +3346,31 @@ class ChatViewModel {
     
     /// Resume an active session
     private func resumeActiveSession(project: RemoteProject, server: Server, messageId: UUID) async {
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        var chunkCount = 0
+        var duplicateSkips = 0
+        var insertedMessages = 0
+        var updatedMessages = 0
+        var resultEvents = 0
+        var errorChunks = 0
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: "proxy.resumeActiveSession",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "chunks": .count(chunkCount),
+                    "duplicateSkips": .count(duplicateSkips),
+                    "errorChunks": .count(errorChunks),
+                    "insertedMessages": .count(insertedMessages),
+                    "resultEvents": .count(resultEvents),
+                    "status": .status(timingStatus),
+                    "updatedMessages": .count(updatedMessages)
+                ]
+            )
+        }
         var placeholderMessage = messages.first(where: { $0.id == messageId })
         var didSwitchSession = false
 
@@ -3248,6 +3396,7 @@ class ChatViewModel {
 
             if placeholderMessage == nil {
                 print("❌ Failed to create message for active session recovery")
+                timingStatus = .failed
                 showActiveSessionIndicator = false
                 return
             }
@@ -3269,9 +3418,12 @@ class ChatViewModel {
 
         do {
             for try await chunk in stream {
+                chunkCount += 1
                 saveChangesThrottled()
 
                 if chunk.isError {
+                    errorChunks += 1
+                    timingStatus = .failed
                     let errorText = chunk.content.isEmpty ? "Error resuming session." : chunk.content
                     if let placeholder = placeholderMessage {
                         updateMessage(placeholder, with: errorText)
@@ -3305,18 +3457,28 @@ class ChatViewModel {
 
                 guard let jsonLine = persistedJSONLine(from: chunk) else { continue }
                 if seenLines.contains(jsonLine) {
+                    duplicateSkips += 1
                     if let metadata = chunk.metadata {
-                        _ = applyProxyEventIdToExistingMessageIfPossible(
+                        let didApply = applyProxyEventIdToExistingMessageIfPossible(
                             jsonLine: jsonLine,
                             metadata: metadata,
                             proxyEventId: proxyEventId(from: metadata)
                         )
+                        if didApply {
+                            updatedMessages += 1
+                        }
                     }
                     continue
                 }
                 seenLines.insert(jsonLine)
 
+                let messageCountBeforeUpsert = messages.count
                 if let message = upsertStreamMessage(from: chunk, reuseMessage: placeholderMessage) {
+                    if messages.count > messageCountBeforeUpsert {
+                        insertedMessages += 1
+                    } else {
+                        updatedMessages += 1
+                    }
                     placeholderMessage = nil
                     streamingMessage = nil
                     streamingBlocks = []
@@ -3325,6 +3487,7 @@ class ChatViewModel {
                 }
 
                 if let type = chunk.metadata?["type"] as? String, type == "result" {
+                    resultEvents += 1
                     project.activeStreamingMessageId = nil
                     project.updateLastModified()
                     isProcessing = false
@@ -3333,6 +3496,7 @@ class ChatViewModel {
                 }
             }
         } catch {
+            timingStatus = .failed
             print("Error resuming stream: \(error)")
             placeholderMessage?.content = "Error resuming session: \(error.localizedDescription)"
             placeholderMessage?.isStreaming = false
