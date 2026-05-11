@@ -124,8 +124,27 @@ jobs:
 
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.preflight.outputs.head_sha }}
+
+      - name: Resolve pull request dispatch inputs
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          dispatch_inputs = event.get("inputs") or event.get("workflow_dispatch", {}).get("inputs") or {}
+          head_sha = str(dispatch_inputs.get("head_sha") or "").strip()
+          if not head_sha:
+              raise SystemExit("workflow_dispatch input head_sha is required")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_HEAD_SHA={head_sha}\n")
+          PY
+
+      - name: Check out pull request head
+        run: |
+          git fetch --no-tags --prune --depth=1 origin "$OPENCODE_HEAD_SHA"
+          git checkout --detach "$OPENCODE_HEAD_SHA"
 
       - name: Load managed validation settings
         run: |
@@ -171,7 +190,6 @@ jobs:
       OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
-      OPENCODE_PULL_REQUEST_NUMBER: ${{ needs.preflight.outputs.pull_request_number }}
       GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
@@ -180,8 +198,35 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.head_sha }}
           fetch-depth: 0
+
+      - name: Resolve pull request dispatch inputs
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          dispatch_inputs = event.get("inputs") or event.get("workflow_dispatch", {}).get("inputs") or {}
+          pull_request_number = str(dispatch_inputs.get("pull_request_number") or "").strip()
+          head_sha = str(dispatch_inputs.get("head_sha") or "").strip()
+          if not pull_request_number:
+              raise SystemExit("workflow_dispatch input pull_request_number is required")
+          if not head_sha:
+              raise SystemExit("workflow_dispatch input head_sha is required")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_PULL_REQUEST_NUMBER={pull_request_number}\n")
+              handle.write(f"OPENCODE_HEAD_SHA={head_sha}\n")
+              config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+              controller = config["controller"]
+              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
+          PY
+
+      - name: Check out pull request head
+        run: |
+          git fetch --no-tags --prune origin "$OPENCODE_HEAD_SHA"
+          git checkout --detach "$OPENCODE_HEAD_SHA"
 
       - name: Load managed visual validation settings
         run: |
@@ -339,10 +384,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve pull request dispatch inputs
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          dispatch_inputs = event.get("inputs") or event.get("workflow_dispatch", {}).get("inputs") or {}
+          pull_request_number = str(dispatch_inputs.get("pull_request_number") or "").strip()
+          head_sha = str(dispatch_inputs.get("head_sha") or "").strip()
+          if not pull_request_number:
+              raise SystemExit("workflow_dispatch input pull_request_number is required")
+          if not head_sha:
+              raise SystemExit("workflow_dispatch input head_sha is required")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_PULL_REQUEST_NUMBER={pull_request_number}\n")
+              handle.write(f"OPENCODE_HEAD_SHA={head_sha}\n")
+              config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
+              controller = config["controller"]
+              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
+          PY
+
       - name: Check out controller repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ needs.preflight.outputs.controller_repository }}
+          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
           path: controller
           token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
           fetch-depth: 0
@@ -369,6 +437,6 @@ jobs:
             --repo-root "$PWD" \
             --automation-config "$PWD/controller/automation.json" \
             --managed-config "$PWD/project/opencode-managed.json" \
-            --pull-request-number "${{ needs.preflight.outputs.pull_request_number }}" \
-            --head-sha "${{ needs.preflight.outputs.head_sha }}" \
+            --pull-request-number "$OPENCODE_PULL_REQUEST_NUMBER" \
+            --head-sha "$OPENCODE_HEAD_SHA" \
             --handoff-review
