@@ -59,6 +59,25 @@ final class OpenCodeSessionAPITests: XCTestCase {
         XCTAssertEqual(part.text, "MobileCode fixture user message")
     }
 
+    @MainActor
+    func testInitialRuntimeHydrationPassesBoundedLimitToSessionMessages() async throws {
+        let response = try httpResponse(status: "200 OK", body: loadOpenCodeFixture(named: "session_messages_text.json"))
+        let sshSession = SessionAPIFakeSSHSession(responseChunks: [response])
+        let runtime = OpenCodeRuntimeService(
+            sshService: SessionAPIFakeSSHConnectionProvider(session: sshSession),
+            client: OpenCodeClient()
+        )
+        let project = RemoteProject(name: "MobileCode", serverId: UUID(), basePath: "/workspace")
+        project.openCodeSessionId = "ses_fixture"
+
+        let result = try await runtime.hydrateMessages(for: project, mode: .initialBounded())
+
+        XCTAssertEqual(result.mode.limit, OpenCodeHydrationPolicy.initialMessageLimit)
+        XCTAssertTrue(sshSession.sentInput.contains(
+            "GET /session/ses_fixture/message?directory=/workspace/MobileCode&limit=\(OpenCodeHydrationPolicy.initialMessageLimit) HTTP/1.1"
+        ))
+    }
+
     func testSessionMessageDecodesSingleMessage() async throws {
         let body = """
         {"info":{"role":"user","id":"msg_fixture","sessionID":"ses_fixture","time":{"created":1}},"parts":[{"type":"text","text":"hello","id":"prt_fixture","sessionID":"ses_fixture","messageID":"msg_fixture"}]}
@@ -409,6 +428,19 @@ final class OpenCodeSessionAPITests: XCTestCase {
             .appendingPathComponent("OpenCode")
             .appendingPathComponent(name)
         return try String(contentsOf: fixturesURL, encoding: .utf8)
+    }
+}
+
+@MainActor
+private final class SessionAPIFakeSSHConnectionProvider: SSHConnectionProviding {
+    private let session: SSHSession
+
+    init(session: SSHSession) {
+        self.session = session
+    }
+
+    func getConnection(for project: RemoteProject, purpose: ConnectionPurpose) async throws -> SSHSession {
+        session
     }
 }
 

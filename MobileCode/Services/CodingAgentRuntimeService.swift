@@ -298,12 +298,12 @@ final class ClaudeProxyRuntimeService: CodingAgentRuntimeService {
 final class OpenCodeRuntimeService: CodingAgentRuntimeService {
     let kind = CodingAgentRuntimeKind.openCode
 
-    private let sshService: SSHService
+    private let sshService: SSHConnectionProviding
     private let clientOverride: OpenCodeClient?
     private let streamAttachTimeoutNanoseconds: UInt64 = 5_000_000_000
 
-    init(sshService: SSHService? = nil, client: OpenCodeClient? = nil) {
-        self.sshService = sshService ?? .shared
+    init(sshService: SSHConnectionProviding? = nil, client: OpenCodeClient? = nil) {
+        self.sshService = sshService ?? SSHService.shared
         self.clientOverride = client
     }
 

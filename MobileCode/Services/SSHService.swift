@@ -15,9 +15,14 @@
 
 import Foundation
 
+@MainActor
+protocol SSHConnectionProviding: AnyObject {
+    func getConnection(for project: RemoteProject, purpose: ConnectionPurpose) async throws -> SSHSession
+}
+
 /// Main SSH Service for managing connections
 @MainActor
-class SSHService {
+class SSHService: SSHConnectionProviding {
     // MARK: - Singleton
     static let shared = SSHService()
     
