@@ -77,6 +77,19 @@ expects App Store Connect credentials through `ASC_APP_ID`, `TESTFLIGHT_GROUP`,
 `ASC_KEY_ID`, `ASC_ISSUER_ID`, and either `ASC_PRIVATE_KEY_P8` or
 `ASC_PRIVATE_KEY_FILE`.
 
+## Developer Diagnostics
+
+Debug builds emit lightweight chat recovery timing lines with the
+`[ChatRecoveryTiming]` prefix when chats are reopened or resumed. These logs are
+intended to separate local SwiftData load, OpenCode hydration, Claude proxy
+history sync, persistence saves, media prefetch, MCP fetch, and resume-streaming
+costs before making recovery behavior changes.
+
+Timing metadata is limited to runtime names, project identifiers, operation
+labels, elapsed milliseconds, statuses, booleans, and counts. Do not add prompts,
+message text, raw payloads, credentials, URLs, project paths, attachment paths,
+or file contents to these log fields.
+
 ## Architecture
 
 Built with SwiftUI and SwiftData following MVVM pattern.

@@ -1231,13 +1231,33 @@ class ClaudeCodeService: ObservableObject {
         project: RemoteProject,
         server: Server
     ) async -> (hasActiveSession: Bool, recentOutput: String?, messageId: UUID?) {
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingResult: (hasActiveSession: Bool, recentOutput: String?, messageId: UUID?)?
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: CodingAgentRuntimeKind.claudeProxy.rawValue,
+                projectID: project.id.uuidString,
+                operation: "claudeCodeService.checkForPreviousSession",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "activeSession": .flag(timingResult?.hasActiveSession ?? false),
+                    "proxyEnabled": .flag(useProxyChat),
+                    "recentOutput": .flag(timingResult?.recentOutput != nil),
+                    "status": .status(.complete)
+                ]
+            )
+        }
         if useProxyChat {
-            return await checkForPreviousProxySession(project: project)
+            let result = await checkForPreviousProxySession(project: project)
+            timingResult = result
+            return result
         }
 
         // Check if we have an active streaming message ID
         guard let messageId = project.activeStreamingMessageId else {
-            return (hasActiveSession: false, recentOutput: nil, messageId: nil)
+            let result = (hasActiveSession: false, recentOutput: Optional<String>.none, messageId: Optional<UUID>.none)
+            timingResult = result
+            return result
         }
         
         let outputFile = "/tmp/\(messageId.uuidString)_claude.out"
@@ -1267,18 +1287,39 @@ class ClaudeCodeService: ObservableObject {
                     }
                 }
                 
-                return (hasActiveSession: isRunning, recentOutput: recentOutput, messageId: messageId)
+                let result = (hasActiveSession: isRunning, recentOutput: Optional(recentOutput), messageId: Optional(messageId))
+                timingResult = result
+                return result
             }
         } catch {
             print("Failed to check for previous session: \(error)")
         }
-        
-        return (hasActiveSession: false, recentOutput: nil, messageId: nil)
+
+        let result = (hasActiveSession: false, recentOutput: Optional<String>.none, messageId: Optional<UUID>.none)
+        timingResult = result
+        return result
     }
 
     private func checkForPreviousProxySession(
         project: RemoteProject
     ) async -> (hasActiveSession: Bool, recentOutput: String?, messageId: UUID?) {
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var eventCount = 0
+        var resultEventCount = 0
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: CodingAgentRuntimeKind.claudeProxy.rawValue,
+                projectID: project.id.uuidString,
+                operation: "claudeCodeService.checkForPreviousProxySession",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "events": .count(eventCount),
+                    "resultEvents": .count(resultEventCount),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
         guard let messageId = project.activeStreamingMessageId else {
             return (hasActiveSession: false, recentOutput: nil, messageId: nil)
         }
@@ -1294,6 +1335,7 @@ class ClaudeCodeService: ObservableObject {
                 cwd: project.path,
                 conversationGroup: project.proxyConversationGroupId
             )
+            eventCount = events.count
 
             var hasResult = false
             let lines = events.map { $0.jsonLine }
@@ -1306,12 +1348,14 @@ class ClaudeCodeService: ObservableObject {
                    let type = chunk.metadata?["type"] as? String,
                    type == "result" {
                     hasResult = true
+                    resultEventCount += 1
                 }
             }
 
             let output = lines.joined(separator: "\n")
             return (hasActiveSession: !hasResult, recentOutput: output.isEmpty ? nil : output, messageId: messageId)
         } catch {
+            timingStatus = .failed
             print("Failed to check proxy session: \(error)")
             return (hasActiveSession: false, recentOutput: nil, messageId: messageId)
         }
@@ -1321,15 +1365,38 @@ class ClaudeCodeService: ObservableObject {
         project: RemoteProject,
         since: Int
     ) async throws -> ([ProxyStreamEvent], ProxyResponseInfo) {
-        let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
-        let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
-        return try await proxyClient.fetchEvents(
-            session: sshSession,
-            conversationId: conversationId,
-            since: since,
-            cwd: project.path,
-            conversationGroup: project.proxyConversationGroupId
-        )
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var eventCount = 0
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: CodingAgentRuntimeKind.claudeProxy.rawValue,
+                projectID: project.id.uuidString,
+                operation: "claudeCodeService.fetchProxyEvents",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "events": .count(eventCount),
+                    "sinceEventId": .count(since),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
+        do {
+            let sshSession = try await sshService.getConnection(for: project, purpose: .claude)
+            let conversationId = try await resolveProxyConversationId(for: project, session: sshSession)
+            let result = try await proxyClient.fetchEvents(
+                session: sshSession,
+                conversationId: conversationId,
+                since: since,
+                cwd: project.path,
+                conversationGroup: project.proxyConversationGroupId
+            )
+            eventCount = result.0.count
+            return result
+        } catch {
+            timingStatus = .failed
+            throw error
+        }
     }
 
     func activateProxyConversation(project: RemoteProject) async throws {
@@ -1490,6 +1557,10 @@ class ClaudeCodeService: ObservableObject {
             transitionConnectionState(for: project.id, to: .recovering(attempt: 1))
             
             Task {
+                let setupTimingStart = DispatchTime.now().uptimeNanoseconds
+                var missedOutputBytes = 0
+                var currentSize = 0
+                var didLogSetupTiming = false
                 do {
                     let outputFile = "/tmp/\(messageId.uuidString)_claude.out"
                     let pidFile = "/tmp/\(messageId.uuidString)_claude.pid"
@@ -1503,7 +1574,7 @@ class ClaudeCodeService: ObservableObject {
                     // Get current file size to see if there's missed content
                     let sizeCommand = "stat -f%z \(outputFile) 2>/dev/null || stat -c%s \(outputFile)"
                     let currentSizeStr = try await sshSession.execute(sizeCommand)
-                    let currentSize = Int(currentSizeStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                    currentSize = Int(currentSizeStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
                     
                     print("📝 Resume: Last position: \(lastPosition), Current size: \(currentSize)")
                     
@@ -1511,6 +1582,7 @@ class ClaudeCodeService: ObservableObject {
                     if currentSize > lastPosition {
                         let missedCommand = "tail -c +\(lastPosition + 1) \(outputFile) | head -c \(currentSize - lastPosition)"
                         let missedOutput = try await sshSession.execute(missedCommand)
+                        missedOutputBytes = missedOutput.count
                         
                         if !missedOutput.isEmpty {
                             print("📝 Resume: Processing \(missedOutput.count) bytes of missed content")
@@ -1525,6 +1597,18 @@ class ClaudeCodeService: ObservableObject {
                     // Now tail from current position for new content
                     let tailCommand = "tail -f -c +\(currentSize + 1) \(outputFile)"
                     let processHandle = try await sshSession.startProcess(tailCommand)
+                    ChatRecoveryTiming.log(
+                        runtime: CodingAgentRuntimeKind.claudeProxy.rawValue,
+                        projectID: project.id.uuidString,
+                        operation: "claudeCodeService.resumeLegacySetup",
+                        elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - setupTimingStart,
+                        metadata: [
+                            "currentOutputBytes": .count(currentSize),
+                            "missedOutputBytes": .count(missedOutputBytes),
+                            "status": .status(.complete)
+                        ]
+                    )
+                    didLogSetupTiming = true
                     
                     // Continue processing new output
                     await processStreamingOutput(
@@ -1536,6 +1620,19 @@ class ClaudeCodeService: ObservableObject {
                         continuation: continuation
                     )
                 } catch {
+                    if !didLogSetupTiming {
+                        ChatRecoveryTiming.log(
+                            runtime: CodingAgentRuntimeKind.claudeProxy.rawValue,
+                            projectID: project.id.uuidString,
+                            operation: "claudeCodeService.resumeLegacySetup",
+                            elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - setupTimingStart,
+                            metadata: [
+                                "currentOutputBytes": .count(currentSize),
+                                "missedOutputBytes": .count(missedOutputBytes),
+                                "status": .status(.failed)
+                            ]
+                        )
+                    }
                     continuation.yield(MessageChunk(
                         content: getUserFriendlyErrorMessage(error),
                         isComplete: true,
