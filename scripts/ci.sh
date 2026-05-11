@@ -31,9 +31,28 @@ fi
 
 mkdir -p "${DERIVED_DATA_PATH}"
 
-xcbmcp_run_json simulator build \
+FOCUSED_TEST_ARGS_JSON="$(python3 - <<'PY'
+import json
+
+print(json.dumps({
+    "extraArgs": [
+        "-parallel-testing-enabled",
+        "NO",
+        "-maximum-concurrent-test-simulator-destinations",
+        "1",
+        "-only-testing:CodeAgentsMobileTests",
+        "-skip-testing:CodeAgentsMobileTests/DirectSSHTest",
+        "-skip-testing:CodeAgentsMobileTests/SSHClaudeIntegrationTest",
+    ],
+}))
+PY
+)"
+
+xcbmcp_run_json simulator test \
   --project-path "${PROJECT_PATH}" \
   --scheme "${SCHEME}" \
   --simulator-name "${SIMULATOR_NAME}" \
   --configuration "${CONFIGURATION}" \
-  --derived-data-path "${DERIVED_DATA_PATH}" >/dev/null
+  --derived-data-path "${DERIVED_DATA_PATH}" \
+  --use-latest-os \
+  --json "${FOCUSED_TEST_ARGS_JSON}" >/dev/null
