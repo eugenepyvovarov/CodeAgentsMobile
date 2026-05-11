@@ -386,6 +386,61 @@ struct OpenCodeHydrationState: Equatable {
             message.parts.compactMap(\.payload.id)
         })
     }
+
+    func merging(_ other: OpenCodeHydrationState) -> OpenCodeHydrationState {
+        OpenCodeHydrationState(
+            messageIDs: messageIDs.union(other.messageIDs),
+            partIDs: partIDs.union(other.partIDs)
+        )
+    }
+}
+
+enum OpenCodeHydrationPolicy {
+    /// Initial recovery stays below the #26 measured reopen budget while still covering recent chat turns.
+    static let initialMessageLimit = 100
+}
+
+enum OpenCodeHydrationMode: Equatable {
+    case initialBounded(limit: Int = OpenCodeHydrationPolicy.initialMessageLimit)
+    case fullRefresh
+
+    var limit: Int? {
+        switch self {
+        case .initialBounded(let limit):
+            return limit
+        case .fullRefresh:
+            return nil
+        }
+    }
+
+    var replacesStoredState: Bool {
+        switch self {
+        case .initialBounded:
+            return false
+        case .fullRefresh:
+            return true
+        }
+    }
+
+    var timingName: String {
+        switch self {
+        case .initialBounded:
+            return "initialBounded"
+        case .fullRefresh:
+            return "fullRefresh"
+        }
+    }
+}
+
+struct OpenCodeHydrationResult: Equatable {
+    let mode: OpenCodeHydrationMode
+    let fetchedCount: Int
+    let selectedCount: Int
+    let hydratedMessages: [CodingAgentRuntimeHydratedMessage]
+    let previousState: OpenCodeHydrationState
+    let observedState: OpenCodeHydrationState
+    let storedState: OpenCodeHydrationState
+    let diff: OpenCodeHydrationDiff
 }
 
 struct OpenCodeHydrationDiff: Equatable {
@@ -414,6 +469,32 @@ enum OpenCodeHydrationDiffer {
 
     static func diff(local: OpenCodeHydrationState, remoteMessages: [OpenCodeSessionMessage]) -> OpenCodeHydrationDiff {
         diff(local: local, remote: OpenCodeHydrationState(messages: remoteMessages))
+    }
+
+    static func messagesNeedingHydration(
+        local: OpenCodeHydrationState,
+        remoteMessages: [OpenCodeSessionMessage]
+    ) -> [OpenCodeSessionMessage] {
+        remoteMessages.filter { message in
+            if !local.messageIDs.contains(message.info.id) {
+                return true
+            }
+
+            let partIDs = Set(message.parts.compactMap(\.payload.id))
+            return !partIDs.subtracting(local.partIDs).isEmpty
+        }
+    }
+
+    static func mergedState(
+        local: OpenCodeHydrationState,
+        observedMessages: [OpenCodeSessionMessage],
+        mode: OpenCodeHydrationMode
+    ) -> OpenCodeHydrationState {
+        let observed = OpenCodeHydrationState(messages: observedMessages)
+        if mode.replacesStoredState {
+            return observed
+        }
+        return local.merging(observed)
     }
 }
 
