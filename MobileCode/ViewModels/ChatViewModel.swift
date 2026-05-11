@@ -90,6 +90,8 @@ class ChatViewModel {
     private let runtimeRegistry: CodingAgentRuntimeRegistry
 
     private var mediaPrefetchTasks: [String: Task<Void, Never>] = [:]
+    private var deferredStartupTask: Task<Void, Never>?
+    private var deferredStartupProjectID: UUID?
     
     /// Loading state for previous session
     var isLoadingPreviousSession = false
@@ -250,6 +252,7 @@ class ChatViewModel {
         
         // Reset the flag when project changes
         if self.projectId != projectId {
+            cancelDeferredStartup(reason: "projectSwitch", projectID: self.projectId)
             hasCheckedForPreviousSession = false
             sessionCheckRetryCount = 0
             // Also reset loading states when switching projects
@@ -280,23 +283,6 @@ class ChatViewModel {
 
         toolApprovalStore.ensureDefaults(for: projectId)
         
-        // Check runtime setup, fetch MCP servers, and ensure project rules when configuring.
-        Task {
-            if runtimeKind == .claudeProxy, let server = ProjectContext.shared.activeServer {
-                _ = await claudeService.checkClaudeInstallation(for: server)
-            }
-            
-            // Fetch MCP servers only if cache is empty
-            if cachedMCPServers.isEmpty {
-                await fetchMCPServers()
-            }
-
-            if let project = ProjectContext.shared.activeProject {
-                await claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
-                prefetchCodeAgentsUIMedia(in: project, messages: messages)
-            }
-        }
-        
         // Check for previous session after configuration (only if not already checked)
         if !hasCheckedForPreviousSession {
             // Cancel any existing check
@@ -309,8 +295,125 @@ class ChatViewModel {
                 } else {
                     await checkForPreviousSession()
                 }
+                if runtimeKind == .openCode || hasCheckedForPreviousSession {
+                    scheduleDeferredStartupAfterChatReady(projectID: projectId, runtimeKind: runtimeKind)
+                }
             }
+        } else {
+            scheduleDeferredStartupAfterChatReady(projectID: projectId, runtimeKind: runtimeKind)
         }
+    }
+
+    private func scheduleDeferredStartupAfterChatReady(projectID: UUID, runtimeKind: CodingAgentRuntimeKind) {
+        let existingProjectID = deferredStartupProjectID
+        cancelDeferredStartup(reason: "reschedule", projectID: existingProjectID)
+
+        let messageSnapshot = messages
+        deferredStartupProjectID = projectID
+        ChatRecoveryTiming.log(
+            runtime: runtimeKind.rawValue,
+            projectID: projectID.uuidString,
+            operation: "chat.deferredStartup.schedule",
+            elapsedNanoseconds: 0,
+            metadata: [
+                "snapshotMessages": .count(messageSnapshot.count),
+                "status": .status(.started)
+            ]
+        )
+
+        deferredStartupTask = Task { @MainActor in
+            let timingStart = DispatchTime.now().uptimeNanoseconds
+            var timingStatus = ChatRecoveryTiming.Status.complete
+            defer {
+                ChatRecoveryTiming.log(
+                    runtime: runtimeKind.rawValue,
+                    projectID: projectID.uuidString,
+                    operation: "chat.deferredStartup.run",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                    metadata: [
+                        "snapshotMessages": .count(messageSnapshot.count),
+                        "status": .status(timingStatus)
+                    ]
+                )
+                if self.deferredStartupProjectID == projectID {
+                    self.deferredStartupTask = nil
+                    self.deferredStartupProjectID = nil
+                }
+            }
+
+            guard !Task.isCancelled else {
+                timingStatus = .cancelled
+                return
+            }
+            guard self.projectId == projectID,
+                  let project = ProjectContext.shared.activeProject,
+                  project.id == projectID else {
+                timingStatus = .skipped
+                return
+            }
+
+            if runtimeKind == .claudeProxy, let server = ProjectContext.shared.activeServer {
+                _ = await self.claudeService.checkClaudeInstallation(for: server)
+                guard !Task.isCancelled else {
+                    timingStatus = .cancelled
+                    return
+                }
+                guard self.projectId == projectID else {
+                    timingStatus = .skipped
+                    return
+                }
+            }
+
+            if self.cachedMCPServers.isEmpty {
+                await self.fetchMCPServers()
+                guard !Task.isCancelled else {
+                    timingStatus = .cancelled
+                    return
+                }
+                guard self.projectId == projectID else {
+                    timingStatus = .skipped
+                    return
+                }
+            }
+
+            await self.claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
+            guard !Task.isCancelled else {
+                timingStatus = .cancelled
+                return
+            }
+            guard self.projectId == projectID else {
+                timingStatus = .skipped
+                return
+            }
+
+            self.prefetchCodeAgentsUIMedia(in: project, messages: messageSnapshot)
+        }
+    }
+
+    private func cancelDeferredStartup(reason: String, projectID: UUID?) {
+        let hadTask = deferredStartupTask != nil
+        deferredStartupTask?.cancel()
+        deferredStartupTask = nil
+        deferredStartupProjectID = nil
+
+        let mediaTaskCount = mediaPrefetchTasks.count
+        for task in mediaPrefetchTasks.values {
+            task.cancel()
+        }
+        mediaPrefetchTasks.removeAll()
+
+        guard hadTask || mediaTaskCount > 0 else { return }
+        ChatRecoveryTiming.log(
+            runtime: timingRuntimeName(for: ProjectContext.shared.activeProject),
+            projectID: projectID?.uuidString,
+            operation: "chat.deferredStartup.cancel",
+            elapsedNanoseconds: 0,
+            metadata: [
+                "mediaTasks": .count(mediaTaskCount),
+                "status": .status(.cancelled)
+            ]
+        )
+        print("📝 Deferred startup cancelled (\(reason))")
     }
     
     // MARK: - Public Methods
@@ -1022,6 +1125,7 @@ class ChatViewModel {
         // Cancel any pending session check
         sessionCheckTask?.cancel()
         sessionCheckTask = nil
+        cancelDeferredStartup(reason: "clearLoadingStates", projectID: projectId)
         // Flush any pending throttled saves so proxy anchors/timestamps persist across view re-entries.
         saveChanges()
         stopProxyPolling()
@@ -1045,6 +1149,7 @@ class ChatViewModel {
         // Cancel any pending tasks
         sessionCheckTask?.cancel()
         sessionCheckTask = nil
+        cancelDeferredStartup(reason: "cleanup", projectID: projectId)
         // Flush any pending throttled saves before tearing down the view model.
         saveChanges()
         stopProxyPolling()
@@ -1103,7 +1208,12 @@ class ChatViewModel {
         }
         
         do {
-            cachedMCPServers = try await mcpService.fetchServers(for: project)
+            let fetchedServers = try await mcpService.fetchServers(for: project)
+            guard !Task.isCancelled, projectId == project.id else {
+                timingStatus = .cancelled
+                return
+            }
+            cachedMCPServers = fetchedServers
             fetchedCount = cachedMCPServers.count
             print("📝 Fetched and cached \(cachedMCPServers.count) MCP servers")
             
@@ -1539,14 +1649,6 @@ class ChatViewModel {
             applyOpenCodeHydrationResult(hydrationResult, project: project)
 
             reconcileOpenCodeSessionState(sessionState, project: project)
-            ChatRecoveryTiming.measure(
-                runtime: CodingAgentRuntimeKind.openCode.rawValue,
-                projectID: project.id.uuidString,
-                operation: "opencode.mediaPrefetch",
-                metadata: ["localMessages": .count(messages.count)]
-            ) {
-                prefetchCodeAgentsUIMedia(in: project, messages: messages)
-            }
             project.updateLastModified()
             ChatRecoveryTiming.measure(
                 runtime: CodingAgentRuntimeKind.openCode.rawValue,
@@ -2555,9 +2657,12 @@ class ChatViewModel {
                 continue
             }
             let task = Task { [weak self] in
+                guard !Task.isCancelled else { return }
                 _ = await ChatMediaLoader.shared.resolveMedia(source, project: project)
                 await MainActor.run {
-                    self?.mediaPrefetchTasks[key] = nil
+                    guard let self else { return }
+                    guard self.projectId == project.id else { return }
+                    self.mediaPrefetchTasks[key] = nil
                 }
             }
             mediaPrefetchTasks[key] = task
