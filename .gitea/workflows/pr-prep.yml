@@ -216,10 +216,29 @@ jobs:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
+      - name: Normalize PR head SHA
+        id: normalize-head-sha
+        env:
+          OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          match = re.search(r"[0-9a-fA-F]{40}", os.environ.get("OPENCODE_HEAD_SHA", ""))
+          if not match:
+              raise SystemExit("Unable to normalize PR head SHA")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_NORMALIZED_HEAD_SHA={match.group(0)}\n")
+              handle.write(f"OPENCODE_HEAD_SHA={match.group(0)}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"head_sha={match.group(0)}\n")
+          PY
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.normalized_head_sha }}
+          ref: ${{ steps.normalize-head-sha.outputs.head_sha }}
 
       - name: Load managed validation settings
         run: |
@@ -245,7 +264,7 @@ jobs:
     if: ${{ needs.preflight.outputs.playwright_smoke_supported == 'true' }}
     uses: ./.gitea/workflows/playwright-smoke.yml
     with:
-      head_sha: ${{ needs.preflight.outputs.normalized_head_sha }}
+      head_sha: ${{ inputs.head_sha }}
     secrets: inherit
 
   visual-validation:
@@ -266,16 +285,35 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      OPENCODE_HEAD_SHA: ${{ needs.preflight.outputs.normalized_head_sha }}
+      OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
       GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
+      - name: Normalize PR head SHA
+        id: normalize-head-sha
+        env:
+          OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          match = re.search(r"[0-9a-fA-F]{40}", os.environ.get("OPENCODE_HEAD_SHA", ""))
+          if not match:
+              raise SystemExit("Unable to normalize PR head SHA")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_NORMALIZED_HEAD_SHA={match.group(0)}\n")
+              handle.write(f"OPENCODE_HEAD_SHA={match.group(0)}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"head_sha={match.group(0)}\n")
+          PY
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.normalized_head_sha }}
+          ref: ${{ steps.normalize-head-sha.outputs.head_sha }}
           fetch-depth: 0
 
       - name: Load managed visual validation settings
@@ -533,10 +571,29 @@ jobs:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
+      - name: Normalize PR head SHA
+        id: normalize-head-sha
+        env:
+          OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          match = re.search(r"[0-9a-fA-F]{40}", os.environ.get("OPENCODE_HEAD_SHA", ""))
+          if not match:
+              raise SystemExit("Unable to normalize PR head SHA")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENCODE_NORMALIZED_HEAD_SHA={match.group(0)}\n")
+              handle.write(f"OPENCODE_HEAD_SHA={match.group(0)}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"head_sha={match.group(0)}\n")
+          PY
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.normalized_head_sha }}
+          ref: ${{ steps.normalize-head-sha.outputs.head_sha }}
           fetch-depth: 0
 
       - name: Check out controller repository
@@ -571,5 +628,5 @@ jobs:
             --automation-config "$PWD/controller/automation.json" \
             --managed-config "$PWD/project/opencode-managed.json" \
             --pull-request-number "${{ inputs.pull_request_number }}" \
-            --head-sha "${{ needs.preflight.outputs.normalized_head_sha }}" \
+            --head-sha "$OPENCODE_NORMALIZED_HEAD_SHA" \
             --handoff-review
