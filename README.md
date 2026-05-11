@@ -85,6 +85,11 @@ intended to separate local SwiftData load, OpenCode hydration, Claude proxy
 history sync, persistence saves, media prefetch, MCP fetch, and resume-streaming
 costs before making recovery behavior changes.
 
+OpenCode chat reopen is local-first: persisted SwiftData messages render before
+remote recovery. The initial OpenCode recovery fetch is bounded and diffed
+against the stored message/part hydration anchors; full-session refresh can run
+later in the background when more history may exist.
+
 Timing metadata is limited to runtime names, project identifiers, operation
 labels, elapsed milliseconds, statuses, booleans, and counts. Do not add prompts,
 message text, raw payloads, credentials, URLs, project paths, attachment paths,

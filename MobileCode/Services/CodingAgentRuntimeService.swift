@@ -187,6 +187,7 @@ protocol CodingAgentRuntimeService: AnyObject {
         mcpServers: [MCPServer]
     ) -> AsyncThrowingStream<MessageChunk, Error>
     func hydrateMessages(for project: RemoteProject) async throws -> [CodingAgentRuntimeHydratedMessage]
+    func hydrateMessages(for project: RemoteProject, mode: OpenCodeHydrationMode) async throws -> OpenCodeHydrationResult
     func abort(project: RemoteProject) async throws
     func replyToPermission(
         project: RemoteProject,
@@ -205,6 +206,21 @@ extension CodingAgentRuntimeService {
 
     func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState {
         .idle(runtime: kind)
+    }
+
+    func hydrateMessages(for project: RemoteProject, mode: OpenCodeHydrationMode) async throws -> OpenCodeHydrationResult {
+        let hydratedMessages = try await hydrateMessages(for: project)
+        let state = project.openCodeHydrationState
+        return OpenCodeHydrationResult(
+            mode: mode,
+            fetchedCount: hydratedMessages.count,
+            selectedCount: hydratedMessages.count,
+            hydratedMessages: hydratedMessages,
+            previousState: state,
+            observedState: state,
+            storedState: state,
+            diff: OpenCodeHydrationDiffer.diff(local: state, remote: state)
+        )
     }
 
     func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws {
@@ -282,12 +298,12 @@ final class ClaudeProxyRuntimeService: CodingAgentRuntimeService {
 final class OpenCodeRuntimeService: CodingAgentRuntimeService {
     let kind = CodingAgentRuntimeKind.openCode
 
-    private let sshService: SSHService
+    private let sshService: SSHConnectionProviding
     private let clientOverride: OpenCodeClient?
     private let streamAttachTimeoutNanoseconds: UInt64 = 5_000_000_000
 
-    init(sshService: SSHService? = nil, client: OpenCodeClient? = nil) {
-        self.sshService = sshService ?? .shared
+    init(sshService: SSHConnectionProviding? = nil, client: OpenCodeClient? = nil) {
+        self.sshService = sshService ?? SSHService.shared
         self.clientOverride = client
     }
 
@@ -405,26 +421,47 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
     }
 
     func hydrateMessages(for project: RemoteProject) async throws -> [CodingAgentRuntimeHydratedMessage] {
+        try await hydrateMessages(for: project, mode: .initialBounded()).hydratedMessages
+    }
+
+    func hydrateMessages(
+        for project: RemoteProject,
+        mode: OpenCodeHydrationMode
+    ) async throws -> OpenCodeHydrationResult {
         guard let sessionID = sanitizedSessionID(project.openCodeSessionId) else {
-            return []
+            let state = project.openCodeHydrationState
+            return OpenCodeHydrationResult(
+                mode: mode,
+                fetchedCount: 0,
+                selectedCount: 0,
+                hydratedMessages: [],
+                previousState: state,
+                observedState: OpenCodeHydrationState(),
+                storedState: state,
+                diff: OpenCodeHydrationDiffer.diff(local: state, remote: state)
+            )
         }
 
         let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
         let client = client(for: project)
+        let previousState = project.openCodeHydrationState
         let fetchStart = DispatchTime.now().uptimeNanoseconds
         let messages: [OpenCodeSessionMessage]
         do {
             messages = try await client.sessionMessages(
                 sshSession: sshSession,
                 sessionID: sessionID,
-                directory: project.path
+                directory: project.path,
+                limit: mode.limit
             )
             ChatRecoveryTiming.log(
                 runtime: kind.rawValue,
                 projectID: project.id.uuidString,
-                operation: "opencode.sessionMessages.fetch",
+                operation: "opencode.sessionMessages.fetch.\(mode.timingName)",
                 elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - fetchStart,
                 metadata: [
+                    "bounded": .flag(mode.limit != nil),
+                    "limit": .count(mode.limit ?? 0),
                     "remoteMessages": .count(messages.count),
                     "status": .status(.complete)
                 ]
@@ -433,27 +470,56 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             ChatRecoveryTiming.log(
                 runtime: kind.rawValue,
                 projectID: project.id.uuidString,
-                operation: "opencode.sessionMessages.fetch",
+                operation: "opencode.sessionMessages.fetch.\(mode.timingName)",
                 elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - fetchStart,
-                metadata: ["status": .status(.failed)]
+                metadata: [
+                    "bounded": .flag(mode.limit != nil),
+                    "limit": .count(mode.limit ?? 0),
+                    "status": .status(.failed)
+                ]
             )
             throw error
         }
-        project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
+        let observedState = OpenCodeHydrationState(messages: messages)
+        let diff = OpenCodeHydrationDiffer.diff(local: previousState, remoteMessages: messages)
+        let selectedMessages = OpenCodeHydrationDiffer.messagesNeedingHydration(
+            local: previousState,
+            remoteMessages: messages
+        )
+        let storedState = OpenCodeHydrationDiffer.mergedState(
+            local: previousState,
+            observedMessages: messages,
+            mode: mode
+        )
+        try Task.checkCancellation()
+        project.updateOpenCodeHydrationState(storedState)
         let mapperStart = DispatchTime.now().uptimeNanoseconds
-        let hydratedMessages = OpenCodeChatMapper.hydratedMessages(from: messages)
+        let hydratedMessages = OpenCodeChatMapper.hydratedMessages(from: selectedMessages)
         ChatRecoveryTiming.log(
             runtime: kind.rawValue,
             projectID: project.id.uuidString,
-            operation: "opencode.sessionMessages.map",
+            operation: "opencode.sessionMessages.map.\(mode.timingName)",
             elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - mapperStart,
             metadata: [
+                "addedMessages": .count(diff.addedMessageIDs.count),
+                "addedParts": .count(diff.addedPartIDs.count),
+                "bounded": .flag(mode.limit != nil),
                 "hydratedMessages": .count(hydratedMessages.count),
                 "remoteMessages": .count(messages.count),
+                "selectedMessages": .count(selectedMessages.count),
                 "status": .status(.complete)
             ]
         )
-        return hydratedMessages
+        return OpenCodeHydrationResult(
+            mode: mode,
+            fetchedCount: messages.count,
+            selectedCount: selectedMessages.count,
+            hydratedMessages: hydratedMessages,
+            previousState: previousState,
+            observedState: observedState,
+            storedState: storedState,
+            diff: diff
+        )
     }
 
     func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState {
