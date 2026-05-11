@@ -7,9 +7,11 @@ run-name: OpenCode PR Prep pr=${{ inputs.pull_request_number }} head=${{ inputs.
       pull_request_number:
         description: Pull request number to prepare for review
         required: true
+        type: string
       head_sha:
         description: Expected pull request head SHA
         required: true
+        type: string
 
 permissions:
   contents: read
