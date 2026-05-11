@@ -42,6 +42,24 @@ enum OpenCodeHydratedMessageMerge {
     }
 }
 
+enum ChatMCPServerCachePolicy {
+    static func needsFetch(
+        cachedServerCount: Int,
+        isInvalidated: Bool,
+        lastFetchedAt: Date?,
+        now: Date,
+        staleInterval: TimeInterval
+    ) -> Bool {
+        if cachedServerCount == 0 || isInvalidated {
+            return true
+        }
+        guard let lastFetchedAt else {
+            return true
+        }
+        return now.timeIntervalSince(lastFetchedAt) >= staleInterval
+    }
+}
+
 
 /// ViewModel for the chat interface
 /// Handles message display, streaming, and persistence
@@ -136,6 +154,9 @@ class ChatViewModel {
     
     /// Cached MCP servers for the current project
     private var cachedMCPServers: [MCPServer] = []
+    private var mcpCacheLastFetchedAt: Date?
+    private var isMCPCacheInvalidated = true
+    private let mcpCacheStaleInterval: TimeInterval = 300
     
     /// Track if MCP servers are being fetched
     private var isFetchingMCPServers = false
@@ -260,6 +281,8 @@ class ChatViewModel {
             showActiveSessionIndicator = false
             // Clear cached MCP servers when switching projects
             cachedMCPServers = []
+            mcpCacheLastFetchedAt = nil
+            isMCPCacheInvalidated = true
             // Clear tool approval state when switching projects
             activeToolApproval = nil
             pendingToolApprovals = []
@@ -362,28 +385,6 @@ class ChatViewModel {
                     timingStatus = .skipped
                     return
                 }
-            }
-
-            if self.cachedMCPServers.isEmpty {
-                await self.fetchMCPServers()
-                guard !Task.isCancelled else {
-                    timingStatus = .cancelled
-                    return
-                }
-                guard self.projectId == projectID else {
-                    timingStatus = .skipped
-                    return
-                }
-            }
-
-            await self.claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
-            guard !Task.isCancelled else {
-                timingStatus = .cancelled
-                return
-            }
-            guard self.projectId == projectID else {
-                timingStatus = .skipped
-                return
             }
 
             self.prefetchCodeAgentsUIMedia(in: project, messages: messageSnapshot)
@@ -554,6 +555,8 @@ class ChatViewModel {
                 return
             }
         }
+
+        await ensureSendTimeSetup(for: project, includeRules: true)
         
         // If there's a previous message still streaming, mark it as interrupted
         if let previousStreaming = messages.last(where: { $0.isStreaming }) {
@@ -799,6 +802,8 @@ class ChatViewModel {
                 return
             }
         }
+
+        await ensureSendTimeSetup(for: project, includeRules: false)
 
         if let previousStreaming = messages.last(where: { $0.isStreaming }) {
             previousStreaming.isStreaming = false
@@ -1172,6 +1177,47 @@ class ChatViewModel {
         print("📝 cleanup: Cleaned up all resources")
     }
     
+    private func ensureSendTimeSetup(for project: RemoteProject, includeRules: Bool) async {
+        await ensureMCPServersForSendIfNeeded(project: project)
+        guard includeRules else { return }
+        await claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
+    }
+
+    private func ensureMCPServersForSendIfNeeded(project: RemoteProject, now: Date = Date()) async {
+        guard projectId == project.id else { return }
+        guard ChatMCPServerCachePolicy.needsFetch(
+            cachedServerCount: cachedMCPServers.count,
+            isInvalidated: isMCPCacheInvalidated,
+            lastFetchedAt: mcpCacheLastFetchedAt,
+            now: now,
+            staleInterval: mcpCacheStaleInterval
+        ) else {
+            return
+        }
+
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: "chat.ensureSendTimeMCPServers",
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "cachedServers": .count(cachedMCPServers.count),
+                    "invalidated": .flag(isMCPCacheInvalidated),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
+
+        await fetchMCPServers()
+        guard projectId == project.id else {
+            timingStatus = .skipped
+            return
+        }
+    }
+
     /// Fetch MCP servers for the current project
     @MainActor
     func fetchMCPServers() async {
@@ -1214,6 +1260,8 @@ class ChatViewModel {
                 return
             }
             cachedMCPServers = fetchedServers
+            mcpCacheLastFetchedAt = Date()
+            isMCPCacheInvalidated = false
             fetchedCount = cachedMCPServers.count
             print("📝 Fetched and cached \(cachedMCPServers.count) MCP servers")
             
@@ -1225,6 +1273,8 @@ class ChatViewModel {
             timingStatus = .failed
             print("⚠️ Failed to fetch MCP servers: \(error)")
             cachedMCPServers = []
+            mcpCacheLastFetchedAt = nil
+            isMCPCacheInvalidated = true
             fetchedCount = 0
             connectedCount = 0
         }
@@ -1233,12 +1283,16 @@ class ChatViewModel {
     /// Refresh MCP servers (useful after configuration changes)
     func refreshMCPServers() async {
         cachedMCPServers = []
+        mcpCacheLastFetchedAt = nil
+        isMCPCacheInvalidated = true
         await fetchMCPServers()
     }
     
     /// Invalidate MCP cache (call when configuration changes)
     func invalidateMCPCache() {
         cachedMCPServers = []
+        mcpCacheLastFetchedAt = nil
+        isMCPCacheInvalidated = true
         print("📝 MCP cache invalidated")
     }
     
@@ -1247,12 +1301,6 @@ class ChatViewModel {
         print("📝 MCP configuration changed notification received")
         print("📝 Current cached MCP servers before invalidation: \(cachedMCPServers.count)")
         invalidateMCPCache()
-        
-        // Fetch new servers in background
-        Task {
-            await fetchMCPServers()
-            print("📝 MCP servers after refresh: \(cachedMCPServers.count)")
-        }
     }
     
     /// Batch update streaming state to prevent UI flicker
