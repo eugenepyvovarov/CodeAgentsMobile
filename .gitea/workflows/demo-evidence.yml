@@ -49,58 +49,7 @@ jobs:
       - name: Load managed demo settings
         id: managed-config
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
-          assert config["schema_version"] == 1
-          controller = config["controller"]
-          assert controller["repository"]
-          assert controller["setup_branch"]
-          review = config["review"]
-          assert review["persona"]
-          assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
-          validation = config["validation"]
-          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
-          preview = config["preview"]
-          assert isinstance(preview["supported"], bool)
-          demo = config["demo"]
-          assert demo["workflow"] == ".gitea/workflows/demo-evidence.yml"
-          assert isinstance(demo["supported"], bool)
-          assert demo["provider"]
-          assert demo["platform"]
-          assert demo["record_video"] is True
-          demo_provider = str(demo["provider"]).strip()
-          demo_platform = str(demo["platform"]).strip()
-          demo_playwright_web = demo_provider == "playwright" and demo_platform == "web"
-          demo_native_macos = demo_provider in {"native-macos", "native", "macos"} and demo_platform in {"macos", "native-macos"}
-          demo_native_ios_simulator = demo_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and demo_platform in {"ios-simulator", "ios", "simulator"}
-          demo_evidence_supported = demo["supported"] is True and (demo_playwright_web or demo_native_macos or demo_native_ios_simulator)
-          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
-          repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          raw = f"{owner}-{repo}".lower()
-          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
-          project_key = re.sub(r"-{2,}", "-", project_key)
-          if not project_key:
-              raise SystemExit("Unable to derive project key from repository owner/name")
-          github_output = os.environ["GITHUB_OUTPUT"]
-          with open(github_output, "a", encoding="utf-8") as handle:
-              handle.write(f"controller_repository={controller['repository']}\n")
-              handle.write(f"setup_branch={controller['setup_branch']}\n")
-              handle.write(f"project_key={project_key}\n")
-              handle.write(f"preview_supported={'true' if preview['supported'] else 'false'}\n")
-              handle.write(f"demo_supported={'true' if demo['supported'] else 'false'}\n")
-              handle.write(f"demo_provider={demo_provider}\n")
-              handle.write(f"demo_platform={demo_platform}\n")
-              handle.write(f"demo_evidence_supported={'true' if demo_evidence_supported else 'false'}\n")
-              handle.write(f"demo_playwright_web_supported={'true' if demo['supported'] is True and demo_playwright_web else 'false'}\n")
-              handle.write(f"demo_native_macos_supported={'true' if demo['supported'] is True and demo_native_macos else 'false'}\n")
-              handle.write(f"demo_native_ios_simulator_supported={'true' if demo['supported'] is True and demo_native_ios_simulator else 'false'}\n")
-          print("managed demo config ok")
-          PY
+          python3 scripts/lib/opencode-managed-workflow-context.py --context demo-evidence-preflight --emit output
 
   demo-evidence-playwright:
     needs: preflight
@@ -120,7 +69,7 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -183,7 +132,7 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -251,7 +200,7 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
