@@ -24,7 +24,6 @@ jobs:
       visual_validation_supported: ${{ steps.managed-config.outputs.visual_validation_supported }}
       controller_repository: ${{ steps.managed-config.outputs.controller_repository }}
       setup_branch: ${{ steps.managed-config.outputs.setup_branch }}
-      normalized_head_sha: ${{ steps.managed-config.outputs.normalized_head_sha }}
     env:
       GIT_SSL_NO_VERIFY: "1"
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -33,27 +32,14 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
-      OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
       - name: Check out default branch workflow definition
-        run: |
-          set -euo pipefail
-          github_repository="${GITHUB_REPOSITORY:-}"
-          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
-          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
-          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
-          if [[ -n "${GITEA_TOKEN:-}" ]]; then
-            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
-          fi
-          git clone --depth=1 "$repo_url" .
-          if [[ "${OPENCODE_HEAD_SHA:-}" =~ ([0-9a-fA-F]{40}) ]]; then
-            git fetch --depth=1 origin "${BASH_REMATCH[1]}" || true
-          fi
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve managed PR-prep stages
         id: managed-config
@@ -61,99 +47,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          import re
-          import ssl
-          import subprocess
-          import urllib.request
           from pathlib import Path
-
-          def normalize_head_sha(value):
-              match = re.search(r"[0-9a-fA-F]{40}", str(value or ""))
-              return match.group(0) if match else ""
-
-          def extract_issue_number(values):
-              for value in values:
-                  match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
-                  if match:
-                      return match.group(1)
-              return None
-
-          def resolve_issue_from_head_sha(head_sha):
-              head_sha = normalize_head_sha(head_sha)
-              if not head_sha:
-                  return None
-              try:
-                  branches = subprocess.check_output(
-                      ["git", "branch", "-r", "--contains", head_sha],
-                      text=True,
-                      stderr=subprocess.DEVNULL,
-                  )
-              except Exception as error:
-                  print(f"Unable to inspect PR head branches for visual validation gating: {error}")
-                  return None
-              return extract_issue_number(branch.strip().lstrip("* ") for branch in branches.splitlines())
-
-          def resolve_issue_number(owner, repo, pull_request_number, head_sha):
-              issue_number = resolve_issue_from_head_sha(head_sha)
-              if issue_number:
-                  return issue_number
-              if not owner or not repo or not pull_request_number:
-                  return None
-              token = os.environ.get("GITEA_TOKEN", "").strip()
-              request = urllib.request.Request(
-                  f"https://git.ultramac.work/api/v1/repos/{owner}/{repo}/pulls/{pull_request_number}",
-                  headers={"Accept": "application/json"},
-              )
-              if token:
-                  request.add_header("Authorization", f"token {token}")
-              context = ssl._create_unverified_context() if os.environ.get("GIT_SSL_NO_VERIFY") == "1" else None
-              try:
-                  with urllib.request.urlopen(request, timeout=10, context=context) as response:
-                      pull = json.loads(response.read().decode("utf-8"))
-              except Exception as error:
-                  print(f"Unable to resolve pull request issue for visual validation gating: {error}")
-                  return None
-              values = [
-                  str(pull.get("head", {}).get("ref", "")),
-                  str(pull.get("head", {}).get("label", "")),
-                  str(pull.get("title", "")),
-                  str(pull.get("body", "")),
-              ]
-              return extract_issue_number(values)
-
-          def spec_has_visual_validation(text):
-              for line in text.splitlines():
-                  if line.strip() == "## Visual Validation":
-                      return True
-              return False
-
-          def spec_requests_visual_validation(issue_number, head_sha):
-              head_sha = normalize_head_sha(head_sha)
-              if not issue_number:
-                  print("No linked issue number found for visual validation gating")
-                  return False
-              specs_dir = Path("docs/specs/issues")
-              for spec_path in sorted(specs_dir.glob(f"{issue_number}-*.md")):
-                  return spec_has_visual_validation(spec_path.read_text(encoding="utf-8"))
-              if head_sha:
-                  try:
-                      listing = subprocess.check_output(
-                          ["git", "ls-tree", "-r", "--name-only", head_sha, "docs/specs/issues"],
-                          text=True,
-                          stderr=subprocess.DEVNULL,
-                      )
-                      for candidate in listing.splitlines():
-                          if Path(candidate).name.startswith(f"{issue_number}-") and candidate.endswith(".md"):
-                              spec_text = subprocess.check_output(
-                                  ["git", "show", f"{head_sha}:{candidate}"],
-                                  text=True,
-                                  stderr=subprocess.DEVNULL,
-                              )
-                              return spec_has_visual_validation(spec_text)
-                  except Exception as error:
-                      print(f"Unable to inspect PR head spec for visual validation gating: {error}")
-              print(f"No linked issue spec found for visual validation gating: issue {issue_number}")
-              return False
 
           config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
           assert config["schema_version"] == 1
@@ -185,21 +79,9 @@ jobs:
           visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
           visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
           visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
-          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
-          repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          raw_head_sha = os.environ.get("OPENCODE_HEAD_SHA", "").strip()
-          normalized_head_sha = normalize_head_sha(raw_head_sha)
-          issue_number = resolve_issue_number(
-              owner,
-              repo,
-              os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip(),
-              normalized_head_sha,
-          )
-          visual_spec_required = spec_requests_visual_validation(issue_number, normalized_head_sha)
           visual_stage = (
               "visual-validation" in stages
               and visual_validation["supported"] is True
-              and visual_spec_required
               and ((visual_playwright_web and preview["supported"] is True) or visual_native_macos or visual_native_ios_simulator)
           )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
@@ -208,7 +90,6 @@ jobs:
               handle.write(f"visual_validation_supported={'true' if visual_stage else 'false'}\n")
               handle.write(f"controller_repository={controller['repository']}\n")
               handle.write(f"setup_branch={controller['setup_branch']}\n")
-              handle.write(f"normalized_head_sha={normalized_head_sha}\n")
           print("managed PR-prep config ok")
           PY
 
@@ -222,51 +103,14 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
-      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
-      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
-      OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
-      - name: Normalize PR head SHA
-        id: normalize-head-sha
-        env:
-          OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-
-          match = re.search(r"[0-9a-fA-F]{40}", os.environ.get("OPENCODE_HEAD_SHA", ""))
-          if not match:
-              raise SystemExit("Unable to normalize PR head SHA")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_NORMALIZED_HEAD_SHA={match.group(0)}\n")
-              handle.write(f"OPENCODE_HEAD_SHA={match.group(0)}\n")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"head_sha={match.group(0)}\n")
-          PY
-
       - name: Check out repository
-        env:
-          OPENCODE_CHECKOUT_REF: ${{ steps.normalize-head-sha.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-          github_repository="${GITHUB_REPOSITORY:-}"
-          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
-          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
-          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
-          if [[ -n "${GITEA_TOKEN:-}" ]]; then
-            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
-          fi
-          git init .
-          git remote add origin "$repo_url"
-          if ! git fetch --depth=1 origin "$OPENCODE_CHECKOUT_REF"; then
-            git fetch --depth=1 origin "refs/pull/${OPENCODE_PULL_REQUEST_NUMBER}/head"
-          fi
-          git checkout --force "$OPENCODE_CHECKOUT_REF" 2>/dev/null || git checkout --force FETCH_HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
 
       - name: Load managed validation settings
         run: |
@@ -313,49 +157,16 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
       GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
-      - name: Normalize PR head SHA
-        id: normalize-head-sha
-        env:
-          OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-
-          match = re.search(r"[0-9a-fA-F]{40}", os.environ.get("OPENCODE_HEAD_SHA", ""))
-          if not match:
-              raise SystemExit("Unable to normalize PR head SHA")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_NORMALIZED_HEAD_SHA={match.group(0)}\n")
-              handle.write(f"OPENCODE_HEAD_SHA={match.group(0)}\n")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"head_sha={match.group(0)}\n")
-          PY
-
       - name: Check out repository
-        env:
-          OPENCODE_CHECKOUT_REF: ${{ steps.normalize-head-sha.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-          github_repository="${GITHUB_REPOSITORY:-}"
-          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
-          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
-          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
-          if [[ -n "${GITEA_TOKEN:-}" ]]; then
-            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
-          fi
-          git init .
-          git remote add origin "$repo_url"
-          if ! git fetch origin "$OPENCODE_CHECKOUT_REF"; then
-            git fetch origin "refs/pull/${OPENCODE_PULL_REQUEST_NUMBER}/head"
-          fi
-          git checkout --force "$OPENCODE_CHECKOUT_REF" 2>/dev/null || git checkout --force FETCH_HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
 
       - name: Load managed visual validation settings
         run: |
@@ -363,98 +174,7 @@ jobs:
           import json
           import os
           import re
-          import ssl
-          import subprocess
-          import urllib.request
           from pathlib import Path
-
-          def normalize_head_sha(value):
-              match = re.search(r"[0-9a-fA-F]{40}", str(value or ""))
-              return match.group(0) if match else ""
-
-          def extract_issue_number(values):
-              for value in values:
-                  match = re.search(r"(?:^|[^0-9])(\d+)(?:[-_/]|$)", value)
-                  if match:
-                      return match.group(1)
-              return None
-
-          def resolve_issue_from_head_sha(head_sha):
-              head_sha = normalize_head_sha(head_sha)
-              if not head_sha:
-                  return None
-              try:
-                  branches = subprocess.check_output(
-                      ["git", "branch", "-r", "--contains", head_sha],
-                      text=True,
-                      stderr=subprocess.DEVNULL,
-                  )
-              except Exception as error:
-                  print(f"Unable to inspect PR head branches for visual validation gating: {error}")
-                  return None
-              return extract_issue_number(branch.strip().lstrip("* ") for branch in branches.splitlines())
-
-          def resolve_issue_number(owner, repo, pull_request_number, head_sha):
-              issue_number = resolve_issue_from_head_sha(head_sha)
-              if issue_number:
-                  return issue_number
-              if not owner or not repo or not pull_request_number:
-                  return None
-              token = os.environ.get("GITEA_TOKEN", "").strip()
-              request = urllib.request.Request(
-                  f"https://git.ultramac.work/api/v1/repos/{owner}/{repo}/pulls/{pull_request_number}",
-                  headers={"Accept": "application/json"},
-              )
-              if token:
-                  request.add_header("Authorization", f"token {token}")
-              context = ssl._create_unverified_context() if os.environ.get("GIT_SSL_NO_VERIFY") == "1" else None
-              try:
-                  with urllib.request.urlopen(request, timeout=10, context=context) as response:
-                      pull = json.loads(response.read().decode("utf-8"))
-              except Exception as error:
-                  print(f"Unable to resolve pull request issue for visual validation gating: {error}")
-                  return None
-              values = [
-                  str(pull.get("head", {}).get("ref", "")),
-                  str(pull.get("head", {}).get("label", "")),
-                  str(pull.get("title", "")),
-                  str(pull.get("body", "")),
-              ]
-              return extract_issue_number(values)
-
-          def spec_has_visual_validation(text):
-              for line in text.splitlines():
-                  if line.strip() == "## Visual Validation":
-                      return True
-              return False
-
-          def spec_requests_visual_validation(issue_number, head_sha):
-              head_sha = normalize_head_sha(head_sha)
-              if not issue_number:
-                  print("No linked issue number found for visual validation gating")
-                  return False
-              specs_dir = Path("docs/specs/issues")
-              for spec_path in sorted(specs_dir.glob(f"{issue_number}-*.md")):
-                  return spec_has_visual_validation(spec_path.read_text(encoding="utf-8"))
-              if head_sha:
-                  try:
-                      listing = subprocess.check_output(
-                          ["git", "ls-tree", "-r", "--name-only", head_sha, "docs/specs/issues"],
-                          text=True,
-                          stderr=subprocess.DEVNULL,
-                      )
-                      for candidate in listing.splitlines():
-                          if Path(candidate).name.startswith(f"{issue_number}-") and candidate.endswith(".md"):
-                              spec_text = subprocess.check_output(
-                                  ["git", "show", f"{head_sha}:{candidate}"],
-                                  text=True,
-                                  stderr=subprocess.DEVNULL,
-                              )
-                              return spec_has_visual_validation(spec_text)
-                  except Exception as error:
-                      print(f"Unable to inspect PR head spec for visual validation gating: {error}")
-              print(f"No linked issue spec found for visual validation gating: issue {issue_number}")
-              return False
 
           config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
           assert config["schema_version"] == 1
@@ -479,20 +199,9 @@ jobs:
           visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
           visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
           visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
+          visual_evidence_supported = visual_validation["supported"] is True and (visual_playwright_web or visual_native_macos or visual_native_ios_simulator)
           owner = os.environ["OPENCODE_REPO_OWNER"].strip()
           repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          issue_number = resolve_issue_number(
-              owner,
-              repo,
-              os.environ.get("OPENCODE_PULL_REQUEST_NUMBER", "").strip(),
-              os.environ.get("OPENCODE_HEAD_SHA", "").strip(),
-          )
-          visual_spec_required = spec_requests_visual_validation(issue_number, os.environ.get("OPENCODE_HEAD_SHA", "").strip())
-          visual_evidence_supported = (
-              visual_validation["supported"] is True
-              and visual_spec_required
-              and (visual_playwright_web or visual_native_macos or visual_native_ios_simulator)
-          )
           raw = f"{owner}-{repo}".lower()
           project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
           project_key = re.sub(r"-{2,}", "-", project_key)
@@ -507,7 +216,6 @@ jobs:
               handle.write(f"OPENCODE_VISUAL_VALIDATION_SUPPORTED={'true' if visual_validation['supported'] else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PROVIDER={visual_provider}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PLATFORM={visual_platform}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_SPEC_REQUIRED={'true' if visual_spec_required else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED={'true' if visual_evidence_supported else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB={'true' if visual_validation['supported'] is True and visual_playwright_web else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_MACOS={'true' if visual_validation['supported'] is True and visual_native_macos else 'false'}\n")
@@ -525,13 +233,12 @@ jobs:
 
       - name: Check out controller repository
         if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
-        run: |
-          set -euo pipefail
-          controller_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${OPENCODE_CONTROLLER_REPOSITORY}.git"
-          if [[ -n "${GITEA_TOKEN:-}" ]]; then
-            controller_url="${controller_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
-          fi
-          git clone --depth=1 --branch "$OPENCODE_SETUP_BRANCH" "$controller_url" controller
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
 
       - name: Resolve Python with working venv
         if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
@@ -612,52 +319,18 @@ jobs:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
-      - name: Normalize PR head SHA
-        id: normalize-head-sha
-        env:
-          OPENCODE_HEAD_SHA: ${{ inputs.head_sha }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-
-          match = re.search(r"[0-9a-fA-F]{40}", os.environ.get("OPENCODE_HEAD_SHA", ""))
-          if not match:
-              raise SystemExit("Unable to normalize PR head SHA")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_NORMALIZED_HEAD_SHA={match.group(0)}\n")
-              handle.write(f"OPENCODE_HEAD_SHA={match.group(0)}\n")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"head_sha={match.group(0)}\n")
-          PY
-
       - name: Check out repository
-        env:
-          OPENCODE_CHECKOUT_REF: ${{ steps.normalize-head-sha.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-          github_repository="${GITHUB_REPOSITORY:-}"
-          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
-          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
-          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
-          if [[ -n "${GITEA_TOKEN:-}" ]]; then
-            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
-          fi
-          git init .
-          git remote add origin "$repo_url"
-          if ! git fetch origin "$OPENCODE_CHECKOUT_REF"; then
-            git fetch origin "refs/pull/${{ inputs.pull_request_number }}/head"
-          fi
-          git checkout --force "$OPENCODE_CHECKOUT_REF" 2>/dev/null || git checkout --force FETCH_HEAD
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Check out controller repository
-        run: |
-          set -euo pipefail
-          controller_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${{ needs.preflight.outputs.controller_repository }}.git"
-          if [[ -n "${GITEA_TOKEN:-}" ]]; then
-            controller_url="${controller_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
-          fi
-          git clone --depth=1 --branch "${{ needs.preflight.outputs.setup_branch }}" "$controller_url" controller
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.preflight.outputs.controller_repository }}
+          path: controller
+          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          fetch-depth: 0
 
       - name: Resolve Python with working venv
         run: |
@@ -682,5 +355,5 @@ jobs:
             --automation-config "$PWD/controller/automation.json" \
             --managed-config "$PWD/project/opencode-managed.json" \
             --pull-request-number "${{ inputs.pull_request_number }}" \
-            --head-sha "$OPENCODE_NORMALIZED_HEAD_SHA" \
+            --head-sha "${{ inputs.head_sha }}" \
             --handoff-review
