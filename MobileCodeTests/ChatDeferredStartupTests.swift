@@ -122,6 +122,48 @@ final class ChatDeferredStartupTests: XCTestCase {
         ))
     }
 
+    func testDeferredStartupCompletionDoesNotClearCancelledStaleOrReplacedTasks() {
+        let projectID = UUID()
+        let token = UUID()
+
+        XCTAssertFalse(ChatDeferredStartupCompletionPolicy.shouldClearTask(
+            isCancelled: true,
+            storedProjectID: projectID,
+            taskProjectID: projectID,
+            storedToken: token,
+            taskToken: token
+        ))
+
+        XCTAssertFalse(ChatDeferredStartupCompletionPolicy.shouldClearTask(
+            isCancelled: false,
+            storedProjectID: UUID(),
+            taskProjectID: projectID,
+            storedToken: token,
+            taskToken: token
+        ))
+
+        XCTAssertFalse(ChatDeferredStartupCompletionPolicy.shouldClearTask(
+            isCancelled: false,
+            storedProjectID: projectID,
+            taskProjectID: projectID,
+            storedToken: UUID(),
+            taskToken: token
+        ))
+    }
+
+    func testDeferredStartupCompletionOnlyClearsMatchingCurrentTaskToken() {
+        let projectID = UUID()
+        let token = UUID()
+
+        XCTAssertTrue(ChatDeferredStartupCompletionPolicy.shouldClearTask(
+            isCancelled: false,
+            storedProjectID: projectID,
+            taskProjectID: projectID,
+            storedToken: token,
+            taskToken: token
+        ))
+    }
+
     private func codeAgentsUIImageBlock(path: String) -> String {
         """
         ```codeagents-ui
