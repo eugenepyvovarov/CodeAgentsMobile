@@ -42,6 +42,210 @@ enum OpenCodeHydratedMessageMerge {
     }
 }
 
+enum ChatMCPServerCachePolicy {
+    static func needsFetch(
+        cachedServerCount: Int,
+        isInvalidated: Bool,
+        lastFetchedAt: Date?,
+        now: Date,
+        staleInterval: TimeInterval
+    ) -> Bool {
+        if cachedServerCount == 0 || isInvalidated {
+            return true
+        }
+        guard let lastFetchedAt else {
+            return true
+        }
+        return now.timeIntervalSince(lastFetchedAt) >= staleInterval
+    }
+}
+
+struct ChatMCPServerSetupPlan: Equatable {
+    let shouldFetchMCPServers: Bool
+    let shouldEnsureRules: Bool
+}
+
+enum ChatMCPServerSetupPlanner {
+    static func plan(
+        cachedServerCount: Int,
+        isInvalidated: Bool,
+        lastFetchedAt: Date?,
+        now: Date,
+        staleInterval: TimeInterval,
+        includeRules: Bool
+    ) -> ChatMCPServerSetupPlan {
+        ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: ChatMCPServerCachePolicy.needsFetch(
+                cachedServerCount: cachedServerCount,
+                isInvalidated: isInvalidated,
+                lastFetchedAt: lastFetchedAt,
+                now: now,
+                staleInterval: staleInterval
+            ),
+            shouldEnsureRules: includeRules
+        )
+    }
+}
+
+struct ChatMediaPrefetchMessageSnapshot {
+    let role: MessageRole
+    let isComplete: Bool
+    let content: String
+
+    init(role: MessageRole, isComplete: Bool, content: String) {
+        self.role = role
+        self.isComplete = isComplete
+        self.content = content
+    }
+
+    init(message: Message) {
+        self.role = message.role
+        self.isComplete = message.isComplete
+        self.content = message.content
+    }
+}
+
+struct ChatDeferredMediaPrefetchRequest {
+    let projectID: UUID
+    let messages: [ChatMediaPrefetchMessageSnapshot]
+}
+
+enum ChatMediaPrefetchPlanner {
+    static let maxPrefetchSources = 40
+
+    static func postReadyRequest(
+        projectID: UUID,
+        messages: [ChatMediaPrefetchMessageSnapshot]
+    ) -> ChatDeferredMediaPrefetchRequest {
+        ChatDeferredMediaPrefetchRequest(projectID: projectID, messages: messages)
+    }
+
+    static func mediaSources(
+        in messages: [ChatMediaPrefetchMessageSnapshot],
+        projectID: UUID
+    ) -> [CodeAgentsUIMediaSource] {
+        var seenKeys = Set<String>()
+        seenKeys.reserveCapacity(32)
+        var sources: [CodeAgentsUIMediaSource] = []
+        sources.reserveCapacity(32)
+
+        for message in messages {
+            guard message.role == .assistant else { continue }
+            guard message.isComplete else { continue }
+            let content = message.content
+            let lowercased = content.lowercased()
+            guard lowercased.contains("codeagents_ui"), lowercased.contains("```") else { continue }
+
+            let segments = CodeAgentsUIBlockExtractor.segments(from: content)
+            for segment in segments {
+                guard case .ui(let block) = segment else { continue }
+                for element in block.elements {
+                    appendSources(from: element, projectID: projectID, seenKeys: &seenKeys, sources: &sources)
+                    if sources.count >= maxPrefetchSources {
+                        break
+                    }
+                }
+
+                if sources.count >= maxPrefetchSources {
+                    break
+                }
+            }
+
+            if sources.count >= maxPrefetchSources {
+                break
+            }
+        }
+
+        return sources
+    }
+
+    static func sourceKey(for source: CodeAgentsUIMediaSource, projectID: UUID) -> String {
+        switch source {
+        case .url(let url):
+            return "url:\(url.absoluteString)"
+        case .projectFile(let path):
+            return "project:\(projectID.uuidString):\(path)"
+        case .base64(let mediaType, let data):
+            return "base64:\(mediaType):\(data.hashValue)"
+        }
+    }
+
+    private static func appendSources(
+        from element: CodeAgentsUIElement,
+        projectID: UUID,
+        seenKeys: inout Set<String>,
+        sources: inout [CodeAgentsUIMediaSource]
+    ) {
+        switch element {
+        case .image(let image):
+            appendPrefetchSource(image.source, projectID: projectID, seenKeys: &seenKeys, sources: &sources)
+        case .gallery(let gallery):
+            for image in gallery.images {
+                guard sources.count < maxPrefetchSources else { break }
+                appendPrefetchSource(image.source, projectID: projectID, seenKeys: &seenKeys, sources: &sources)
+            }
+        case .video(let video):
+            if let poster = video.poster {
+                appendPrefetchSource(poster, projectID: projectID, seenKeys: &seenKeys, sources: &sources)
+            }
+        case .card(let card):
+            for nested in card.content {
+                guard sources.count < maxPrefetchSources else { break }
+                appendSources(from: nested, projectID: projectID, seenKeys: &seenKeys, sources: &sources)
+            }
+        case .markdown, .table, .chart:
+            break
+        }
+    }
+
+    private static func appendPrefetchSource(
+        _ source: CodeAgentsUIMediaSource,
+        projectID: UUID,
+        seenKeys: inout Set<String>,
+        sources: inout [CodeAgentsUIMediaSource]
+    ) {
+        guard sources.count < maxPrefetchSources else { return }
+        let key = sourceKey(for: source, projectID: projectID)
+        guard !seenKeys.contains(key) else { return }
+        seenKeys.insert(key)
+        sources.append(source)
+    }
+}
+
+enum ChatMediaPrefetchCompletionPolicy {
+    static func shouldClearTask(
+        isCancelled: Bool,
+        currentProjectID: UUID?,
+        taskProjectID: UUID,
+        storedToken: UUID?,
+        taskToken: UUID
+    ) -> Bool {
+        guard !isCancelled else { return false }
+        guard currentProjectID == taskProjectID else { return false }
+        return storedToken == taskToken
+    }
+}
+
+enum ChatDeferredStartupCompletionPolicy {
+    static func shouldClearTask(
+        isCancelled: Bool,
+        storedProjectID: UUID?,
+        taskProjectID: UUID,
+        storedToken: UUID?,
+        taskToken: UUID
+    ) -> Bool {
+        guard !isCancelled else { return false }
+        guard storedProjectID == taskProjectID else { return false }
+        return storedToken == taskToken
+    }
+}
+
+private struct MediaPrefetchTaskState {
+    let projectID: UUID
+    let token: UUID
+    let task: Task<Void, Never>
+}
+
 
 /// ViewModel for the chat interface
 /// Handles message display, streaming, and persistence
@@ -89,7 +293,10 @@ class ChatViewModel {
     private let runtimeSelectionStore: CodingAgentRuntimeSelectionStore
     private let runtimeRegistry: CodingAgentRuntimeRegistry
 
-    private var mediaPrefetchTasks: [String: Task<Void, Never>] = [:]
+    private var mediaPrefetchTasks: [String: MediaPrefetchTaskState] = [:]
+    private var deferredStartupTask: Task<Void, Never>?
+    private var deferredStartupProjectID: UUID?
+    private var deferredStartupToken: UUID?
     
     /// Loading state for previous session
     var isLoadingPreviousSession = false
@@ -134,6 +341,9 @@ class ChatViewModel {
     
     /// Cached MCP servers for the current project
     private var cachedMCPServers: [MCPServer] = []
+    private var mcpCacheLastFetchedAt: Date?
+    private var isMCPCacheInvalidated = true
+    private let mcpCacheStaleInterval: TimeInterval = 300
     
     /// Track if MCP servers are being fetched
     private var isFetchingMCPServers = false
@@ -250,6 +460,7 @@ class ChatViewModel {
         
         // Reset the flag when project changes
         if self.projectId != projectId {
+            cancelDeferredStartup(reason: "projectSwitch", projectID: self.projectId)
             hasCheckedForPreviousSession = false
             sessionCheckRetryCount = 0
             // Also reset loading states when switching projects
@@ -257,6 +468,8 @@ class ChatViewModel {
             showActiveSessionIndicator = false
             // Clear cached MCP servers when switching projects
             cachedMCPServers = []
+            mcpCacheLastFetchedAt = nil
+            isMCPCacheInvalidated = true
             // Clear tool approval state when switching projects
             activeToolApproval = nil
             pendingToolApprovals = []
@@ -280,23 +493,6 @@ class ChatViewModel {
 
         toolApprovalStore.ensureDefaults(for: projectId)
         
-        // Check runtime setup, fetch MCP servers, and ensure project rules when configuring.
-        Task {
-            if runtimeKind == .claudeProxy, let server = ProjectContext.shared.activeServer {
-                _ = await claudeService.checkClaudeInstallation(for: server)
-            }
-            
-            // Fetch MCP servers only if cache is empty
-            if cachedMCPServers.isEmpty {
-                await fetchMCPServers()
-            }
-
-            if let project = ProjectContext.shared.activeProject {
-                await claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
-                prefetchCodeAgentsUIMedia(in: project, messages: messages)
-            }
-        }
-        
         // Check for previous session after configuration (only if not already checked)
         if !hasCheckedForPreviousSession {
             // Cancel any existing check
@@ -309,8 +505,129 @@ class ChatViewModel {
                 } else {
                     await checkForPreviousSession()
                 }
+                if runtimeKind == .openCode || hasCheckedForPreviousSession {
+                    scheduleDeferredStartupAfterChatReady(projectID: projectId, runtimeKind: runtimeKind)
+                }
             }
+        } else {
+            scheduleDeferredStartupAfterChatReady(projectID: projectId, runtimeKind: runtimeKind)
         }
+    }
+
+    private func scheduleDeferredStartupAfterChatReady(projectID: UUID, runtimeKind: CodingAgentRuntimeKind) {
+        let existingProjectID = deferredStartupProjectID
+        cancelDeferredStartup(reason: "reschedule", projectID: existingProjectID)
+
+        let messageSnapshot = messages.map { ChatMediaPrefetchMessageSnapshot(message: $0) }
+        let mediaPrefetchRequest = ChatMediaPrefetchPlanner.postReadyRequest(
+            projectID: projectID,
+            messages: messageSnapshot
+        )
+        deferredStartupProjectID = projectID
+        let startupToken = UUID()
+        deferredStartupToken = startupToken
+        ChatRecoveryTiming.log(
+            runtime: runtimeKind.rawValue,
+            projectID: projectID.uuidString,
+            operation: "chat.deferredStartup.schedule",
+            elapsedNanoseconds: 0,
+            metadata: [
+                "snapshotMessages": .count(messageSnapshot.count),
+                "status": .status(.started)
+            ]
+        )
+
+        deferredStartupTask = Task { @MainActor in
+            let timingStart = DispatchTime.now().uptimeNanoseconds
+            var timingStatus = ChatRecoveryTiming.Status.complete
+            defer {
+                ChatRecoveryTiming.log(
+                    runtime: runtimeKind.rawValue,
+                    projectID: projectID.uuidString,
+                    operation: "chat.deferredStartup.run",
+                    elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                    metadata: [
+                        "snapshotMessages": .count(messageSnapshot.count),
+                        "status": .status(timingStatus)
+                    ]
+                )
+                if ChatDeferredStartupCompletionPolicy.shouldClearTask(
+                    isCancelled: Task.isCancelled,
+                    storedProjectID: self.deferredStartupProjectID,
+                    taskProjectID: projectID,
+                    storedToken: self.deferredStartupToken,
+                    taskToken: startupToken
+                ) {
+                    self.deferredStartupTask = nil
+                    self.deferredStartupProjectID = nil
+                    self.deferredStartupToken = nil
+                }
+            }
+
+            guard !Task.isCancelled else {
+                timingStatus = .cancelled
+                return
+            }
+            guard self.projectId == projectID,
+                  let project = ProjectContext.shared.activeProject,
+                  project.id == projectID else {
+                timingStatus = .skipped
+                return
+            }
+
+            if runtimeKind == .openCode {
+                await self.refreshMCPServersAfterChatReadyIfNeeded(project: project)
+                guard !Task.isCancelled else {
+                    timingStatus = .cancelled
+                    return
+                }
+                guard self.projectId == projectID else {
+                    timingStatus = .skipped
+                    return
+                }
+            }
+
+            if runtimeKind == .claudeProxy, let server = ProjectContext.shared.activeServer {
+                _ = await self.claudeService.checkClaudeInstallation(for: server)
+                guard !Task.isCancelled else {
+                    timingStatus = .cancelled
+                    return
+                }
+                guard self.projectId == projectID else {
+                    timingStatus = .skipped
+                    return
+                }
+            }
+
+            self.prefetchCodeAgentsUIMedia(in: project, request: mediaPrefetchRequest)
+        }
+    }
+
+    private func cancelDeferredStartup(reason: String, projectID: UUID?) {
+        let hadTask = deferredStartupTask != nil
+        deferredStartupTask?.cancel()
+        deferredStartupTask = nil
+        deferredStartupProjectID = nil
+        deferredStartupToken = nil
+
+        let mediaTaskCount = mediaPrefetchTasks.count
+        for state in mediaPrefetchTasks.values {
+            state.task.cancel()
+        }
+        mediaPrefetchTasks.removeAll()
+
+        guard hadTask || mediaTaskCount > 0 else { return }
+        ChatRecoveryTiming.log(
+            runtime: timingRuntimeName(for: ProjectContext.shared.activeProject),
+            projectID: projectID?.uuidString,
+            operation: "chat.deferredStartup.cancel",
+            elapsedNanoseconds: 0,
+            metadata: [
+                "mediaTasks": .count(mediaTaskCount),
+                "status": .status(.cancelled)
+            ]
+        )
+        print("📝 Deferred startup cancelled (\(reason))")
     }
     
     // MARK: - Public Methods
@@ -451,6 +768,8 @@ class ChatViewModel {
                 return
             }
         }
+
+        await ensureSendTimeSetup(for: project, includeRules: true)
         
         // If there's a previous message still streaming, mark it as interrupted
         if let previousStreaming = messages.last(where: { $0.isStreaming }) {
@@ -696,6 +1015,8 @@ class ChatViewModel {
                 return
             }
         }
+
+        await ensureSendTimeSetup(for: project, includeRules: false)
 
         if let previousStreaming = messages.last(where: { $0.isStreaming }) {
             previousStreaming.isStreaming = false
@@ -1022,6 +1343,7 @@ class ChatViewModel {
         // Cancel any pending session check
         sessionCheckTask?.cancel()
         sessionCheckTask = nil
+        cancelDeferredStartup(reason: "clearLoadingStates", projectID: projectId)
         // Flush any pending throttled saves so proxy anchors/timestamps persist across view re-entries.
         saveChanges()
         stopProxyPolling()
@@ -1045,6 +1367,7 @@ class ChatViewModel {
         // Cancel any pending tasks
         sessionCheckTask?.cancel()
         sessionCheckTask = nil
+        cancelDeferredStartup(reason: "cleanup", projectID: projectId)
         // Flush any pending throttled saves before tearing down the view model.
         saveChanges()
         stopProxyPolling()
@@ -1067,6 +1390,61 @@ class ChatViewModel {
         print("📝 cleanup: Cleaned up all resources")
     }
     
+    private func ensureSendTimeSetup(for project: RemoteProject, includeRules: Bool) async {
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: cachedMCPServers.count,
+            isInvalidated: isMCPCacheInvalidated,
+            lastFetchedAt: mcpCacheLastFetchedAt,
+            now: Date(),
+            staleInterval: mcpCacheStaleInterval,
+            includeRules: includeRules
+        )
+        if plan.shouldFetchMCPServers {
+            await fetchMCPServersForSetupIfCurrent(project: project, operation: "chat.ensureSendTimeMCPServers")
+        }
+        guard plan.shouldEnsureRules else { return }
+        await claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
+    }
+
+    private func refreshMCPServersAfterChatReadyIfNeeded(project: RemoteProject, now: Date = Date()) async {
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: cachedMCPServers.count,
+            isInvalidated: isMCPCacheInvalidated,
+            lastFetchedAt: mcpCacheLastFetchedAt,
+            now: now,
+            staleInterval: mcpCacheStaleInterval,
+            includeRules: false
+        )
+        guard plan.shouldFetchMCPServers else { return }
+        await fetchMCPServersForSetupIfCurrent(project: project, operation: "chat.postReadyMCPServers")
+    }
+
+    private func fetchMCPServersForSetupIfCurrent(project: RemoteProject, operation: String) async {
+        guard projectId == project.id else { return }
+
+        let timingStart = DispatchTime.now().uptimeNanoseconds
+        var timingStatus = ChatRecoveryTiming.Status.complete
+        defer {
+            ChatRecoveryTiming.log(
+                runtime: timingRuntimeName(for: project),
+                projectID: project.id.uuidString,
+                operation: operation,
+                elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
+                metadata: [
+                    "cachedServers": .count(cachedMCPServers.count),
+                    "invalidated": .flag(isMCPCacheInvalidated),
+                    "status": .status(timingStatus)
+                ]
+            )
+        }
+
+        await fetchMCPServers()
+        guard projectId == project.id else {
+            timingStatus = .skipped
+            return
+        }
+    }
+
     /// Fetch MCP servers for the current project
     @MainActor
     func fetchMCPServers() async {
@@ -1103,7 +1481,14 @@ class ChatViewModel {
         }
         
         do {
-            cachedMCPServers = try await mcpService.fetchServers(for: project)
+            let fetchedServers = try await mcpService.fetchServers(for: project)
+            guard !Task.isCancelled, projectId == project.id else {
+                timingStatus = .cancelled
+                return
+            }
+            cachedMCPServers = fetchedServers
+            mcpCacheLastFetchedAt = Date()
+            isMCPCacheInvalidated = false
             fetchedCount = cachedMCPServers.count
             print("📝 Fetched and cached \(cachedMCPServers.count) MCP servers")
             
@@ -1115,6 +1500,8 @@ class ChatViewModel {
             timingStatus = .failed
             print("⚠️ Failed to fetch MCP servers: \(error)")
             cachedMCPServers = []
+            mcpCacheLastFetchedAt = nil
+            isMCPCacheInvalidated = true
             fetchedCount = 0
             connectedCount = 0
         }
@@ -1123,12 +1510,16 @@ class ChatViewModel {
     /// Refresh MCP servers (useful after configuration changes)
     func refreshMCPServers() async {
         cachedMCPServers = []
+        mcpCacheLastFetchedAt = nil
+        isMCPCacheInvalidated = true
         await fetchMCPServers()
     }
     
     /// Invalidate MCP cache (call when configuration changes)
     func invalidateMCPCache() {
         cachedMCPServers = []
+        mcpCacheLastFetchedAt = nil
+        isMCPCacheInvalidated = true
         print("📝 MCP cache invalidated")
     }
     
@@ -1137,12 +1528,6 @@ class ChatViewModel {
         print("📝 MCP configuration changed notification received")
         print("📝 Current cached MCP servers before invalidation: \(cachedMCPServers.count)")
         invalidateMCPCache()
-        
-        // Fetch new servers in background
-        Task {
-            await fetchMCPServers()
-            print("📝 MCP servers after refresh: \(cachedMCPServers.count)")
-        }
     }
     
     /// Batch update streaming state to prevent UI flicker
@@ -1537,14 +1922,6 @@ class ChatViewModel {
             applyOpenCodeHydrationResult(hydrationResult, project: project)
 
             reconcileOpenCodeSessionState(sessionState, project: project)
-            ChatRecoveryTiming.measure(
-                runtime: CodingAgentRuntimeKind.openCode.rawValue,
-                projectID: project.id.uuidString,
-                operation: "opencode.mediaPrefetch",
-                metadata: ["localMessages": .count(messages.count)]
-            ) {
-                prefetchCodeAgentsUIMedia(in: project, messages: messages)
-            }
             project.updateLastModified()
             ChatRecoveryTiming.measure(
                 runtime: CodingAgentRuntimeKind.openCode.rawValue,
@@ -2464,6 +2841,14 @@ class ChatViewModel {
     }
 
     private func prefetchCodeAgentsUIMedia(in project: RemoteProject, messages: [Message]) {
+        let request = ChatDeferredMediaPrefetchRequest(
+            projectID: project.id,
+            messages: messages.map { ChatMediaPrefetchMessageSnapshot(message: $0) }
+        )
+        prefetchCodeAgentsUIMedia(in: project, request: request)
+    }
+
+    private func prefetchCodeAgentsUIMedia(in project: RemoteProject, request: ChatDeferredMediaPrefetchRequest) {
         let timingStart = DispatchTime.now().uptimeNanoseconds
         var mediaCandidateCount = 0
         var startedTaskCount = 0
@@ -2475,7 +2860,7 @@ class ChatViewModel {
                 operation: "chat.prefetchCodeAgentsUIMedia",
                 elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
                 metadata: [
-                    "inputMessages": .count(messages.count),
+                    "inputMessages": .count(request.messages.count),
                     "mediaCandidates": .count(mediaCandidateCount),
                     "skippedExistingTasks": .count(skippedExistingTaskCount),
                     "startedTasks": .count(startedTaskCount)
@@ -2483,102 +2868,45 @@ class ChatViewModel {
             )
         }
 
-        let maxPrefetchSources = 40
-        var seenKeys = Set<String>()
-        seenKeys.reserveCapacity(32)
-        var sources: [CodeAgentsUIMediaSource] = []
-        sources.reserveCapacity(32)
-
-        for message in messages {
-            guard message.role == .assistant else { continue }
-            guard message.isComplete else { continue }
-            let content = message.content
-            let lowercased = content.lowercased()
-            guard lowercased.contains("codeagents_ui"), lowercased.contains("```") else { continue }
-
-            let segments = CodeAgentsUIBlockExtractor.segments(from: content)
-            for segment in segments {
-                guard case .ui(let block) = segment else { continue }
-                for element in block.elements {
-                    switch element {
-                    case .image(let image):
-                        appendPrefetchSource(image.source)
-                    case .gallery(let gallery):
-                        for image in gallery.images {
-                            appendPrefetchSource(image.source)
-                        }
-                    case .video(let video):
-                        if let poster = video.poster {
-                            appendPrefetchSource(poster)
-                        }
-                    case .card(let card):
-                        for nested in card.content {
-                            if case .image(let image) = nested {
-                                appendPrefetchSource(image.source)
-                            }
-                            if case .gallery(let gallery) = nested {
-                                for image in gallery.images {
-                                    appendPrefetchSource(image.source)
-                                }
-                            }
-                            if case .video(let video) = nested, let poster = video.poster {
-                                appendPrefetchSource(poster)
-                            }
-                        }
-                    case .markdown, .table, .chart:
-                        continue
-                    }
-
-                    if sources.count >= maxPrefetchSources {
-                        break
-                    }
-                }
-
-                if sources.count >= maxPrefetchSources {
-                    break
-                }
-            }
-
-            if sources.count >= maxPrefetchSources {
-                break
-            }
-        }
+        guard request.projectID == project.id else { return }
+        let sources = ChatMediaPrefetchPlanner.mediaSources(in: request.messages, projectID: request.projectID)
 
         mediaCandidateCount = sources.count
 
         for source in sources {
-            let key = mediaPrefetchKey(for: source, project: project)
+            let key = mediaPrefetchKey(for: source, projectID: request.projectID)
             guard mediaPrefetchTasks[key] == nil else {
                 skippedExistingTaskCount += 1
                 continue
             }
+            let token = UUID()
             let task = Task { [weak self] in
+                guard !Task.isCancelled else { return }
                 _ = await ChatMediaLoader.shared.resolveMedia(source, project: project)
                 await MainActor.run {
-                    self?.mediaPrefetchTasks[key] = nil
+                    guard let self else { return }
+                    let storedToken = self.mediaPrefetchTasks[key]?.token
+                    guard ChatMediaPrefetchCompletionPolicy.shouldClearTask(
+                        isCancelled: Task.isCancelled,
+                        currentProjectID: self.projectId,
+                        taskProjectID: request.projectID,
+                        storedToken: storedToken,
+                        taskToken: token
+                    ) else { return }
+                    self.mediaPrefetchTasks[key] = nil
                 }
             }
-            mediaPrefetchTasks[key] = task
+            mediaPrefetchTasks[key] = MediaPrefetchTaskState(projectID: request.projectID, token: token, task: task)
             startedTaskCount += 1
-        }
-
-        func appendPrefetchSource(_ source: CodeAgentsUIMediaSource) {
-            let key = mediaPrefetchKey(for: source, project: project)
-            guard !seenKeys.contains(key) else { return }
-            seenKeys.insert(key)
-            sources.append(source)
         }
     }
 
     private func mediaPrefetchKey(for source: CodeAgentsUIMediaSource, project: RemoteProject) -> String {
-        switch source {
-        case .url(let url):
-            return "url:\(url.absoluteString)"
-        case .projectFile(let path):
-            return "project:\(project.id.uuidString):\(path)"
-        case .base64(let mediaType, let data):
-            return "base64:\(mediaType):\(data.hashValue)"
-        }
+        mediaPrefetchKey(for: source, projectID: project.id)
+    }
+
+    private func mediaPrefetchKey(for source: CodeAgentsUIMediaSource, projectID: UUID) -> String {
+        ChatMediaPrefetchPlanner.sourceKey(for: source, projectID: projectID)
     }
 
     private func messageContainingJSONLine(_ jsonLine: String) -> Message? {

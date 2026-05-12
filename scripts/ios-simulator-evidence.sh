@@ -40,6 +40,8 @@ USE_FOR_OPENCODE_COPY_OFFER_CHECKPOINT="use-for-opencode-copy-offer"
 SETTINGS_LISTS_VISUAL_VALIDATION_IDENTIFIER="settings-lists-consistent"
 SETTINGS_CLOUD_PROVIDERS_CHECKPOINT="settings-cloud-providers-grouped"
 SETTINGS_SSH_KEYS_CHECKPOINT="settings-ssh-keys-grouped"
+CHAT_OPEN_DEFERRED_STARTUP_VISUAL_VALIDATION_IDENTIFIER="chat-open-deferred-startup"
+CHAT_LOCAL_MESSAGES_USABLE_CHECKPOINT="chat-local-messages-usable"
 ARTIFACT_ROOT="${OPENCODE_EVIDENCE_ARTIFACT_ROOT:-${DERIVED_ROOT}/artifacts/${SCENARIO}}"
 
 case "${SCENARIO}" in
@@ -53,6 +55,9 @@ case "${SCENARIO}" in
     ;;
   settings-lists-consistent)
     VISUAL_VALIDATION_IDENTIFIER="${SETTINGS_LISTS_VISUAL_VALIDATION_IDENTIFIER}"
+    ;;
+  chat-open-deferred-startup)
+    VISUAL_VALIDATION_IDENTIFIER="${CHAT_OPEN_DEFERRED_STARTUP_VISUAL_VALIDATION_IDENTIFIER}"
     ;;
   *)
     echo "Unsupported iOS simulator evidence scenario: ${SCENARIO}" >&2
@@ -438,6 +443,17 @@ capture_settings_lists_checkpoint() {
   fi
 }
 
+capture_chat_open_deferred_startup_checkpoint() {
+  local simulator_id="$1"
+
+  if [[ "${VISUAL_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_visual_checkpoint "${simulator_id}" "${CHAT_LOCAL_MESSAGES_USABLE_CHECKPOINT}" "0"
+  fi
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" ]]; then
+    capture_named_demo_checkpoint "${simulator_id}" "${CHAT_LOCAL_MESSAGES_USABLE_CHECKPOINT}" "0"
+  fi
+}
+
 scroll_until_ui_label() {
   local simulator_id="$1"
   local label="$2"
@@ -635,6 +651,53 @@ run_settings_lists_consistent_scenario() {
   fi
 }
 
+run_chat_open_deferred_startup_scenario() {
+  local simulator_id="$1"
+
+  build_install_and_launch_app \
+    "${simulator_id}" \
+    --ui-testing \
+    --reset-ui-test-defaults \
+    --ui-test-chat-open-deferred-startup
+
+  sleep "${LAUNCH_SETTLE_SECONDS}"
+
+  if [[ "${DEMO_CAPTURE_REQUESTED}" == "true" \
+    && "${OPENCODE_DEMO_RECORD_VIDEO:-false}" == "true" \
+    && -n "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH:-}" ]]; then
+    mkdir -p "$(dirname "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}")"
+    xcbmcp_run_json simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${ARTIFACT_ROOT}/stale-recording.mp4" >/dev/null 2>&1 || true
+    xcbmcp_run_json simulator record-video --simulator-id "${simulator_id}" --start --fps 30 >/dev/null
+    VIDEO_STARTED="true"
+    sleep 1
+  fi
+
+  if ! wait_for_ui_label "${simulator_id}" "Deferred Startup Agent" 10 1; then
+    echo "Deferred startup chat fixture did not open for ${SCENARIO}." >&2
+    ui_snapshot_text "${simulator_id}" >&2 || true
+    exit 1
+  fi
+
+  xcbmcp_run_json ui-automation tap \
+    --simulator-id "${simulator_id}" \
+    --id "chat-composer-input" \
+    --post-delay 1 >/dev/null || true
+
+  capture_chat_open_deferred_startup_checkpoint "${simulator_id}"
+
+  if [[ "${VIDEO_STARTED}" == "true" ]]; then
+    sleep 2
+    xcbmcp_run_json simulator record-video \
+      --simulator-id "${simulator_id}" \
+      --stop \
+      --output-file "${OPENCODE_DEMO_VIDEO_OUTPUT_PATH}" >/dev/null
+    VIDEO_STARTED="false"
+  fi
+}
+
 SIMULATOR_ID="${CODEAGENTS_SIMULATOR_ID:-$(resolve_simulator_id)}"
 VIDEO_STARTED="false"
 
@@ -662,6 +725,12 @@ fi
 
 if [[ "${SCENARIO}" == "settings-lists-consistent" ]]; then
   run_settings_lists_consistent_scenario "${SIMULATOR_ID}"
+  ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
+  exit 0
+fi
+
+if [[ "${SCENARIO}" == "chat-open-deferred-startup" ]]; then
+  run_chat_open_deferred_startup_scenario "${SIMULATOR_ID}"
   ui_snapshot_text "${SIMULATOR_ID}" >&2 || true
   exit 0
 fi
