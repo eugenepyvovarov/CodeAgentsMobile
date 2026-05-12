@@ -36,14 +36,14 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
       - name: Check out default branch workflow definition
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        run: |
+          git clone --no-tags "https://review-bot:${GITEA_TOKEN}@git.ultramac.work/${OPENCODE_REPO_OWNER}/${OPENCODE_REPO_NAME}.git" .
 
       - name: Resolve managed PR-prep stages
         id: managed-config
@@ -118,12 +118,16 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
       - name: Check out repository
-        uses: actions/checkout@v4
+        run: |
+          git clone --no-tags "https://review-bot:${GITEA_TOKEN}@git.ultramac.work/${OPENCODE_REPO_OWNER}/${OPENCODE_REPO_NAME}.git" .
 
       - name: Resolve pull request dispatch inputs
         run: |
@@ -196,9 +200,8 @@ jobs:
         run: git config --global http.sslVerify false
 
       - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        run: |
+          git clone --no-tags "https://review-bot:${GITEA_TOKEN}@git.ultramac.work/${OPENCODE_REPO_OWNER}/${OPENCODE_REPO_NAME}.git" .
 
       - name: Resolve pull request dispatch inputs
         run: |
@@ -376,9 +379,8 @@ jobs:
         run: git config --global http.sslVerify false
 
       - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        run: |
+          git clone --no-tags "https://review-bot:${GITEA_TOKEN}@git.ultramac.work/${OPENCODE_REPO_OWNER}/${OPENCODE_REPO_NAME}.git" .
 
       - name: Resolve pull request dispatch inputs
         run: |
