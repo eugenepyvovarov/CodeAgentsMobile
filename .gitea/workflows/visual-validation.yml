@@ -37,7 +37,7 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -50,58 +50,7 @@ jobs:
 
       - name: Load managed visual validation settings
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
-          assert config["schema_version"] == 1
-          controller = config["controller"]
-          assert controller["repository"]
-          assert controller["setup_branch"]
-          review = config["review"]
-          assert review["persona"]
-          assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
-          validation = config["validation"]
-          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
-          preview = config["preview"]
-          assert isinstance(preview["supported"], bool)
-          visual_validation = config["visual_validation"]
-          assert visual_validation["workflow"] == ".gitea/workflows/visual-validation.yml"
-          assert isinstance(visual_validation["supported"], bool)
-          assert visual_validation["provider"]
-          assert visual_validation["platform"]
-          assert visual_validation["full_page"] is True
-          visual_provider = str(visual_validation["provider"]).strip()
-          visual_platform = str(visual_validation["platform"]).strip()
-          visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
-          visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
-          visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
-          visual_evidence_supported = visual_validation["supported"] is True and (visual_playwright_web or visual_native_macos or visual_native_ios_simulator)
-          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
-          repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          raw = f"{owner}-{repo}".lower()
-          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
-          project_key = re.sub(r"-{2,}", "-", project_key)
-          if not project_key:
-              raise SystemExit("Unable to derive project key from repository owner/name")
-          github_env = os.environ["GITHUB_ENV"]
-          with open(github_env, "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
-              handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
-              handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
-              handle.write(f"OPENCODE_PREVIEW_SUPPORTED={'true' if preview['supported'] else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_SUPPORTED={'true' if visual_validation['supported'] else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_PROVIDER={visual_provider}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_PLATFORM={visual_platform}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED={'true' if visual_evidence_supported else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB={'true' if visual_validation['supported'] is True and visual_playwright_web else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_MACOS={'true' if visual_validation['supported'] is True and visual_native_macos else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_IOS_SIMULATOR={'true' if visual_validation['supported'] is True and visual_native_ios_simulator else 'false'}\n")
-          print("managed visual validation config ok")
-          PY
+          python3 scripts/lib/opencode-managed-workflow-context.py --context visual-validation --emit env
 
       - name: Skip bootstrap setup PR visual validation workflow
         if: ${{ github.event_name == 'pull_request' && github.head_ref == env.OPENCODE_SETUP_BRANCH }}
@@ -173,13 +122,33 @@ jobs:
         run: |
           export HOME="$HOST_HOME"
           export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
-          cat > .opencode-visual-validation-project.json <<EOF
-          {
-            "project_key": "$OPENCODE_PROJECT_KEY",
-            "repo_owner": "$OPENCODE_REPO_OWNER",
-            "repo_name": "$OPENCODE_REPO_NAME"
-          }
-          EOF
+          OPENCODE_DEFAULT_BRANCH="${GITHUB_BASE_REF:-}"
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="$(git ls-remote --symref origin HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+          fi
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="main"
+          fi
+          export OPENCODE_DEFAULT_BRANCH
+          "$VISUAL_VALIDATION_VENV/bin/python" - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          Path(".opencode-visual-validation-project.json").write_text(
+              json.dumps(
+                  {
+                      "project_key": os.environ["OPENCODE_PROJECT_KEY"],
+                      "repo_owner": os.environ["OPENCODE_REPO_OWNER"],
+                      "repo_name": os.environ["OPENCODE_REPO_NAME"],
+                      "default_branch": os.environ["OPENCODE_DEFAULT_BRANCH"],
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
           "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/visual_validation_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-visual-validation-project.json" \
