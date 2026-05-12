@@ -54,6 +54,7 @@ jobs:
           import json
           import os
           import re
+          import subprocess
           from pathlib import Path
 
           config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
@@ -87,11 +88,24 @@ jobs:
           project_key = re.sub(r"-{2,}", "-", project_key)
           if not project_key:
               raise SystemExit("Unable to derive project key from repository owner/name")
+          default_branch = ""
+          try:
+              remote_head = subprocess.check_output(
+                  ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                  text=True,
+              ).strip()
+              if remote_head.startswith("origin/"):
+                  default_branch = remote_head.removeprefix("origin/")
+          except Exception:
+              default_branch = ""
+          if not default_branch:
+              default_branch = os.environ.get("GITHUB_BASE_REF", "").strip() or "main"
           github_env = os.environ["GITHUB_ENV"]
           with open(github_env, "a", encoding="utf-8") as handle:
               handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
               handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
               handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
+              handle.write(f"OPENCODE_DEFAULT_BRANCH={default_branch}\n")
               handle.write(f"OPENCODE_PREVIEW_SUPPORTED={'true' if preview['supported'] else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_SUPPORTED={'true' if visual_validation['supported'] else 'false'}\n")
               handle.write(f"OPENCODE_VISUAL_VALIDATION_PROVIDER={visual_provider}\n")
@@ -177,7 +191,8 @@ jobs:
           {
             "project_key": "$OPENCODE_PROJECT_KEY",
             "repo_owner": "$OPENCODE_REPO_OWNER",
-            "repo_name": "$OPENCODE_REPO_NAME"
+            "repo_name": "$OPENCODE_REPO_NAME",
+            "default_branch": "$OPENCODE_DEFAULT_BRANCH"
           }
           EOF
           "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/visual_validation_worker.py \
