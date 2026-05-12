@@ -50,6 +50,73 @@ final class ChatDeferredStartupTests: XCTestCase {
         ))
     }
 
+    func testSendTimeSetupPlanFetchesMCPAndRulesWhenCacheIsEmpty() {
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: 0,
+            isInvalidated: false,
+            lastFetchedAt: Date(),
+            now: Date(),
+            staleInterval: 300,
+            includeRules: true
+        )
+
+        XCTAssertEqual(plan, ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: true,
+            shouldEnsureRules: true
+        ))
+    }
+
+    func testSendTimeSetupPlanFetchesStaleMCPBeforeOpenCodeSendWithoutRules() {
+        let now = Date()
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: 2,
+            isInvalidated: false,
+            lastFetchedAt: now.addingTimeInterval(-600),
+            now: now,
+            staleInterval: 300,
+            includeRules: false
+        )
+
+        XCTAssertEqual(plan, ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: true,
+            shouldEnsureRules: false
+        ))
+    }
+
+    func testSendTimeSetupPlanKeepsRulesEnsureWhenMCPServerCacheIsFresh() {
+        let now = Date()
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: 2,
+            isInvalidated: false,
+            lastFetchedAt: now.addingTimeInterval(-60),
+            now: now,
+            staleInterval: 300,
+            includeRules: true
+        )
+
+        XCTAssertEqual(plan, ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: false,
+            shouldEnsureRules: true
+        ))
+    }
+
+    func testPostReadyDeferredSetupPlanRefreshesStaleMCPWithoutRules() {
+        let now = Date()
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: 1,
+            isInvalidated: true,
+            lastFetchedAt: now.addingTimeInterval(-30),
+            now: now,
+            staleInterval: 300,
+            includeRules: false
+        )
+
+        XCTAssertEqual(plan, ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: true,
+            shouldEnsureRules: false
+        ))
+    }
+
     func testPostReadyMediaPrefetchUsesProjectScopedMessageSnapshot() {
         let projectID = UUID()
         var snapshots = [

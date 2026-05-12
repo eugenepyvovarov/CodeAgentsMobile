@@ -60,6 +60,33 @@ enum ChatMCPServerCachePolicy {
     }
 }
 
+struct ChatMCPServerSetupPlan: Equatable {
+    let shouldFetchMCPServers: Bool
+    let shouldEnsureRules: Bool
+}
+
+enum ChatMCPServerSetupPlanner {
+    static func plan(
+        cachedServerCount: Int,
+        isInvalidated: Bool,
+        lastFetchedAt: Date?,
+        now: Date,
+        staleInterval: TimeInterval,
+        includeRules: Bool
+    ) -> ChatMCPServerSetupPlan {
+        ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: ChatMCPServerCachePolicy.needsFetch(
+                cachedServerCount: cachedServerCount,
+                isInvalidated: isInvalidated,
+                lastFetchedAt: lastFetchedAt,
+                now: now,
+                staleInterval: staleInterval
+            ),
+            shouldEnsureRules: includeRules
+        )
+    }
+}
+
 struct ChatMediaPrefetchMessageSnapshot {
     let role: MessageRole
     let isComplete: Bool
@@ -546,6 +573,18 @@ class ChatViewModel {
                   project.id == projectID else {
                 timingStatus = .skipped
                 return
+            }
+
+            if runtimeKind == .openCode {
+                await self.refreshMCPServersAfterChatReadyIfNeeded(project: project)
+                guard !Task.isCancelled else {
+                    timingStatus = .cancelled
+                    return
+                }
+                guard self.projectId == projectID else {
+                    timingStatus = .skipped
+                    return
+                }
             }
 
             if runtimeKind == .claudeProxy, let server = ProjectContext.shared.activeServer {
@@ -1352,22 +1391,36 @@ class ChatViewModel {
     }
     
     private func ensureSendTimeSetup(for project: RemoteProject, includeRules: Bool) async {
-        await ensureMCPServersForSendIfNeeded(project: project)
-        guard includeRules else { return }
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: cachedMCPServers.count,
+            isInvalidated: isMCPCacheInvalidated,
+            lastFetchedAt: mcpCacheLastFetchedAt,
+            now: Date(),
+            staleInterval: mcpCacheStaleInterval,
+            includeRules: includeRules
+        )
+        if plan.shouldFetchMCPServers {
+            await fetchMCPServersForSetupIfCurrent(project: project, operation: "chat.ensureSendTimeMCPServers")
+        }
+        guard plan.shouldEnsureRules else { return }
         await claudeService.ensureCodeAgentsUIRulesIfMissing(project: project)
     }
 
-    private func ensureMCPServersForSendIfNeeded(project: RemoteProject, now: Date = Date()) async {
-        guard projectId == project.id else { return }
-        guard ChatMCPServerCachePolicy.needsFetch(
+    private func refreshMCPServersAfterChatReadyIfNeeded(project: RemoteProject, now: Date = Date()) async {
+        let plan = ChatMCPServerSetupPlanner.plan(
             cachedServerCount: cachedMCPServers.count,
             isInvalidated: isMCPCacheInvalidated,
             lastFetchedAt: mcpCacheLastFetchedAt,
             now: now,
-            staleInterval: mcpCacheStaleInterval
-        ) else {
-            return
-        }
+            staleInterval: mcpCacheStaleInterval,
+            includeRules: false
+        )
+        guard plan.shouldFetchMCPServers else { return }
+        await fetchMCPServersForSetupIfCurrent(project: project, operation: "chat.postReadyMCPServers")
+    }
+
+    private func fetchMCPServersForSetupIfCurrent(project: RemoteProject, operation: String) async {
+        guard projectId == project.id else { return }
 
         let timingStart = DispatchTime.now().uptimeNanoseconds
         var timingStatus = ChatRecoveryTiming.Status.complete
@@ -1375,7 +1428,7 @@ class ChatViewModel {
             ChatRecoveryTiming.log(
                 runtime: timingRuntimeName(for: project),
                 projectID: project.id.uuidString,
-                operation: "chat.ensureSendTimeMCPServers",
+                operation: operation,
                 elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - timingStart,
                 metadata: [
                     "cachedServers": .count(cachedMCPServers.count),
