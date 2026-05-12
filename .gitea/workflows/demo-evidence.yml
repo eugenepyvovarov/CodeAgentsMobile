@@ -69,6 +69,7 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
@@ -132,6 +133,7 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
@@ -200,6 +202,7 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
