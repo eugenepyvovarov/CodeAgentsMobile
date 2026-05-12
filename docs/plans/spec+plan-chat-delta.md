@@ -115,6 +115,10 @@ Source: https://developer.salesforce.com/docs/atlas.en-us.mobile_sdk.meta/mobile
 ### Current Implementation Notes (Mobile + Proxy)
 - Proxy already supports delta replay via `GET /v1/conversations/{conversation_id}/events?since=<event_id>` and SSE `Last-Event-ID`.
 - Client already stores `proxyLastEventId` and passes it to `ProxyStreamClient`.
+- Chat-open recovery now takes a local-only path when there is no usable `activeStreamingMessageId`; it clears transient loading/streaming state without proxy history sync, event fetch, previous-session checks, or canonical conversation lookup.
+- Active proxy chat-open recovery is reserved for a still-streaming local assistant message and resumes that persisted message after the proxy previous-session check confirms an active session.
+- Normal proxy event fetch and attach paths prefer a sanitized stored `proxyConversationId`; canonical refresh is a fallback for missing stored ids, explicit reset, or typed unknown/mismatch proxy errors.
+- Full replay repair is gated on local messages lacking any usable anchor from `proxyLastEventId` or persisted message `proxyEventId`, and `proxyLastEventId` only advances monotonically.
 - Proxy emits `proxy_session` switch events and stable per-event ids.
 - Current client resets on proxy version/startedAt changes, which triggers full reload.
 - Current ordering is by timestamp; late events cause "wrong order".

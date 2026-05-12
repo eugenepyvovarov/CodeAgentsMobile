@@ -4,10 +4,39 @@ import XCTest
 final class ProxyEventRecoveryTests: XCTestCase {
     @MainActor
     func testChatOpenDecisionSkipsRemoteWorkWhenNoActiveStreamingMessageExists() {
-        XCTAssertEqual(
-            ProxyEventRecovery.chatOpenDecision(activeStreamingMessageId: nil, activeMessage: nil),
-            .idleNoRemoteWork
+        let decision = ProxyEventRecovery.chatOpenDecision(activeStreamingMessageId: nil, activeMessage: nil)
+
+        XCTAssertEqual(decision, .idleNoRemoteWork)
+        XCTAssertFalse(decision.performsRemoteRecovery)
+        XCTAssertTrue(decision.skipsProxyHistorySync)
+        XCTAssertTrue(decision.skipsCanonicalConversationLookup)
+        XCTAssertFalse(decision.shouldCheckPreviousProxySession)
+        XCTAssertFalse(decision.shouldResumeActiveStream)
+        XCTAssertNil(decision.resumesActiveStreamMessageId)
+    }
+
+    @MainActor
+    func testIdleChatOpenDecisionDocumentsNoProxySyncFetchOrCanonicalLookup() {
+        let completedMessage = Message(
+            content: "previous assistant response",
+            role: .assistant,
+            isComplete: true,
+            isStreaming: false
         )
+
+        let decision = ProxyEventRecovery.chatOpenDecision(
+            activeStreamingMessageId: nil,
+            activeMessage: completedMessage
+        )
+
+        XCTAssertEqual(decision, .idleNoRemoteWork)
+        XCTAssertTrue(decision.skipsProxyHistorySync, "Idle chat open must not call proxy history/event fetch.")
+        XCTAssertTrue(
+            decision.skipsCanonicalConversationLookup,
+            "Idle chat open must not resolve a canonical proxy conversation id."
+        )
+        XCTAssertFalse(decision.shouldCheckPreviousProxySession)
+        XCTAssertNil(decision.resumesActiveStreamMessageId)
     }
 
     @MainActor
@@ -19,24 +48,55 @@ final class ProxyEventRecoveryTests: XCTestCase {
             isStreaming: true
         )
 
-        XCTAssertEqual(
-            ProxyEventRecovery.chatOpenDecision(
-                activeStreamingMessageId: streamingMessage.id,
-                activeMessage: streamingMessage
-            ),
-            .remoteRecovery(streamingMessage.id)
+        let activeStreamDecision = ProxyEventRecovery.chatOpenDecision(
+            activeStreamingMessageId: streamingMessage.id,
+            activeMessage: streamingMessage
         )
+
+        XCTAssertEqual(activeStreamDecision, .remoteRecovery(streamingMessage.id))
+        XCTAssertTrue(activeStreamDecision.performsRemoteRecovery)
+        XCTAssertFalse(activeStreamDecision.skipsProxyHistorySync)
+        XCTAssertFalse(activeStreamDecision.skipsCanonicalConversationLookup)
+        XCTAssertTrue(activeStreamDecision.shouldCheckPreviousProxySession)
+        XCTAssertTrue(activeStreamDecision.shouldResumeActiveStream)
+        XCTAssertEqual(activeStreamDecision.resumesActiveStreamMessageId, streamingMessage.id)
 
         streamingMessage.isStreaming = false
         streamingMessage.isComplete = true
 
-        XCTAssertEqual(
-            ProxyEventRecovery.chatOpenDecision(
-                activeStreamingMessageId: streamingMessage.id,
-                activeMessage: streamingMessage
-            ),
-            .clearCompletedActiveMessage(streamingMessage.id)
+        let completedStreamDecision = ProxyEventRecovery.chatOpenDecision(
+            activeStreamingMessageId: streamingMessage.id,
+            activeMessage: streamingMessage
         )
+
+        XCTAssertEqual(completedStreamDecision, .clearCompletedActiveMessage(streamingMessage.id))
+        XCTAssertFalse(completedStreamDecision.performsRemoteRecovery)
+        XCTAssertTrue(completedStreamDecision.skipsProxyHistorySync)
+        XCTAssertTrue(completedStreamDecision.skipsCanonicalConversationLookup)
+        XCTAssertFalse(completedStreamDecision.shouldCheckPreviousProxySession)
+        XCTAssertFalse(completedStreamDecision.shouldResumeActiveStream)
+        XCTAssertNil(completedStreamDecision.resumesActiveStreamMessageId)
+    }
+
+    @MainActor
+    func testUsableActiveStreamDecisionExplicitlyResumesOnlyThePersistedStreamingMessage() {
+        let activeStreamingMessageId = UUID()
+        let streamingMessage = Message(
+            content: "partial output",
+            role: .assistant,
+            isComplete: false,
+            isStreaming: true
+        )
+        streamingMessage.id = activeStreamingMessageId
+
+        let decision = ProxyEventRecovery.chatOpenDecision(
+            activeStreamingMessageId: activeStreamingMessageId,
+            activeMessage: streamingMessage
+        )
+
+        XCTAssertTrue(decision.shouldCheckPreviousProxySession)
+        XCTAssertTrue(decision.shouldResumeActiveStream)
+        XCTAssertEqual(decision.resumesActiveStreamMessageId, activeStreamingMessageId)
     }
 
     @MainActor

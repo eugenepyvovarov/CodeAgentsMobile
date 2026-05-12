@@ -98,6 +98,10 @@ When an active streaming message exists, the app uses the stored
 `proxyConversationId`/`proxyLastEventId` first and only refreshes the canonical
 conversation after a missing, reset, unknown, or mismatch condition.
 
+The focused recovery tests cover both sides of that decision: idle reopen must
+produce a no-remote-work decision, while a usable active stream must keep the
+streaming message id so the proxy recovery path can resume it.
+
 Timing metadata is limited to runtime names, project identifiers, operation
 labels, elapsed milliseconds, statuses, booleans, and counts. Do not add prompts,
 message text, raw payloads, credentials, URLs, project paths, attachment paths,

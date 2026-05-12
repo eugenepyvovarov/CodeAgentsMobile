@@ -5,6 +5,32 @@ enum ProxyEventRecovery {
         case idleNoRemoteWork
         case clearCompletedActiveMessage(UUID)
         case remoteRecovery(UUID)
+
+        var performsRemoteRecovery: Bool {
+            if case .remoteRecovery = self { return true }
+            return false
+        }
+
+        var skipsProxyHistorySync: Bool {
+            !performsRemoteRecovery
+        }
+
+        var skipsCanonicalConversationLookup: Bool {
+            !performsRemoteRecovery
+        }
+
+        var shouldCheckPreviousProxySession: Bool {
+            performsRemoteRecovery
+        }
+
+        var shouldResumeActiveStream: Bool {
+            performsRemoteRecovery
+        }
+
+        var resumesActiveStreamMessageId: UUID? {
+            if case .remoteRecovery(let messageId) = self { return messageId }
+            return nil
+        }
     }
 
     static func chatOpenDecision(
