@@ -106,11 +106,20 @@ jobs:
 
       - name: Run retained-preview final demo media worker
         run: |
+          OPENCODE_DEFAULT_BRANCH="${GITHUB_BASE_REF:-}"
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="$(git ls-remote --symref origin HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+          fi
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="main"
+          fi
+          export OPENCODE_DEFAULT_BRANCH
           cat > .opencode-demo-project.json <<EOF
           {
             "project_key": "${{ needs.preflight.outputs.project_key }}",
             "repo_owner": "$OPENCODE_REPO_OWNER",
-            "repo_name": "$OPENCODE_REPO_NAME"
+            "repo_name": "$OPENCODE_REPO_NAME",
+            "default_branch": "$OPENCODE_DEFAULT_BRANCH"
           }
           EOF
           "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
@@ -175,11 +184,20 @@ jobs:
         run: |
           export HOME="$HOST_HOME"
           export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
+          OPENCODE_DEFAULT_BRANCH="${GITHUB_BASE_REF:-}"
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="$(git ls-remote --symref origin HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+          fi
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="main"
+          fi
+          export OPENCODE_DEFAULT_BRANCH
           cat > .opencode-demo-project.json <<EOF
           {
             "project_key": "${{ needs.preflight.outputs.project_key }}",
             "repo_owner": "$OPENCODE_REPO_OWNER",
-            "repo_name": "$OPENCODE_REPO_NAME"
+            "repo_name": "$OPENCODE_REPO_NAME",
+            "default_branch": "$OPENCODE_DEFAULT_BRANCH"
           }
           EOF
           "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
@@ -244,11 +262,20 @@ jobs:
         run: |
           export HOME="$HOST_HOME"
           export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
+          OPENCODE_DEFAULT_BRANCH="${GITHUB_BASE_REF:-}"
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="$(git ls-remote --symref origin HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+          fi
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="main"
+          fi
+          export OPENCODE_DEFAULT_BRANCH
           cat > .opencode-demo-project.json <<EOF
           {
             "project_key": "${{ needs.preflight.outputs.project_key }}",
             "repo_owner": "$OPENCODE_REPO_OWNER",
-            "repo_name": "$OPENCODE_REPO_NAME"
+            "repo_name": "$OPENCODE_REPO_NAME",
+            "default_branch": "$OPENCODE_DEFAULT_BRANCH"
           }
           EOF
           "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
