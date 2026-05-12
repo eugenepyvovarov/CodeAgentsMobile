@@ -1281,12 +1281,10 @@ class ChatViewModel {
             if claudeService.isProxyChatEnabled,
                let project = ProjectContext.shared.activeProject,
                project.id == projectId {
-                if let maxEventId = messages.compactMap({ $0.proxyEventId }).max() {
-                    if project.proxyLastEventId == nil || maxEventId > (project.proxyLastEventId ?? 0) {
-                        project.proxyLastEventId = maxEventId
-                        project.updateLastModified()
-                        saveChanges()
-                    }
+                if let usableEventAnchor = ProxyEventRecovery.usableAnchor(project: project, messages: messages),
+                   ProxyEventRecovery.advanceLastEventId(project: project, to: usableEventAnchor) {
+                    project.updateLastModified()
+                    saveChanges()
                 }
             }
             
@@ -2749,12 +2747,15 @@ class ChatViewModel {
             return
         }
 
-        if claudeService.isProxyChatEnabled {
-            await syncProxyHistoryIfNeeded(project: project)
+        let activeRecoveryMessage = project.activeStreamingMessageId.flatMap { activeMessageId in
+            messages.first(where: { $0.id == activeMessageId })
         }
-        
-        // Check if we have an active streaming message to recover
-        guard let messageId = project.activeStreamingMessageId else {
+
+        switch ProxyEventRecovery.chatOpenDecision(
+            activeStreamingMessageId: project.activeStreamingMessageId,
+            activeMessage: activeRecoveryMessage
+        ) {
+        case .idleNoRemoteWork:
             print("📝 Recovery: No active streaming message ID found")
             // Ensure clean state
             await MainActor.run {
@@ -2768,30 +2769,32 @@ class ChatViewModel {
                 print("📝 checkForPreviousSession: Set isLoadingPreviousSession = false (no active streaming message)")
             }
             return
+        case .clearCompletedActiveMessage:
+            print("📝 Recovery: Streaming message already complete, clearing active streaming state")
+            if let activeRecoveryMessage {
+                activeRecoveryMessage.isStreaming = false
+                activeRecoveryMessage.isComplete = true
+            }
+            project.activeStreamingMessageId = nil
+            project.updateLastModified()
+            saveChanges()
+            await MainActor.run {
+                updateStreamingState(
+                    isProcessing: false,
+                    clearStreamingMessage: true,
+                    streamingBlocks: [],
+                    showActiveSessionIndicator: false,
+                    isLoadingPreviousSession: false
+                )
+            }
+            return
+        case .remoteRecovery(let messageId):
+            print("📝 Recovery: Found active streaming message ID: \(messageId)")
+            print("📝 Recovery: Current messages count: \(messages.count)")
         }
 
-        print("📝 Recovery: Found active streaming message ID: \(messageId)")
-        print("📝 Recovery: Current messages count: \(messages.count)")
-
-        if let message = messages.first(where: { $0.id == messageId }) {
-            if message.isComplete || !message.isStreaming {
-                print("📝 Recovery: Streaming message already complete, clearing active streaming state")
-                message.isStreaming = false
-                message.isComplete = true
-                project.activeStreamingMessageId = nil
-                project.updateLastModified()
-                saveChanges()
-                await MainActor.run {
-                    updateStreamingState(
-                        isProcessing: false,
-                        clearStreamingMessage: true,
-                        streamingBlocks: [],
-                        showActiveSessionIndicator: false,
-                        isLoadingPreviousSession: false
-                    )
-                }
-                return
-            }
+        if claudeService.isProxyChatEnabled {
+            await syncProxyHistoryIfNeeded(project: project)
         }
 
         let sessionCheckStart = DispatchTime.now().uptimeNanoseconds
@@ -2955,22 +2958,22 @@ class ChatViewModel {
         let previousVersion = project.proxyVersion
         let previousStartedAt = project.proxyStartedAt
         let previousConversationId = project.proxyConversationId
-        let derivedLastEventId = project.proxyLastEventId ?? messages.compactMap { $0.proxyEventId }.max()
-        let hadLastEventId = derivedLastEventId != nil
+        let usableEventAnchor = ProxyEventRecovery.usableAnchor(project: project, messages: messages)
         let hadMessages = !messages.isEmpty
-        let since = derivedLastEventId ?? 0
+        let since = usableEventAnchor ?? 0
 
         // If the per-project anchor was lost but we can derive it from persisted messages,
         // write it back before syncing so we don't fall back to a full replay on re-entry.
-        if project.proxyLastEventId == nil, let derivedLastEventId {
-            project.proxyLastEventId = derivedLastEventId
+        if project.proxyLastEventId != usableEventAnchor,
+           let usableEventAnchor,
+           ProxyEventRecovery.advanceLastEventId(project: project, to: usableEventAnchor) {
             project.updateLastModified()
             saveChanges()
         }
 
         let conversationSuffix = project.proxyConversationId.map { String($0.suffix(6)) } ?? "nil"
         ProxyStreamDiagnostics.log(
-            "sync start conv=...\(conversationSuffix) messages=\(messages.count) storedLast=\(String(describing: project.proxyLastEventId)) derivedLast=\(String(describing: derivedLastEventId)) since=\(since)"
+            "sync start conv=...\(conversationSuffix) messages=\(messages.count) storedLast=\(String(describing: project.proxyLastEventId)) usableAnchor=\(String(describing: usableEventAnchor)) since=\(since)"
         )
         do {
             let primaryFetchStart = DispatchTime.now().uptimeNanoseconds
@@ -2997,7 +3000,7 @@ class ChatViewModel {
                 saveChanges()
             }
 
-            let initialBind = previousConversationId == nil && derivedLastEventId != nil
+            let initialBind = previousConversationId == nil && usableEventAnchor != nil
             let conversationChanged = previousConversationId != project.proxyConversationId && !initialBind
             if events.contains(where: { proxySessionPayload(from: $0.jsonLine) != nil }) {
                 await handleProxySessionSwitch(project: project)
@@ -3024,11 +3027,22 @@ class ChatViewModel {
             //
             // If we don't yet have a stored conversation id (first launch / missing persistence),
             // treat it as an initial bind rather than a conversation change.
-            let shouldFullResync = previousConversationId != nil && conversationChanged
+            let shouldFullResync = ProxyEventRecovery.shouldDestructivelyResync(
+                previousConversationId: previousConversationId,
+                currentConversationId: project.proxyConversationId,
+                didInitiallyBindFromMissingConversation: initialBind
+            )
 
             // Only do a repair replay when we have messages but no event id anchor. This should be rare and
             // indicates corrupted local state.
-            let shouldRepair = hadMessages && !hadLastEventId
+            let shouldRepair = ProxyEventRecovery.shouldRepairFullReplay(
+                hasLocalMessages: hadMessages,
+                usableAnchor: usableEventAnchor
+            )
+            let repairReplayStartEventId = ProxyEventRecovery.repairReplayStartEventId(
+                hasLocalMessages: hadMessages,
+                usableAnchor: usableEventAnchor
+            )
 
             if shouldFullResync && since != 0 {
                 let fullResyncStart = DispatchTime.now().uptimeNanoseconds
@@ -3044,10 +3058,10 @@ class ChatViewModel {
                 eventsToApply = fullEvents
             }
 
-            if shouldRepair && since != 0 {
+            if shouldRepair, let repairReplayStartEventId {
                 // Non-destructive repair: replay the full conversation and upsert/dedupe locally.
                 let repairStart = DispatchTime.now().uptimeNanoseconds
-                let (fullEvents, _) = try await claudeService.fetchProxyEvents(project: project, since: 0)
+                let (fullEvents, _) = try await claudeService.fetchProxyEvents(project: project, since: repairReplayStartEventId)
                 repairEventCount = fullEvents.count
                 ChatRecoveryTiming.log(
                     runtime: timingRuntimeName(for: project),
@@ -3066,12 +3080,10 @@ class ChatViewModel {
             guard syncGeneration == proxySyncGeneration else { return }
             guard !eventsToApply.isEmpty else { return }
 
-            for event in eventsToApply {
-                if let eventId = event.eventId {
-                    project.proxyLastEventId = eventId
-                }
+            let didAdvanceLastEventId = ProxyEventRecovery.advanceLastEventId(project: project, events: eventsToApply)
+            if didAdvanceLastEventId {
+                project.updateLastModified()
             }
-            project.updateLastModified()
 
             let messageId = project.activeStreamingMessageId ?? UUID()
             appliedEventCount = eventsToApply.count
@@ -3079,9 +3091,7 @@ class ChatViewModel {
         } catch {
             timingStatus = .failed
             if let proxyError = error as? ProxyStreamError,
-               case .httpError(let status, let body) = proxyError,
-               status == 404,
-               body.contains("conversation_unknown") {
+               proxyError.isConversationRecoveryError {
                 resetMessagesForProxySync(project: project)
                 project.proxyConversationId = nil
                 project.updateLastModified()
@@ -3401,7 +3411,7 @@ class ChatViewModel {
         }
 
         for event in sortedEvents {
-            if let eventId = event.eventId, seenEventIds.contains(eventId) {
+            if ProxyEventRecovery.isDuplicateReplayEvent(event, existingEventIds: seenEventIds) {
                 skippedDuplicateEventIds += 1
                 continue
             }
