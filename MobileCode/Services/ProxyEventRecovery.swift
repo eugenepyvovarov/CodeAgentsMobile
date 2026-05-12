@@ -1,6 +1,25 @@
 import Foundation
 
 enum ProxyEventRecovery {
+    enum ChatOpenDecision: Equatable {
+        case idleNoRemoteWork
+        case clearCompletedActiveMessage(UUID)
+        case remoteRecovery(UUID)
+    }
+
+    static func chatOpenDecision(
+        activeStreamingMessageId: UUID?,
+        activeMessage: Message?
+    ) -> ChatOpenDecision {
+        guard let messageId = activeStreamingMessageId else {
+            return .idleNoRemoteWork
+        }
+        if let activeMessage, activeMessage.isComplete || !activeMessage.isStreaming {
+            return .clearCompletedActiveMessage(messageId)
+        }
+        return .remoteRecovery(messageId)
+    }
+
     static func usableAnchor(project: RemoteProject, messages: [Message]) -> Int? {
         let messageAnchor = messages.compactMap(\.proxyEventId).max()
         switch (project.proxyLastEventId, messageAnchor) {

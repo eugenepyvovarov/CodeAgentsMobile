@@ -3,6 +3,43 @@ import XCTest
 
 final class ProxyEventRecoveryTests: XCTestCase {
     @MainActor
+    func testChatOpenDecisionSkipsRemoteWorkWhenNoActiveStreamingMessageExists() {
+        XCTAssertEqual(
+            ProxyEventRecovery.chatOpenDecision(activeStreamingMessageId: nil, activeMessage: nil),
+            .idleNoRemoteWork
+        )
+    }
+
+    @MainActor
+    func testChatOpenDecisionOnlyRunsRemoteRecoveryForUsableActiveStreams() {
+        let streamingMessage = Message(
+            content: "streaming",
+            role: .assistant,
+            isComplete: false,
+            isStreaming: true
+        )
+
+        XCTAssertEqual(
+            ProxyEventRecovery.chatOpenDecision(
+                activeStreamingMessageId: streamingMessage.id,
+                activeMessage: streamingMessage
+            ),
+            .remoteRecovery(streamingMessage.id)
+        )
+
+        streamingMessage.isStreaming = false
+        streamingMessage.isComplete = true
+
+        XCTAssertEqual(
+            ProxyEventRecovery.chatOpenDecision(
+                activeStreamingMessageId: streamingMessage.id,
+                activeMessage: streamingMessage
+            ),
+            .clearCompletedActiveMessage(streamingMessage.id)
+        )
+    }
+
+    @MainActor
     func testUsableAnchorUsesMaximumPersistedMessageEventIdWhenStoredAnchorIsMissing() {
         let project = RemoteProject(name: "repo", serverId: UUID())
         let oldMessage = Message(content: "old", role: .assistant)

@@ -2747,8 +2747,15 @@ class ChatViewModel {
             return
         }
 
-        // Check if we have an active streaming message to recover
-        guard let messageId = project.activeStreamingMessageId else {
+        let activeRecoveryMessage = project.activeStreamingMessageId.flatMap { activeMessageId in
+            messages.first(where: { $0.id == activeMessageId })
+        }
+
+        switch ProxyEventRecovery.chatOpenDecision(
+            activeStreamingMessageId: project.activeStreamingMessageId,
+            activeMessage: activeRecoveryMessage
+        ) {
+        case .idleNoRemoteWork:
             print("📝 Recovery: No active streaming message ID found")
             // Ensure clean state
             await MainActor.run {
@@ -2762,30 +2769,28 @@ class ChatViewModel {
                 print("📝 checkForPreviousSession: Set isLoadingPreviousSession = false (no active streaming message)")
             }
             return
-        }
-
-        print("📝 Recovery: Found active streaming message ID: \(messageId)")
-        print("📝 Recovery: Current messages count: \(messages.count)")
-
-        if let message = messages.first(where: { $0.id == messageId }) {
-            if message.isComplete || !message.isStreaming {
-                print("📝 Recovery: Streaming message already complete, clearing active streaming state")
-                message.isStreaming = false
-                message.isComplete = true
-                project.activeStreamingMessageId = nil
-                project.updateLastModified()
-                saveChanges()
-                await MainActor.run {
-                    updateStreamingState(
-                        isProcessing: false,
-                        clearStreamingMessage: true,
-                        streamingBlocks: [],
-                        showActiveSessionIndicator: false,
-                        isLoadingPreviousSession: false
-                    )
-                }
-                return
+        case .clearCompletedActiveMessage:
+            print("📝 Recovery: Streaming message already complete, clearing active streaming state")
+            if let activeRecoveryMessage {
+                activeRecoveryMessage.isStreaming = false
+                activeRecoveryMessage.isComplete = true
             }
+            project.activeStreamingMessageId = nil
+            project.updateLastModified()
+            saveChanges()
+            await MainActor.run {
+                updateStreamingState(
+                    isProcessing: false,
+                    clearStreamingMessage: true,
+                    streamingBlocks: [],
+                    showActiveSessionIndicator: false,
+                    isLoadingPreviousSession: false
+                )
+            }
+            return
+        case .remoteRecovery(let messageId):
+            print("📝 Recovery: Found active streaming message ID: \(messageId)")
+            print("📝 Recovery: Current messages count: \(messages.count)")
         }
 
         if claudeService.isProxyChatEnabled {

@@ -91,6 +91,13 @@ remote recovery. The initial OpenCode recovery fetch is bounded and diffed
 against the stored message/part hydration anchors; full-session refresh can run
 later in the background when more history may exist.
 
+Claude proxy chat reopen is also local-first for the idle path: if there is no
+usable active streaming message, recovery clears transient UI state and returns
+without proxy history sync, proxy event fetch, or canonical conversation lookup.
+When an active streaming message exists, the app uses the stored
+`proxyConversationId`/`proxyLastEventId` first and only refreshes the canonical
+conversation after a missing, reset, unknown, or mismatch condition.
+
 Timing metadata is limited to runtime names, project identifiers, operation
 labels, elapsed milliseconds, statuses, booleans, and counts. Do not add prompts,
 message text, raw payloads, credentials, URLs, project paths, attachment paths,
