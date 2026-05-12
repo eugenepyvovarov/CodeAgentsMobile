@@ -42,6 +42,9 @@ final class ProxyEventRecoveryTests: XCTestCase {
             usableAnchor: ProxyEventRecovery.usableAnchor(project: project, messages: [message])
         ))
         XCTAssertFalse(ProxyEventRecovery.shouldRepairFullReplay(hasLocalMessages: false, usableAnchor: nil))
+        XCTAssertEqual(ProxyEventRecovery.repairReplayStartEventId(hasLocalMessages: true, usableAnchor: nil), 0)
+        XCTAssertNil(ProxyEventRecovery.repairReplayStartEventId(hasLocalMessages: true, usableAnchor: 3))
+        XCTAssertNil(ProxyEventRecovery.repairReplayStartEventId(hasLocalMessages: false, usableAnchor: nil))
     }
 
     @MainActor

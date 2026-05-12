@@ -19,6 +19,10 @@ enum ProxyEventRecovery {
         hasLocalMessages && usableAnchor == nil
     }
 
+    static func repairReplayStartEventId(hasLocalMessages: Bool, usableAnchor: Int?) -> Int? {
+        shouldRepairFullReplay(hasLocalMessages: hasLocalMessages, usableAnchor: usableAnchor) ? 0 : nil
+    }
+
     static func shouldDestructivelyResync(
         previousConversationId: String?,
         currentConversationId: String?,

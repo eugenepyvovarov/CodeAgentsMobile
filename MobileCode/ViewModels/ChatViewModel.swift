@@ -3034,6 +3034,10 @@ class ChatViewModel {
                 hasLocalMessages: hadMessages,
                 usableAnchor: usableEventAnchor
             )
+            let repairReplayStartEventId = ProxyEventRecovery.repairReplayStartEventId(
+                hasLocalMessages: hadMessages,
+                usableAnchor: usableEventAnchor
+            )
 
             if shouldFullResync && since != 0 {
                 let fullResyncStart = DispatchTime.now().uptimeNanoseconds
@@ -3049,10 +3053,10 @@ class ChatViewModel {
                 eventsToApply = fullEvents
             }
 
-            if shouldRepair && since != 0 {
+            if shouldRepair, let repairReplayStartEventId {
                 // Non-destructive repair: replay the full conversation and upsert/dedupe locally.
                 let repairStart = DispatchTime.now().uptimeNanoseconds
-                let (fullEvents, _) = try await claudeService.fetchProxyEvents(project: project, since: 0)
+                let (fullEvents, _) = try await claudeService.fetchProxyEvents(project: project, since: repairReplayStartEventId)
                 repairEventCount = fullEvents.count
                 ChatRecoveryTiming.log(
                     runtime: timingRuntimeName(for: project),
