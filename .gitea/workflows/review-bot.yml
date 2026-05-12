@@ -36,71 +36,46 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_REVIEW_PERSONA: "review-bot"
-      OPENCODE_REVIEW_PERSONA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
       - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check out workflow-dispatched PR head
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          INPUT_HEAD_SHA="${{ inputs.head_sha }}"
-          if [[ -z "$INPUT_HEAD_SHA" ]]; then
-            echo "workflow_dispatch review requires inputs.head_sha so review runs on the PR head." >&2
-            exit 1
+          TARGET_SHA="$GITHUB_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            TARGET_SHA="${{ inputs.head_sha }}"
+            if [[ -z "$TARGET_SHA" ]]; then
+              echo "workflow_dispatch review requires inputs.head_sha so review runs on the PR head." >&2
+              exit 1
+            fi
           fi
-          git fetch --no-tags origin "$INPUT_HEAD_SHA"
-          git checkout --detach "$INPUT_HEAD_SHA"
+          umask 077
+          cat > "$HOME/.netrc" <<EOF
+          machine git.ultramac.work
+          login "review-bot"
+          password ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          EOF
+          git clone --no-checkout "https://git.ultramac.work/${OPENCODE_REPO_OWNER}/${OPENCODE_REPO_NAME}.git" repo
+          cd repo
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          if ! git checkout --detach "$TARGET_SHA"; then
+            git fetch --no-tags origin "$TARGET_SHA"
+            git checkout --detach "$TARGET_SHA"
+          fi
+          rm -f "$HOME/.netrc"
           CURRENT_HEAD="$(git rev-parse HEAD)"
-          if [[ "$CURRENT_HEAD" != "$INPUT_HEAD_SHA" ]]; then
-            echo "Checked out $CURRENT_HEAD, expected workflow-dispatched head $INPUT_HEAD_SHA." >&2
+          if [[ "$CURRENT_HEAD" != "$TARGET_SHA" ]]; then
+            echo "Checked out $CURRENT_HEAD, expected review head $TARGET_SHA." >&2
             exit 1
           fi
+          echo "REVIEW_REPO_ROOT=$PWD" >> "$GITHUB_ENV"
 
       - name: Preflight review trigger
         run: |
-          echo "OPENCODE_REVIEW_TRIGGER_MATCHED=1" >> "$GITHUB_ENV"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          event_name = str(os.environ.get("GITHUB_EVENT_NAME") or "").strip()
-          should_run = True
-
-          if event_name in {"issue_comment", "pull_request_comment"}:
-              payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-              comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else {}
-              user = comment.get("user") if isinstance(comment.get("user"), dict) else {}
-              login = str(user.get("login") or comment.get("user_name") or "").strip().casefold()
-              body = str(comment.get("body") or "").strip()
-              ignored = {"backlog-bot", "opencode-bot", "review-bot"}
-              should_run = body == "/review-bot" and login not in ignored
-              if should_run:
-                  print("Matched trusted /review-bot comment trigger.")
-              else:
-                  print("Skipping review workflow for non-command or bot-authored comment trigger.")
-
-          if event_name == "pull_request":
-              payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-              pull_request = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
-              head = pull_request.get("head") if isinstance(pull_request.get("head"), dict) else {}
-              head_ref = str(head.get("ref") or "").strip()
-              author = pull_request.get("user") if isinstance(pull_request.get("user"), dict) else {}
-              author_login = str(author.get("login") or pull_request.get("user_name") or "").strip().casefold()
-              if head_ref.startswith("opencode/") or author_login in {"opencode-bot", "backlog-bot"}:
-                  should_run = False
-                  print("Skipping raw pull_request review for bot-managed PR; waiting for explicit PR-prep handoff.")
-
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_REVIEW_TRIGGER_MATCHED={'1' if should_run else '0'}\n")
-          PY
+          cd "$REVIEW_REPO_ROOT"
+          python3 scripts/lib/opencode-managed-workflow-context.py --context review-trigger --emit env
 
       - name: Expose host CLI tools
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' }}
@@ -114,42 +89,8 @@ jobs:
       - name: Load managed review settings
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' }}
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
-          controller = config["controller"]
-          assert controller["repository"]
-          assert controller["setup_branch"]
-          review = config["review"]
-          assert review["persona"] == "review-bot"
-          assert review["persona_token_secret"] == "OPENCODE_PERSONA_REVIEW_BOT_TOKEN"
-          validation = config["validation"]
-          assert validation["command"]
-          coverage = config["coverage"]
-          assert coverage["command"]
-          deployment = config["deployment"]
-          assert deployment["command"]
-          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
-          repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          raw = f"{owner}-{repo}".lower()
-          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
-          project_key = re.sub(r"-{2,}", "-", project_key)
-          if not project_key:
-              raise SystemExit("Unable to derive project key from repository owner/name")
-          github_env = os.environ["GITHUB_ENV"]
-          with open(github_env, "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
-              handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
-              handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
-              handle.write(f"OPENCODE_VALIDATION_COMMAND={validation['command']}\n")
-              handle.write(f"OPENCODE_COVERAGE_COMMAND={coverage['command']}\n")
-              handle.write(f"OPENCODE_DEPLOYMENT_COMMAND={deployment['command']}\n")
-          print("managed review config ok")
-          PY
+          cd "$REVIEW_REPO_ROOT"
+          python3 scripts/lib/opencode-managed-workflow-context.py --context review-settings --emit env
 
       - name: Skip bootstrap setup PR review
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' && github.event_name == 'pull_request' && github.head_ref == env.OPENCODE_SETUP_BRANCH }}
@@ -157,20 +98,25 @@ jobs:
 
       - name: Check out controller repository
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' && (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) }}
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
-          path: controller
-          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-          fetch-depth: 0
+        run: |
+          umask 077
+          cat > "$HOME/.netrc" <<EOF
+          machine git.ultramac.work
+          login "review-bot"
+          password ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          EOF
+          git clone "https://git.ultramac.work/${OPENCODE_CONTROLLER_REPOSITORY}.git" controller
+          rm -f "$HOME/.netrc"
+          echo "REVIEW_CONTROLLER_ROOT=$PWD/controller" >> "$GITHUB_ENV"
 
       - name: Resolve Python with working venv
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' && (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) }}
         run: |
-          source controller/scripts/lib/python_runtime.sh
+          cd "$REVIEW_CONTROLLER_ROOT"
+          source scripts/lib/python_runtime.sh
           opencode_export_python_bin
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
-          echo "REVIEW_BOT_VENV=$PWD/.review-bot-venv" >> "$GITHUB_ENV"
+          echo "REVIEW_BOT_VENV=$REVIEW_CONTROLLER_ROOT/.review-bot-venv" >> "$GITHUB_ENV"
 
       - name: Install controller dependencies
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' && (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) }}
@@ -178,7 +124,7 @@ jobs:
           "$PYTHON_BIN" --version
           "$PYTHON_BIN" -m venv "$REVIEW_BOT_VENV"
           "$REVIEW_BOT_VENV/bin/python" --version
-          "$REVIEW_BOT_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
+          "$REVIEW_BOT_VENV/bin/python" -m pip install -r "$REVIEW_CONTROLLER_ROOT/shared/requirements.txt"
 
       - name: Verify host OpenCode runtime
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' && (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) }}
@@ -197,6 +143,7 @@ jobs:
       - name: Run review worker
         if: ${{ env.OPENCODE_REVIEW_TRIGGER_MATCHED == '1' && (github.event_name != 'pull_request' || github.head_ref != env.OPENCODE_SETUP_BRANCH) }}
         run: |
+          cd "$REVIEW_REPO_ROOT"
           export HOME="$HOST_HOME"
           export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
           python3 - <<'PY'
@@ -217,10 +164,10 @@ jobs:
           )
           PY
           zsh -lc '
-            "'"$REVIEW_BOT_VENV"'/bin/python" controller/scripts/review_worker.py \
-              --repo-root . \
+            "'"$REVIEW_BOT_VENV"'/bin/python" "$REVIEW_CONTROLLER_ROOT/scripts/review_worker.py" \
+              --repo-root "$REVIEW_REPO_ROOT" \
               --config "$PWD/.opencode-review-project.json" \
-              --automation-config "$PWD/controller/automation.json" \
+              --automation-config "$REVIEW_CONTROLLER_ROOT/automation.json" \
               --event-name "$GITHUB_EVENT_NAME" \
               --event-path "$GITHUB_EVENT_PATH"
           '

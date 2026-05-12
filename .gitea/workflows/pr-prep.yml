@@ -44,54 +44,7 @@ jobs:
       - name: Resolve managed PR-prep stages
         id: managed-config
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
-          assert config["schema_version"] == 1
-          controller = config["controller"]
-          assert controller["repository"]
-          assert controller["setup_branch"]
-          pr_prep = config["pr_prep"]
-          assert pr_prep["workflow"] == ".gitea/workflows/pr-prep.yml"
-          assert pr_prep["authoritative"] is True
-          stages = pr_prep["stages"]
-          assert "validation" in stages
-          validation = config["validation"]
-          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
-          assert validation["command"]
-          playwright_smoke = config["playwright_smoke"]
-          assert playwright_smoke["workflow"] == ".gitea/workflows/playwright-smoke.yml"
-          assert playwright_smoke["command"]
-          smoke_stage = (
-              "playwright-smoke" in stages
-              and playwright_smoke["supported"] is True
-              and playwright_smoke["provider"] == "playwright"
-              and playwright_smoke["platform"] == "web"
-          )
-          preview = config["preview"]
-          visual_validation = config["visual_validation"]
-          assert visual_validation["workflow"] == ".gitea/workflows/visual-validation.yml"
-          visual_provider = str(visual_validation["provider"]).strip()
-          visual_platform = str(visual_validation["platform"]).strip()
-          visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
-          visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
-          visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
-          visual_stage = (
-              "visual-validation" in stages
-              and visual_validation["supported"] is True
-              and ((visual_playwright_web and preview["supported"] is True) or visual_native_macos or visual_native_ios_simulator)
-          )
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write("validation_supported=true\n")
-              handle.write(f"playwright_smoke_supported={'true' if smoke_stage else 'false'}\n")
-              handle.write(f"visual_validation_supported={'true' if visual_stage else 'false'}\n")
-              handle.write(f"controller_repository={controller['repository']}\n")
-              handle.write(f"setup_branch={controller['setup_branch']}\n")
-          print("managed PR-prep config ok")
-          PY
+          python3 scripts/lib/opencode-managed-workflow-context.py --context pr-prep-preflight --emit output
 
   validation:
     needs: preflight
@@ -114,17 +67,7 @@ jobs:
 
       - name: Load managed validation settings
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
-          validation = config["validation"]
-          assert validation["command"]
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_VALIDATION_COMMAND={validation['command']}\n")
-          PY
+          python3 scripts/lib/opencode-managed-workflow-context.py --context validation --emit env
 
       - name: Run repository validation command
         run: /bin/bash -lc "$OPENCODE_VALIDATION_COMMAND"
@@ -157,7 +100,7 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -170,58 +113,7 @@ jobs:
 
       - name: Load managed visual validation settings
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          config = json.loads(Path("project/opencode-managed.json").read_text(encoding="utf-8"))
-          assert config["schema_version"] == 1
-          controller = config["controller"]
-          assert controller["repository"]
-          assert controller["setup_branch"]
-          review = config["review"]
-          assert review["persona"]
-          assert review["persona_token_secret"].startswith("OPENCODE_PERSONA_")
-          validation = config["validation"]
-          assert validation["workflow"] == ".gitea/workflows/pr-tests.yml"
-          preview = config["preview"]
-          assert isinstance(preview["supported"], bool)
-          visual_validation = config["visual_validation"]
-          assert visual_validation["workflow"] == ".gitea/workflows/visual-validation.yml"
-          assert isinstance(visual_validation["supported"], bool)
-          assert visual_validation["provider"]
-          assert visual_validation["platform"]
-          assert visual_validation["full_page"] is True
-          visual_provider = str(visual_validation["provider"]).strip()
-          visual_platform = str(visual_validation["platform"]).strip()
-          visual_playwright_web = visual_provider == "playwright" and visual_platform == "web"
-          visual_native_macos = visual_provider in {"native-macos", "native", "macos"} and visual_platform in {"macos", "native-macos"}
-          visual_native_ios_simulator = visual_provider in {"native-ios-simulator", "ios-simulator", "native-ios", "ios"} and visual_platform in {"ios-simulator", "ios", "simulator"}
-          visual_evidence_supported = visual_validation["supported"] is True and (visual_playwright_web or visual_native_macos or visual_native_ios_simulator)
-          owner = os.environ["OPENCODE_REPO_OWNER"].strip()
-          repo = os.environ["OPENCODE_REPO_NAME"].strip()
-          raw = f"{owner}-{repo}".lower()
-          project_key = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
-          project_key = re.sub(r"-{2,}", "-", project_key)
-          if not project_key:
-              raise SystemExit("Unable to derive project key from repository owner/name")
-          github_env = os.environ["GITHUB_ENV"]
-          with open(github_env, "a", encoding="utf-8") as handle:
-              handle.write(f"OPENCODE_CONTROLLER_REPOSITORY={controller['repository']}\n")
-              handle.write(f"OPENCODE_SETUP_BRANCH={controller['setup_branch']}\n")
-              handle.write(f"OPENCODE_PROJECT_KEY={project_key}\n")
-              handle.write(f"OPENCODE_PREVIEW_SUPPORTED={'true' if preview['supported'] else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_SUPPORTED={'true' if visual_validation['supported'] else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_PROVIDER={visual_provider}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_PLATFORM={visual_platform}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED={'true' if visual_evidence_supported else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_PLAYWRIGHT_WEB={'true' if visual_validation['supported'] is True and visual_playwright_web else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_MACOS={'true' if visual_validation['supported'] is True and visual_native_macos else 'false'}\n")
-              handle.write(f"OPENCODE_VISUAL_VALIDATION_NATIVE_IOS_SIMULATOR={'true' if visual_validation['supported'] is True and visual_native_ios_simulator else 'false'}\n")
-          print("managed visual validation config ok")
-          PY
+          python3 scripts/lib/opencode-managed-workflow-context.py --context visual-validation --emit env
 
       - name: Skip repositories without visual validation capture support
         if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED != 'true' }}
@@ -281,13 +173,33 @@ jobs:
         run: |
           export HOME="$HOST_HOME"
           export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:$PATH"
-          cat > .opencode-visual-validation-project.json <<EOF
-          {
-            "project_key": "$OPENCODE_PROJECT_KEY",
-            "repo_owner": "$OPENCODE_REPO_OWNER",
-            "repo_name": "$OPENCODE_REPO_NAME"
-          }
-          EOF
+          OPENCODE_DEFAULT_BRANCH="${GITHUB_BASE_REF:-}"
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="$(git ls-remote --symref origin HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+          fi
+          if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
+            OPENCODE_DEFAULT_BRANCH="main"
+          fi
+          export OPENCODE_DEFAULT_BRANCH
+          "$VISUAL_VALIDATION_VENV/bin/python" - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          Path(".opencode-visual-validation-project.json").write_text(
+              json.dumps(
+                  {
+                      "project_key": os.environ["OPENCODE_PROJECT_KEY"],
+                      "repo_owner": os.environ["OPENCODE_REPO_OWNER"],
+                      "repo_name": os.environ["OPENCODE_REPO_NAME"],
+                      "default_branch": os.environ["OPENCODE_DEFAULT_BRANCH"],
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
           "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/visual_validation_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-visual-validation-project.json" \
@@ -302,7 +214,7 @@ jobs:
       - playwright-smoke
       - visual-validation
     if: ${{ always() && needs.preflight.result == 'success' && needs.validation.result == 'success' && (needs['playwright-smoke'].result == 'success' || needs['playwright-smoke'].result == 'skipped') && (needs['visual-validation'].result == 'success' || needs['visual-validation'].result == 'skipped') }}
-    runs-on: macos-ultramac
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GIT_SSL_NO_VERIFY: "1"
@@ -313,32 +225,42 @@ jobs:
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_REVIEW_PERSONA: "review-bot"
-      OPENCODE_REVIEW_PERSONA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+      OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
 
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Install handoff prerequisites
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-venv python3-pip
 
-      - name: Check out controller repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.preflight.outputs.controller_repository }}
-          path: controller
-          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-          fetch-depth: 0
+      - name: Check out repository and controller
+        run: |
+          umask 077
+          cat > "$HOME/.netrc" <<EOF
+          machine git.ultramac.work
+          login "review-bot"
+          password ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
+          EOF
+          git clone --no-checkout "https://git.ultramac.work/${OPENCODE_REPO_OWNER}/${OPENCODE_REPO_NAME}.git" repo
+          cd repo
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          git checkout "${{ inputs.head_sha }}"
+          cd ..
+          git clone "https://git.ultramac.work/${{ needs.preflight.outputs.controller_repository }}.git" controller
+          rm -f "$HOME/.netrc"
 
       - name: Resolve Python with working venv
         run: |
+          cd controller
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           export PATH="/opt/homebrew/bin:$PATH"
-          source controller/scripts/lib/python_runtime.sh
+          source scripts/lib/python_runtime.sh
           opencode_export_python_bin
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
+          echo "PR_PREP_CONTROLLER_ROOT=$PWD" >> "$GITHUB_ENV"
+          echo "PR_PREP_REPO_ROOT=$PWD/../repo" >> "$GITHUB_ENV"
           echo "PR_PREP_VENV=$PWD/.pr-prep-venv" >> "$GITHUB_ENV"
 
       - name: Install controller dependencies
@@ -346,14 +268,15 @@ jobs:
           "$PYTHON_BIN" --version
           "$PYTHON_BIN" -m venv "$PR_PREP_VENV"
           "$PR_PREP_VENV/bin/python" --version
-          "$PR_PREP_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
+          "$PR_PREP_VENV/bin/python" -m pip install -r "$PR_PREP_CONTROLLER_ROOT/shared/requirements.txt"
 
       - name: Explicit review handoff
         run: |
-          "$PR_PREP_VENV/bin/python" controller/scripts/pr_prep_worker.py \
-            --repo-root "$PWD" \
-            --automation-config "$PWD/controller/automation.json" \
-            --managed-config "$PWD/project/opencode-managed.json" \
+          cd "$PR_PREP_REPO_ROOT"
+          "$PR_PREP_VENV/bin/python" "$PR_PREP_CONTROLLER_ROOT/scripts/pr_prep_worker.py" \
+            --repo-root "$PR_PREP_REPO_ROOT" \
+            --automation-config "$PR_PREP_CONTROLLER_ROOT/automation.json" \
+            --managed-config "$PR_PREP_REPO_ROOT/project/opencode-managed.json" \
             --pull-request-number "${{ inputs.pull_request_number }}" \
             --head-sha "${{ inputs.head_sha }}" \
             --handoff-review
