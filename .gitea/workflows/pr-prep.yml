@@ -41,9 +41,19 @@ jobs:
         run: git config --global http.sslVerify false
 
       - name: Check out default branch workflow definition
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        run: |
+          set -euo pipefail
+          github_repository="${GITHUB_REPOSITORY:-}"
+          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
+          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
+          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
+          if [[ -n "${GITEA_TOKEN:-}" ]]; then
+            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
+          fi
+          git clone --depth=1 "$repo_url" .
+          if [[ "${OPENCODE_HEAD_SHA:-}" =~ ([0-9a-fA-F]{40}) ]]; then
+            git fetch --depth=1 origin "${BASH_REMATCH[1]}" || true
+          fi
 
       - name: Resolve managed PR-prep stages
         id: managed-config
@@ -212,6 +222,10 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
+      OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+      GITEA_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -236,9 +250,23 @@ jobs:
           PY
 
       - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.normalize-head-sha.outputs.head_sha }}
+        env:
+          OPENCODE_CHECKOUT_REF: ${{ steps.normalize-head-sha.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          github_repository="${GITHUB_REPOSITORY:-}"
+          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
+          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
+          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
+          if [[ -n "${GITEA_TOKEN:-}" ]]; then
+            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
+          fi
+          git init .
+          git remote add origin "$repo_url"
+          if ! git fetch --depth=1 origin "$OPENCODE_CHECKOUT_REF"; then
+            git fetch --depth=1 origin "refs/pull/${OPENCODE_PULL_REQUEST_NUMBER}/head"
+          fi
+          git checkout --force "$OPENCODE_CHECKOUT_REF" 2>/dev/null || git checkout --force FETCH_HEAD
 
       - name: Load managed validation settings
         run: |
@@ -311,10 +339,23 @@ jobs:
           PY
 
       - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.normalize-head-sha.outputs.head_sha }}
-          fetch-depth: 0
+        env:
+          OPENCODE_CHECKOUT_REF: ${{ steps.normalize-head-sha.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          github_repository="${GITHUB_REPOSITORY:-}"
+          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
+          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
+          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
+          if [[ -n "${GITEA_TOKEN:-}" ]]; then
+            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
+          fi
+          git init .
+          git remote add origin "$repo_url"
+          if ! git fetch origin "$OPENCODE_CHECKOUT_REF"; then
+            git fetch origin "refs/pull/${OPENCODE_PULL_REQUEST_NUMBER}/head"
+          fi
+          git checkout --force "$OPENCODE_CHECKOUT_REF" 2>/dev/null || git checkout --force FETCH_HEAD
 
       - name: Load managed visual validation settings
         run: |
@@ -484,13 +525,13 @@ jobs:
 
       - name: Check out controller repository
         if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.OPENCODE_CONTROLLER_REPOSITORY }}
-          ref: ${{ env.OPENCODE_SETUP_BRANCH }}
-          path: controller
-          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-          fetch-depth: 1
+        run: |
+          set -euo pipefail
+          controller_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${OPENCODE_CONTROLLER_REPOSITORY}.git"
+          if [[ -n "${GITEA_TOKEN:-}" ]]; then
+            controller_url="${controller_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
+          fi
+          git clone --depth=1 --branch "$OPENCODE_SETUP_BRANCH" "$controller_url" controller
 
       - name: Resolve Python with working venv
         if: ${{ env.OPENCODE_VISUAL_VALIDATION_EVIDENCE_SUPPORTED == 'true' }}
@@ -591,19 +632,32 @@ jobs:
           PY
 
       - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.normalize-head-sha.outputs.head_sha }}
-          fetch-depth: 0
+        env:
+          OPENCODE_CHECKOUT_REF: ${{ steps.normalize-head-sha.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          github_repository="${GITHUB_REPOSITORY:-}"
+          repo_owner="${OPENCODE_REPO_OWNER:-${github_repository%/*}}"
+          repo_name="${OPENCODE_REPO_NAME:-${github_repository#*/}}"
+          repo_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${repo_owner}/${repo_name}.git"
+          if [[ -n "${GITEA_TOKEN:-}" ]]; then
+            repo_url="${repo_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
+          fi
+          git init .
+          git remote add origin "$repo_url"
+          if ! git fetch origin "$OPENCODE_CHECKOUT_REF"; then
+            git fetch origin "refs/pull/${{ inputs.pull_request_number }}/head"
+          fi
+          git checkout --force "$OPENCODE_CHECKOUT_REF" 2>/dev/null || git checkout --force FETCH_HEAD
 
       - name: Check out controller repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.preflight.outputs.controller_repository }}
-          ref: ${{ needs.preflight.outputs.setup_branch }}
-          path: controller
-          token: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
-          fetch-depth: 1
+        run: |
+          set -euo pipefail
+          controller_url="${GITHUB_SERVER_URL:-https://git.ultramac.work}/${{ needs.preflight.outputs.controller_repository }}.git"
+          if [[ -n "${GITEA_TOKEN:-}" ]]; then
+            controller_url="${controller_url/https:\/\//https:\/\/review-bot:${GITEA_TOKEN}@}"
+          fi
+          git clone --depth=1 --branch "${{ needs.preflight.outputs.setup_branch }}" "$controller_url" controller
 
       - name: Resolve Python with working venv
         run: |
