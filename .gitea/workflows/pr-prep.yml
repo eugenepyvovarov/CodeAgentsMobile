@@ -24,6 +24,7 @@ jobs:
       visual_validation_supported: ${{ steps.managed-config.outputs.visual_validation_supported }}
       controller_repository: ${{ steps.managed-config.outputs.controller_repository }}
       setup_branch: ${{ steps.managed-config.outputs.setup_branch }}
+      project_key: ${{ steps.managed-config.outputs.project_key }}
     env:
       GIT_SSL_NO_VERIFY: "1"
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -32,6 +33,8 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -96,9 +99,11 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
-      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r2"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
       OPENCODE_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
       OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
@@ -201,12 +206,24 @@ jobs:
               encoding="utf-8",
           )
           PY
+          ACTIVITY_LOG="$PWD/.opencode-visual-validation-activity.log"
+          ACTIVITY_KEY="visual-validation:pr-${{ inputs.pull_request_number }}:${{ inputs.head_sha }}"
+          "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "$OPENCODE_PROJECT_KEY" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type visual-validation --phase capture --status running --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Visual validation capture running"
+          set +e
           "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/visual_validation_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-visual-validation-project.json" \
             --automation-config "$PWD/controller/automation.json" \
             --event-name "workflow_dispatch" \
-            --event-path "$GITHUB_EVENT_PATH"
+            --event-path "$GITHUB_EVENT_PATH" 2>&1 | tee "$ACTIVITY_LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "$OPENCODE_PROJECT_KEY" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type visual-validation --phase capture --status success --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Visual validation capture completed"
+          else
+            "$VISUAL_VALIDATION_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "$OPENCODE_PROJECT_KEY" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type visual-validation --phase capture --status failed --reason "worker-exit-$STATUS" --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Visual validation capture failed" --failed-log-file "$ACTIVITY_LOG"
+            exit "$STATUS"
+          fi
 
   handoff:
     needs:
@@ -225,6 +242,9 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_PROJECT_KEY: ${{ needs.preflight.outputs.project_key }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
       OPENCODE_REVIEW_PERSONA: "review-bot"
       OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
@@ -275,10 +295,36 @@ jobs:
       - name: Explicit review handoff
         run: |
           cd "$PR_PREP_REPO_ROOT"
+          ACTIVITY_LOG="$PR_PREP_REPO_ROOT/.opencode-pr-prep-activity.log"
+          "$PR_PREP_VENV/bin/python" "$PR_PREP_CONTROLLER_ROOT/scripts/activity_event.py" \
+            --repo-root "$PR_PREP_REPO_ROOT" \
+            --best-effort \
+            --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" \
+            --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" \
+            --project-key "${OPENCODE_PROJECT_KEY:-${OPENCODE_REPO_OWNER}-${OPENCODE_REPO_NAME}}" \
+            --repo-owner "$OPENCODE_REPO_OWNER" \
+            --repo-name "$OPENCODE_REPO_NAME" \
+            --worker workflow \
+            --action-type pr-prep \
+            --phase review-handoff \
+            --status running \
+            --pull-request-number "${{ inputs.pull_request_number }}" \
+            --head-sha "${{ inputs.head_sha }}" \
+            --external-key "pr-prep:pr-${{ inputs.pull_request_number }}:${{ inputs.head_sha }}" \
+            --summary "PR prep handoff running"
+          set +e
           "$PR_PREP_VENV/bin/python" "$PR_PREP_CONTROLLER_ROOT/scripts/pr_prep_worker.py" \
             --repo-root "$PR_PREP_REPO_ROOT" \
             --automation-config "$PR_PREP_CONTROLLER_ROOT/automation.json" \
             --managed-config "$PR_PREP_REPO_ROOT/project/opencode-managed.json" \
             --pull-request-number "${{ inputs.pull_request_number }}" \
             --head-sha "${{ inputs.head_sha }}" \
-            --handoff-review
+            --handoff-review 2>&1 | tee "$ACTIVITY_LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            "$PR_PREP_VENV/bin/python" "$PR_PREP_CONTROLLER_ROOT/scripts/activity_event.py" --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PR_PREP_REPO_ROOT" --project-key "${OPENCODE_PROJECT_KEY:-${OPENCODE_REPO_OWNER}-${OPENCODE_REPO_NAME}}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type pr-prep --phase review-handoff --status success --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "pr-prep:pr-${{ inputs.pull_request_number }}:${{ inputs.head_sha }}" --summary "PR prep handoff completed"
+          else
+            "$PR_PREP_VENV/bin/python" "$PR_PREP_CONTROLLER_ROOT/scripts/activity_event.py" --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PR_PREP_REPO_ROOT" --project-key "${OPENCODE_PROJECT_KEY:-${OPENCODE_REPO_OWNER}-${OPENCODE_REPO_NAME}}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type pr-prep --phase review-handoff --status failed --reason "worker-exit-$STATUS" --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "pr-prep:pr-${{ inputs.pull_request_number }}:${{ inputs.head_sha }}" --summary "PR prep handoff failed" --failed-log-file "$ACTIVITY_LOG"
+            exit "$STATUS"
+          fi

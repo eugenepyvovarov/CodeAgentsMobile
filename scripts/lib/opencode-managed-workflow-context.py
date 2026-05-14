@@ -120,6 +120,19 @@ def controller_config(config: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def activity_context() -> dict[str, str]:
+    return {
+        "OPENCODE_ACTIVITY_INGEST_URL": require_text(
+            os.environ.get("OPENCODE_ACTIVITY_INGEST_URL"),
+            "OPENCODE_ACTIVITY_INGEST_URL",
+        ),
+        "OPENCODE_ACTIVITY_INGEST_TOKEN": require_text(
+            os.environ.get("OPENCODE_ACTIVITY_INGEST_TOKEN"),
+            "OPENCODE_ACTIVITY_INGEST_TOKEN",
+        ),
+    }
+
+
 def validate_review_config(config: dict[str, Any]) -> None:
     review = as_object(config.get("review"), "review")
     require_text(review.get("persona"), "review.persona")
@@ -221,6 +234,7 @@ def visual_validation_context(config: dict[str, Any]) -> dict[str, str]:
         "OPENCODE_VISUAL_VALIDATION_NATIVE_IOS_SIMULATOR": bool_text(
             visual_supported and summary["native_ios_simulator"]
         ),
+        **activity_context(),
     }
 
 
@@ -257,6 +271,7 @@ def production_artifact_context(config: dict[str, Any]) -> dict[str, str]:
         "OPENCODE_PRODUCTION_ARTIFACT_PHASE_APP_ID": phase_app_id,
         "OPENCODE_PRODUCTION_ARTIFACT_PHASE_ENV": phase_env,
         "OPENCODE_PRODUCTION_ARTIFACT_PHASE_PATH": phase_path,
+        **activity_context(),
     }
 
 
@@ -344,6 +359,7 @@ def review_settings_context(config: dict[str, Any]) -> dict[str, str]:
         "OPENCODE_VALIDATION_COMMAND": require_text(validation.get("command"), "validation.command"),
         "OPENCODE_COVERAGE_COMMAND": require_text(coverage.get("command"), "coverage.command"),
         "OPENCODE_DEPLOYMENT_COMMAND": require_text(deployment.get("command"), "deployment.command"),
+        **activity_context(),
     }
 
 
@@ -387,6 +403,7 @@ def pr_prep_preflight_context(config: dict[str, Any]) -> dict[str, str]:
         "visual_validation_supported": bool_text(visual_stage),
         "controller_repository": controller["repository"],
         "setup_branch": controller["setup_branch"],
+        "project_key": derive_project_key(),
     }
 
 
