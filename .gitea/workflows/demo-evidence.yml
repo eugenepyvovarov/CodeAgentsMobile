@@ -37,6 +37,8 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
         run: git config --global http.sslVerify false
@@ -56,7 +58,7 @@ jobs:
     if: ${{ github.ref_name != needs.preflight.outputs.setup_branch && needs.preflight.outputs.preview_supported == 'true' && needs.preflight.outputs.demo_playwright_web_supported == 'true' }}
     runs-on: ubuntu-latest
     container:
-      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1
+      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r2
       credentials:
         username: review-bot
         password: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
@@ -69,10 +71,13 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
       OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
+        shell: bash
         run: git config --global http.sslVerify false
 
       - name: Check out repository
@@ -89,6 +94,7 @@ jobs:
           fetch-depth: 0
 
       - name: Resolve Python with working venv
+        shell: bash
         run: |
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           export PATH="/opt/homebrew/bin:$PATH"
@@ -98,6 +104,7 @@ jobs:
           echo "DEMO_EVIDENCE_VENV=$PWD/.demo-evidence-venv" >> "$GITHUB_ENV"
 
       - name: Install controller dependencies
+        shell: bash
         run: |
           "$PYTHON_BIN" --version
           "$PYTHON_BIN" -m venv "$DEMO_EVIDENCE_VENV"
@@ -105,6 +112,7 @@ jobs:
           "$DEMO_EVIDENCE_VENV/bin/python" -m pip install -r controller/shared/requirements.txt
 
       - name: Run retained-preview final demo media worker
+        shell: bash
         run: |
           OPENCODE_DEFAULT_BRANCH="${GITHUB_BASE_REF:-}"
           if [[ -z "$OPENCODE_DEFAULT_BRANCH" ]]; then
@@ -122,12 +130,24 @@ jobs:
             "default_branch": "$OPENCODE_DEFAULT_BRANCH"
           }
           EOF
+          ACTIVITY_LOG="$PWD/.opencode-demo-evidence-activity.log"
+          ACTIVITY_KEY="demo-evidence:pr-${{ inputs.pull_request_number }}:${{ inputs.head_sha }}"
+          "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status running --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Final demo media capture running"
+          set +e
           "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-demo-project.json" \
             --automation-config "$PWD/controller/automation.json" \
             --event-name "$GITHUB_EVENT_NAME" \
-            --event-path "$GITHUB_EVENT_PATH"
+            --event-path "$GITHUB_EVENT_PATH" 2>&1 | tee "$ACTIVITY_LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status success --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Final demo media capture completed"
+          else
+            "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status failed --reason "worker-exit-$STATUS" --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Final demo media capture failed" --failed-log-file "$ACTIVITY_LOG"
+            exit "$STATUS"
+          fi
 
   demo-evidence-native-macos:
     needs: preflight
@@ -142,6 +162,8 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
       OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
@@ -200,12 +222,24 @@ jobs:
             "default_branch": "$OPENCODE_DEFAULT_BRANCH"
           }
           EOF
+          ACTIVITY_LOG="$PWD/.opencode-demo-evidence-activity.log"
+          ACTIVITY_KEY="demo-evidence:pr-${{ inputs.pull_request_number }}:${{ inputs.head_sha }}"
+          "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status running --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Native final demo media capture running"
+          set +e
           "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-demo-project.json" \
             --automation-config "$PWD/controller/automation.json" \
             --event-name "$GITHUB_EVENT_NAME" \
-            --event-path "$GITHUB_EVENT_PATH"
+            --event-path "$GITHUB_EVENT_PATH" 2>&1 | tee "$ACTIVITY_LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status success --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Native final demo media capture completed"
+          else
+            "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status failed --reason "worker-exit-$STATUS" --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Native final demo media capture failed" --failed-log-file "$ACTIVITY_LOG"
+            exit "$STATUS"
+          fi
 
   demo-evidence-native-ios-simulator:
     needs: preflight
@@ -220,6 +254,8 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
       OPENCODE_CONTROLLER_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
@@ -278,9 +314,21 @@ jobs:
             "default_branch": "$OPENCODE_DEFAULT_BRANCH"
           }
           EOF
+          ACTIVITY_LOG="$PWD/.opencode-demo-evidence-activity.log"
+          ACTIVITY_KEY="demo-evidence:pr-${{ inputs.pull_request_number }}:${{ inputs.head_sha }}"
+          "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status running --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Native iOS simulator final demo media capture running"
+          set +e
           "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/demo_evidence_worker.py \
             --repo-root "$PWD" \
             --config "$PWD/.opencode-demo-project.json" \
             --automation-config "$PWD/controller/automation.json" \
             --event-name "$GITHUB_EVENT_NAME" \
-            --event-path "$GITHUB_EVENT_PATH"
+            --event-path "$GITHUB_EVENT_PATH" 2>&1 | tee "$ACTIVITY_LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status success --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Native iOS simulator final demo media capture completed"
+          else
+            "$DEMO_EVIDENCE_VENV/bin/python" controller/scripts/activity_event.py --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$PWD" --project-key "${{ needs.preflight.outputs.project_key }}" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker workflow --action-type demo-evidence --phase artifact-upload --status failed --reason "worker-exit-$STATUS" --pull-request-number "${{ inputs.pull_request_number }}" --head-sha "${{ inputs.head_sha }}" --external-key "$ACTIVITY_KEY" --summary "Native iOS simulator final demo media capture failed" --failed-log-file "$ACTIVITY_LOG"
+            exit "$STATUS"
+          fi

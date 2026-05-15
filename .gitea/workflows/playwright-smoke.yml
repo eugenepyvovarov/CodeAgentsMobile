@@ -20,7 +20,7 @@ jobs:
   playwright-smoke:
     runs-on: ubuntu-latest
     container:
-      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r1
+      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r2
       credentials:
         username: review-bot
         password: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}

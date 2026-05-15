@@ -35,6 +35,8 @@ jobs:
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
+      OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
+      OPENCODE_ACTIVITY_INGEST_TOKEN: ${{ secrets.OPENCODE_ACTIVITY_INGEST_TOKEN }}
       OPENCODE_REVIEW_PERSONA: "review-bot"
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
@@ -172,6 +174,12 @@ jobs:
               encoding="utf-8",
           )
           PY
+          ACTIVITY_PR="${{ inputs.pull_request_number || github.event.pull_request.number || github.event.issue.number }}"
+          ACTIVITY_SHA="${{ inputs.head_sha || github.event.pull_request.head.sha || github.sha }}"
+          ACTIVITY_KEY="review:pr-${ACTIVITY_PR}:${ACTIVITY_SHA}"
+          ACTIVITY_LOG="$REVIEW_REPO_ROOT/.opencode-review-activity.log"
+          "$REVIEW_BOT_VENV/bin/python" "$REVIEW_CONTROLLER_ROOT/scripts/activity_event.py" --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$REVIEW_REPO_ROOT" --project-key "$OPENCODE_PROJECT_KEY" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker review-bot --action-type review --phase acceptance-review --status running --pull-request-number "$ACTIVITY_PR" --head-sha "$ACTIVITY_SHA" --external-key "$ACTIVITY_KEY" --summary "Review bot running"
+          set +e
           zsh -lc '
             "'"$REVIEW_BOT_VENV"'/bin/python" "$REVIEW_CONTROLLER_ROOT/scripts/review_worker.py" \
               --repo-root "$REVIEW_REPO_ROOT" \
@@ -179,4 +187,12 @@ jobs:
               --automation-config "$REVIEW_CONTROLLER_ROOT/automation.json" \
               --event-name "$GITHUB_EVENT_NAME" \
               --event-path "$GITHUB_EVENT_PATH"
-          '
+          ' 2>&1 | tee "$ACTIVITY_LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            "$REVIEW_BOT_VENV/bin/python" "$REVIEW_CONTROLLER_ROOT/scripts/activity_event.py" --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$REVIEW_REPO_ROOT" --project-key "$OPENCODE_PROJECT_KEY" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker review-bot --action-type review --phase acceptance-review --status success --pull-request-number "$ACTIVITY_PR" --head-sha "$ACTIVITY_SHA" --external-key "$ACTIVITY_KEY" --summary "Review bot completed"
+          else
+            "$REVIEW_BOT_VENV/bin/python" "$REVIEW_CONTROLLER_ROOT/scripts/activity_event.py" --best-effort --ingest-url "$OPENCODE_ACTIVITY_INGEST_URL" --ingest-token "$OPENCODE_ACTIVITY_INGEST_TOKEN" --repo-root "$REVIEW_REPO_ROOT" --project-key "$OPENCODE_PROJECT_KEY" --repo-owner "$OPENCODE_REPO_OWNER" --repo-name "$OPENCODE_REPO_NAME" --worker review-bot --action-type review --phase acceptance-review --status failed --reason "worker-exit-$STATUS" --pull-request-number "$ACTIVITY_PR" --head-sha "$ACTIVITY_SHA" --external-key "$ACTIVITY_KEY" --summary "Review bot failed" --failed-log-file "$ACTIVITY_LOG"
+            exit "$STATUS"
+          fi
