@@ -33,7 +33,9 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
-      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r2"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION: "1"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_ENTRYPOINT: "/usr/local/bin/playwright-evidence-runner"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}

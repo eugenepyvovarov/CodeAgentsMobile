@@ -35,6 +35,8 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION: "1"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
@@ -57,11 +59,6 @@ jobs:
     needs: preflight
     if: ${{ github.ref_name != needs.preflight.outputs.setup_branch && needs.preflight.outputs.preview_supported == 'true' && needs.preflight.outputs.demo_playwright_web_supported == 'true' }}
     runs-on: ubuntu-latest
-    container:
-      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r2
-      credentials:
-        username: review-bot
-        password: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     timeout-minutes: 10
     env:
       GIT_SSL_NO_VERIFY: "1"
@@ -69,6 +66,9 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION: "1"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_ENTRYPOINT: "/usr/local/bin/playwright-evidence-runner"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
       OPENCODE_ACTIVITY_INGEST_URL: ${{ secrets.OPENCODE_ACTIVITY_INGEST_URL }}
@@ -84,6 +84,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Authenticate shared Playwright evidence runner image pull access
+        shell: bash
+        run: echo "${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}" | docker login git.ultramac.work -u "review-bot" --password-stdin
+
+      - name: Require shared Playwright evidence runner image
+        shell: bash
+        run: |
+          if [[ -z "${OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE:-}" ]]; then
+            echo "OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE is required for Playwright/web demo evidence; host Playwright/node_modules fallback is not supported." >&2
+            exit 1
+          fi
+          docker pull "$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE"
 
       - name: Check out controller repository
         uses: actions/checkout@v4

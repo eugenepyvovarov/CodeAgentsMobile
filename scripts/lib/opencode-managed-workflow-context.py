@@ -28,6 +28,8 @@ PLAYWRIGHT_SMOKE_WORKFLOW = ".gitea/workflows/playwright-smoke.yml"
 
 PLAYWRIGHT_PROVIDER = "playwright"
 WEB_PLATFORM = "web"
+EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE = "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION = "1"
 NATIVE_MACOS_PROVIDER = "native-macos"
 NATIVE_MACOS_PLATFORM = "macos"
 NATIVE_MACOS_PROVIDER_ALIASES = {NATIVE_MACOS_PROVIDER, "native", "macos"}
@@ -156,6 +158,30 @@ def validate_workflow(section: dict[str, Any], path: str, expected: str) -> None
         raise ConfigError(f"{path}.workflow must be {expected}")
 
 
+def require_shared_playwright_runner_contract(enabled: bool, path: str) -> None:
+    if not enabled:
+        return
+    image = require_text(
+        os.environ.get("OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE"),
+        "OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE",
+    )
+    if image != EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE:
+        raise ConfigError(
+            f"{path} web evidence must use shared Playwright evidence runner "
+            f"{EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE}; got {image}. "
+            "Host Playwright/node_modules fallback is not supported."
+        )
+    contract_version = require_text(
+        os.environ.get("OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION"),
+        "OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION",
+    )
+    if contract_version != EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION:
+        raise ConfigError(
+            f"{path} web evidence must use Playwright evidence runner contract "
+            f"{EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION}; got {contract_version}"
+        )
+
+
 def provider_summary(section: dict[str, Any], path: str) -> dict[str, Any]:
     provider = require_text(section.get("provider"), f"{path}.provider")
     platform = require_text(section.get("platform"), f"{path}.platform")
@@ -188,6 +214,7 @@ def demo_context(config: dict[str, Any]) -> dict[str, str]:
         raise ConfigError("demo.record_video must be true")
     summary = provider_summary(demo, "demo")
     evidence_supported = demo_supported and summary["evidence_supported"]
+    require_shared_playwright_runner_contract(demo_supported and summary["playwright_web"], "demo")
     if not evidence_supported:
         print("Managed repository does not declare supported demo evidence capture; skipping.")
     return {
@@ -218,6 +245,10 @@ def visual_validation_context(config: dict[str, Any]) -> dict[str, str]:
         raise ConfigError("visual_validation.full_page must be true")
     summary = provider_summary(visual, "visual_validation")
     evidence_supported = visual_supported and summary["evidence_supported"]
+    require_shared_playwright_runner_contract(
+        visual_supported and preview_supported and summary["playwright_web"],
+        "visual_validation",
+    )
     if not evidence_supported:
         print("Managed repository does not declare supported visual validation capture; skipping.")
     return {
@@ -287,6 +318,10 @@ def playwright_smoke_context(config: dict[str, Any]) -> dict[str, str]:
     command = require_text(smoke.get("command"), "playwright_smoke.command")
     if not (supported and provider == PLAYWRIGHT_PROVIDER and platform == WEB_PLATFORM):
         print("Managed repository does not declare supported web Playwright smoke coverage; skipping.")
+    require_shared_playwright_runner_contract(
+        supported and provider == PLAYWRIGHT_PROVIDER and platform == WEB_PLATFORM,
+        "playwright_smoke",
+    )
     return {
         "OPENCODE_SETUP_BRANCH": controller["setup_branch"],
         "OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED": bool_text(supported),
@@ -396,6 +431,11 @@ def pr_prep_preflight_context(config: dict[str, Any]) -> dict[str, str]:
             or visual_summary["native_macos"]
             or visual_summary["native_ios_simulator"]
         )
+    )
+    require_shared_playwright_runner_contract(smoke_stage, "playwright_smoke")
+    require_shared_playwright_runner_contract(
+        visual_stage and visual_summary["playwright_web"],
+        "visual_validation",
     )
     return {
         "validation_supported": "true",

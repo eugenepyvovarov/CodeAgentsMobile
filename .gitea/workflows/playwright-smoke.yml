@@ -19,11 +19,6 @@ permissions:
 jobs:
   playwright-smoke:
     runs-on: ubuntu-latest
-    container:
-      image: git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r2
-      credentials:
-        username: review-bot
-        password: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     timeout-minutes: 15
     env:
       GIT_SSL_NO_VERIFY: "1"
@@ -31,6 +26,9 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION: "1"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_ENTRYPOINT: "/usr/local/bin/playwright-evidence-runner"
       OPENCODE_PERSONA_REVIEW_BOT_TOKEN: ${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}
     steps:
       - name: Allow internal self-signed Git over HTTPS
@@ -49,6 +47,31 @@ jobs:
         if: ${{ env.OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED != 'true' || env.OPENCODE_PLAYWRIGHT_SMOKE_PROVIDER != 'playwright' || env.OPENCODE_PLAYWRIGHT_SMOKE_PLATFORM != 'web' }}
         run: echo "Managed repository does not declare supported web Playwright smoke coverage; skipping."
 
-      - name: Run repository Playwright smoke command
+      - name: Authenticate shared Playwright evidence runner image pull access
         if: ${{ env.OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED == 'true' && env.OPENCODE_PLAYWRIGHT_SMOKE_PROVIDER == 'playwright' && env.OPENCODE_PLAYWRIGHT_SMOKE_PLATFORM == 'web' }}
-        run: /bin/bash -lc "$OPENCODE_PLAYWRIGHT_SMOKE_COMMAND"
+        run: echo "${{ secrets.OPENCODE_PERSONA_REVIEW_BOT_TOKEN }}" | docker login git.ultramac.work -u "review-bot" --password-stdin
+
+      - name: Require shared Playwright evidence runner image
+        if: ${{ env.OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED == 'true' && env.OPENCODE_PLAYWRIGHT_SMOKE_PROVIDER == 'playwright' && env.OPENCODE_PLAYWRIGHT_SMOKE_PLATFORM == 'web' }}
+        run: |
+          if [[ -z "${OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE:-}" ]]; then
+            echo "OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE is required for web Playwright smoke evidence; host Playwright/node_modules fallback is not supported." >&2
+            exit 1
+          fi
+          docker pull "$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE"
+
+      - name: Run repository Playwright smoke command through shared runner
+        if: ${{ env.OPENCODE_PLAYWRIGHT_SMOKE_SUPPORTED == 'true' && env.OPENCODE_PLAYWRIGHT_SMOKE_PROVIDER == 'playwright' && env.OPENCODE_PLAYWRIGHT_SMOKE_PLATFORM == 'web' }}
+        run: |
+          ARTIFACT_DIR="$PWD/.opencode/playwright-smoke"
+          mkdir -p "$ARTIFACT_DIR"
+          docker run --rm \
+            -v "$PWD:$PWD" \
+            -w "$PWD" \
+            -e "OPENCODE_EVIDENCE_MODE=preflight" \
+            -e "OPENCODE_REPO_ROOT=$PWD" \
+            -e "OPENCODE_ARTIFACT_DIR=$ARTIFACT_DIR" \
+            -e "OPENCODE_TARGET_URL=about:blank" \
+            -e "OPENCODE_SCENARIO_COMMAND=$OPENCODE_PLAYWRIGHT_SMOKE_COMMAND" \
+            -e "OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE=$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE" \
+            "$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE"
