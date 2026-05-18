@@ -65,8 +65,13 @@ jobs:
         run: |
           ARTIFACT_DIR="$PWD/.opencode/playwright-smoke"
           mkdir -p "$ARTIFACT_DIR"
+          WORKSPACE_CONTAINER="${OPENCODE_WORKSPACE_CONTAINER:-${HOSTNAME:-}}"
+          DOCKER_WORKSPACE_ARGS=(-v "$PWD:$PWD")
+          if [[ -n "$WORKSPACE_CONTAINER" ]] && docker inspect "$WORKSPACE_CONTAINER" >/dev/null 2>&1; then
+            DOCKER_WORKSPACE_ARGS=(--volumes-from "$WORKSPACE_CONTAINER")
+          fi
           docker run --rm \
-            -v "$PWD:$PWD" \
+            "${DOCKER_WORKSPACE_ARGS[@]}" \
             -w "$PWD" \
             -e "OPENCODE_EVIDENCE_MODE=preflight" \
             -e "OPENCODE_REPO_ROOT=$PWD" \
@@ -74,4 +79,5 @@ jobs:
             -e "OPENCODE_TARGET_URL=about:blank" \
             -e "OPENCODE_SCENARIO_COMMAND=$OPENCODE_PLAYWRIGHT_SMOKE_COMMAND" \
             -e "OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE=$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE" \
+            -e "CI=${CI:-1}" \
             "$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE"
