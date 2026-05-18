@@ -31,6 +31,12 @@
   "deployment": {
     "command": "/bin/bash ./scripts/deploy.sh"
   },
+  "design_contract": {
+    "supported": false,
+    "required": false,
+    "path": "DESIGN.md",
+    "lint_command": "npx @google/design.md lint DESIGN.md"
+  },
   "production_artifact": {
     "workflow": ".gitea/workflows/production-artifact.yml",
     "supported": true,
