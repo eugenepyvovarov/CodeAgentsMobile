@@ -35,7 +35,7 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
-      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r4"
       OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION: "1"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
       OPENCODE_REPO_NAME: ${{ secrets.OPENCODE_REPO_NAME }}
@@ -66,7 +66,7 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       OPENCODE_MANAGED_CONFIG: "project/opencode-managed.json"
-      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+      OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE: "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r4"
       OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION: "1"
       OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_ENTRYPOINT: "/usr/local/bin/playwright-evidence-runner"
       OPENCODE_REPO_OWNER: ${{ secrets.OPENCODE_REPO_OWNER }}
@@ -115,6 +115,25 @@ jobs:
           opencode_export_python_bin
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
           echo "DEMO_EVIDENCE_VENV=$PWD/.demo-evidence-venv" >> "$GITHUB_ENV"
+
+      - name: Expose controller media validation tools
+        shell: bash
+        run: |
+          mkdir -p "$PWD/.opencode-bin"
+          cat > "$PWD/.opencode-bin/ffprobe" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          docker run --rm \
+            --entrypoint ffprobe \
+            -v "$PWD:$PWD" \
+            -w "$PWD" \
+            "$OPENCODE_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE" \
+            "$@"
+          EOF
+          chmod +x "$PWD/.opencode-bin/ffprobe"
+          echo "$PWD/.opencode-bin" >> "$GITHUB_PATH"
+          export PATH="$PWD/.opencode-bin:$PATH"
+          ffprobe -version
 
       - name: Install controller dependencies
         shell: bash

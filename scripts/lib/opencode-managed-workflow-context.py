@@ -28,7 +28,7 @@ PLAYWRIGHT_SMOKE_WORKFLOW = ".gitea/workflows/playwright-smoke.yml"
 
 PLAYWRIGHT_PROVIDER = "playwright"
 WEB_PLATFORM = "web"
-EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE = "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r3"
+EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_IMAGE = "git.ultramac.work/eugene/opencode-gitea-automation/playwright-evidence-runner:1.54.0-r4"
 EXPECTED_PLAYWRIGHT_EVIDENCE_RUNNER_CONTRACT_VERSION = "1"
 NATIVE_MACOS_PROVIDER = "native-macos"
 NATIVE_MACOS_PLATFORM = "macos"
