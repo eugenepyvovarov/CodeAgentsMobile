@@ -1,0 +1,383 @@
+//
+//  SSHKeyDetailView.swift
+//  CodeAgentsMobile
+//
+//  SSH key details and export sheet presented from Settings.
+//
+
+import SwiftUI
+import Crypto
+
+struct SSHKeyDetailView: View {
+    let sshKey: SSHKey
+    @Environment(\.dismiss) private var dismiss
+    @State private var showExportOptions = false
+    @State private var showCopiedAlert = false
+    @State private var copiedKeyType = ""
+    @State private var exportError: String?
+    @State private var showError = false
+    @State private var hasPrivateKey = false
+    @State private var hasPassphrase = false
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Key Information") {
+                    HStack {
+                        Text("Name")
+                        Spacer()
+                        Text(sshKey.name)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    HStack {
+                        Text("Type")
+                        Spacer()
+                        Text(sshKey.keyType)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    HStack {
+                        Text("Public Key")
+                        Spacer()
+                        Image(systemName: !sshKey.publicKey.isEmpty ? "checkmark.circle.fill" : "xmark.circle")
+                            .foregroundColor(!sshKey.publicKey.isEmpty ? .green : .red)
+                    }
+                    
+                    HStack {
+                        Text("Private Key")
+                        Spacer()
+                        Image(systemName: hasPrivateKey ? "checkmark.circle.fill" : "xmark.circle")
+                            .foregroundColor(hasPrivateKey ? .green : .red)
+                    }
+                    
+                    if hasPrivateKey {
+                        HStack {
+                            Text("Passphrase Protected")
+                            Spacer()
+                            Image(systemName: hasPassphrase ? "lock.fill" : "lock.open")
+                                .foregroundColor(hasPassphrase ? .green : .orange)
+                        }
+                    }
+                }
+                
+                if !sshKey.publicKey.isEmpty || hasPrivateKey {
+                    Section("Export Options") {
+                        if !sshKey.publicKey.isEmpty {
+                            Button {
+                                copyPublicKey()
+                            } label: {
+                                Label("Copy Public Key", systemImage: "doc.on.doc")
+                            }
+                            
+                            Button {
+                                exportPublicKey()
+                            } label: {
+                                Label("Export Public Key", systemImage: "square.and.arrow.up")
+                            }
+                        }
+                        
+                        if hasPrivateKey {
+                            Button {
+                                copyPrivateKey()
+                            } label: {
+                                Label("Copy Private Key", systemImage: "doc.on.doc")
+                            }
+                            
+                            Button {
+                                exportPrivateKey()
+                            } label: {
+                                Label("Export Private Key", systemImage: "key")
+                            }
+                        }
+                        
+                        if !sshKey.publicKey.isEmpty && hasPrivateKey {
+                            Button {
+                                exportBothKeys()
+                            } label: {
+                                Label("Export Both Keys", systemImage: "square.and.arrow.up.on.square")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("SSH Key Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                checkPrivateKey()
+            }
+            .alert("Copied!", isPresented: $showCopiedAlert) {
+                Button("OK") {}
+            } message: {
+                Text("\(copiedKeyType) key copied to clipboard")
+            }
+            .alert("Error", isPresented: $showError) {
+                Button("OK") {}
+            } message: {
+                Text(exportError ?? "Failed to export key")
+            }
+        }
+    }
+    
+    private func checkPrivateKey() {
+        if let _ = try? KeychainManager.shared.retrieveSSHKey(for: sshKey.id) {
+            hasPrivateKey = true
+            
+            // Check if there's a passphrase stored for this key
+            if let _ = KeychainManager.shared.retrieveSSHKeyPassphrase(for: sshKey.id) {
+                hasPassphrase = true
+            }
+        }
+    }
+    
+    private func copyPublicKey() {
+        UIPasteboard.general.string = sshKey.publicKey
+        copiedKeyType = "Public"
+        showCopiedAlert = true
+    }
+    
+    private func copyPrivateKey() {
+        guard let privateKeyData = try? KeychainManager.shared.retrieveSSHKey(for: sshKey.id) else {
+            exportError = "Private key not found"
+            showError = true
+            return
+        }
+        
+        // Format the key for copying based on key type
+        let privateKey: String
+        if sshKey.keyType == "Ed25519" {
+            // For Ed25519, format as OpenSSH
+            privateKey = formatEd25519PrivateKeyForExport(privateKeyData)
+        } else if let keyString = String(data: privateKeyData, encoding: .utf8) {
+            // For other key types, it might already be in PEM format
+            privateKey = keyString
+        } else {
+            // Try to format as generic PEM
+            privateKey = formatPrivateKeyAsPEM(privateKeyData, keyType: sshKey.keyType)
+        }
+        
+        UIPasteboard.general.string = privateKey
+        copiedKeyType = "Private"
+        showCopiedAlert = true
+    }
+    
+    private func exportPublicKey() {
+        let tempDir = FileManager.default.temporaryDirectory
+        let publicKeyURL = tempDir.appendingPathComponent("\(sshKey.name).pub")
+        
+        do {
+            try sshKey.publicKey.write(to: publicKeyURL, atomically: true, encoding: .utf8)
+            presentShareSheet(with: [publicKeyURL])
+        } catch {
+            exportError = error.localizedDescription
+            showError = true
+        }
+    }
+    
+    private func exportPrivateKey() {
+        guard let privateKeyData = try? KeychainManager.shared.retrieveSSHKey(for: sshKey.id) else {
+            exportError = "Private key not found"
+            showError = true
+            return
+        }
+        
+        // Format the key for export based on key type
+        let privateKey: String
+        if sshKey.keyType == "Ed25519" {
+            // For Ed25519, format as OpenSSH
+            privateKey = formatEd25519PrivateKeyForExport(privateKeyData)
+        } else if let keyString = String(data: privateKeyData, encoding: .utf8) {
+            // For other key types, it might already be in PEM format
+            privateKey = keyString
+        } else {
+            // Try to format as generic PEM
+            privateKey = formatPrivateKeyAsPEM(privateKeyData, keyType: sshKey.keyType)
+        }
+        
+        let tempDir = FileManager.default.temporaryDirectory
+        let privateKeyURL = tempDir.appendingPathComponent(sshKey.name)
+        
+        do {
+            try privateKey.write(to: privateKeyURL, atomically: true, encoding: .utf8)
+            presentShareSheet(with: [privateKeyURL])
+        } catch {
+            exportError = error.localizedDescription
+            showError = true
+        }
+    }
+    
+    private func exportBothKeys() {
+        guard let privateKeyData = try? KeychainManager.shared.retrieveSSHKey(for: sshKey.id) else {
+            exportError = "Private key not found"
+            showError = true
+            return
+        }
+        
+        // Format the key for export based on key type
+        let privateKey: String
+        if sshKey.keyType == "Ed25519" {
+            // For Ed25519, format as OpenSSH
+            privateKey = formatEd25519PrivateKeyForExport(privateKeyData)
+        } else if let keyString = String(data: privateKeyData, encoding: .utf8) {
+            // For other key types, it might already be in PEM format
+            privateKey = keyString
+        } else {
+            // Try to format as generic PEM
+            privateKey = formatPrivateKeyAsPEM(privateKeyData, keyType: sshKey.keyType)
+        }
+        
+        let tempDir = FileManager.default.temporaryDirectory
+        let privateKeyURL = tempDir.appendingPathComponent(sshKey.name)
+        let publicKeyURL = tempDir.appendingPathComponent("\(sshKey.name).pub")
+        
+        do {
+            try privateKey.write(to: privateKeyURL, atomically: true, encoding: .utf8)
+            try sshKey.publicKey.write(to: publicKeyURL, atomically: true, encoding: .utf8)
+            presentShareSheet(with: [privateKeyURL, publicKeyURL])
+        } catch {
+            exportError = error.localizedDescription
+            showError = true
+        }
+    }
+    
+    private func formatEd25519PrivateKeyForExport(_ keyData: Data) -> String {
+        // Create OpenSSH format for Ed25519 keys
+        var result = "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        
+        var data = Data()
+        
+        // Magic header
+        data.append("openssh-key-v1\0".data(using: .utf8)!)
+        
+        // Add cipher, kdf, kdf options (none for unencrypted)
+        data.append(Data([0, 0, 0, 4])) // length
+        data.append("none".data(using: .utf8)!)
+        data.append(Data([0, 0, 0, 4])) // length
+        data.append("none".data(using: .utf8)!)
+        data.append(Data([0, 0, 0, 0])) // empty kdf options
+        
+        // Number of keys
+        data.append(Data([0, 0, 0, 1]))
+        
+        // For Ed25519, the private key is 32 bytes and public key is the next 32 bytes
+        let privateKeyBytes = keyData.prefix(32)
+        let publicKeyBytes: Data
+        
+        if keyData.count >= 64 {
+            // We have both private and public key stored
+            publicKeyBytes = keyData.subdata(in: 32..<64)
+        } else {
+            // We only have the private key seed, derive the public key
+            if let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: privateKeyBytes) {
+                publicKeyBytes = privateKey.publicKey.rawRepresentation
+            } else {
+                // Fallback - this shouldn't happen with valid keys
+                publicKeyBytes = Data(repeating: 0, count: 32)
+            }
+        }
+        
+        // Public key section
+        var pubKeySection = Data()
+        pubKeySection.append(Data([0, 0, 0, 11])) // length of "ssh-ed25519"
+        pubKeySection.append("ssh-ed25519".data(using: .utf8)!)
+        pubKeySection.append(Data([0, 0, 0, 32])) // length of public key
+        pubKeySection.append(publicKeyBytes)
+        
+        // Add public key section length and data
+        var pubKeySectionLength = UInt32(pubKeySection.count).bigEndian
+        data.append(Data(bytes: &pubKeySectionLength, count: 4))
+        data.append(pubKeySection)
+        
+        // Private key section
+        var privKeySection = Data()
+        // Check bytes - must be 8 bytes total (same 4-byte value repeated twice)
+        // Using a random value for security, though any value works for unencrypted keys
+        let checkValue = UInt32.random(in: 0..<UInt32.max)
+        privKeySection.append(withUnsafeBytes(of: checkValue.bigEndian) { Data($0) })
+        privKeySection.append(withUnsafeBytes(of: checkValue.bigEndian) { Data($0) })
+        privKeySection.append(pubKeySection) // repeat public key section
+        privKeySection.append(Data([0, 0, 0, 64])) // length of private key (32 private + 32 public)
+        privKeySection.append(privateKeyBytes)
+        privKeySection.append(publicKeyBytes)
+        privKeySection.append(Data([0, 0, 0, 0])) // comment length
+        
+        // Pad to block size (8 bytes)
+        let padding = (8 - (privKeySection.count % 8)) % 8
+        for i in 1...padding {
+            privKeySection.append(UInt8(i))
+        }
+        
+        // Add private key section
+        var privKeySectionLength = UInt32(privKeySection.count).bigEndian
+        data.append(Data(bytes: &privKeySectionLength, count: 4))
+        data.append(privKeySection)
+        
+        // Base64 encode
+        let base64String = data.base64EncodedString()
+        
+        // Add line breaks every 70 characters
+        var formattedBase64 = ""
+        var index = base64String.startIndex
+        while index < base64String.endIndex {
+            let endIndex = base64String.index(index, offsetBy: 70, limitedBy: base64String.endIndex) ?? base64String.endIndex
+            formattedBase64 += base64String[index..<endIndex]
+            formattedBase64 += "\n"
+            index = endIndex
+        }
+        
+        result += formattedBase64
+        result += "-----END OPENSSH PRIVATE KEY-----\n"
+        
+        return result
+    }
+    
+    private func formatPrivateKeyAsPEM(_ keyData: Data, keyType: String) -> String {
+        // Generic PEM formatting for RSA/ECDSA keys
+        // This is a simplified version - real implementation would need proper ASN.1 encoding
+        let base64 = keyData.base64EncodedString()
+        
+        var formatted = "-----BEGIN PRIVATE KEY-----\n"
+        var index = base64.startIndex
+        while index < base64.endIndex {
+            let endIndex = base64.index(index, offsetBy: 64, limitedBy: base64.endIndex) ?? base64.endIndex
+            formatted += base64[index..<endIndex]
+            formatted += "\n"
+            index = endIndex
+        }
+        formatted += "-----END PRIVATE KEY-----\n"
+        
+        return formatted
+    }
+    
+    private func presentShareSheet(with items: [URL]) {
+        let activityController = UIActivityViewController(
+            activityItems: items,
+            applicationActivities: nil
+        )
+        
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first,
+           let rootViewController = window.rootViewController {
+            var topController = rootViewController
+            while let presented = topController.presentedViewController {
+                topController = presented
+            }
+            
+            activityController.completionWithItemsHandler = { _, _, _, _ in
+                // Clean up temp files
+                for url in items {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+            
+            topController.present(activityController, animated: true)
+        }
+    }
+}

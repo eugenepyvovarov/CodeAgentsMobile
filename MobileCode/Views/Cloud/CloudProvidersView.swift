@@ -310,7 +310,17 @@ struct AddCloudProviderView: View {
                     SecureField("API Token", text: $apiToken)
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
                         .accessibilityIdentifier("cloud-provider-api-token-field")
+
+                    Button("Paste Token") {
+                        if let pasted = UIPasteboard.general.string?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                           !pasted.isEmpty {
+                            apiToken = pasted
+                        }
+                    }
+                    .accessibilityIdentifier("cloud-provider-paste-token-button")
                     
                     Text(selectedProvider.tokenHelp)
                         .font(.caption)
@@ -359,13 +369,14 @@ struct AddCloudProviderView: View {
     
     private func validateAndSave() {
         isValidating = true
+        let trimmedToken = apiToken.trimmingCharacters(in: .whitespacesAndNewlines)
         
         Task {
             do {
                 // Create appropriate service
                 let service: CloudProviderProtocol = selectedProvider == .digitalOcean ?
-                    DigitalOceanService(apiToken: apiToken) :
-                    HetznerCloudService(apiToken: apiToken)
+                    DigitalOceanService(apiToken: trimmedToken) :
+                    HetznerCloudService(apiToken: trimmedToken)
                 
                 // Validate token
                 let isValid = try await service.validateToken()
@@ -378,7 +389,7 @@ struct AddCloudProviderView: View {
                     )
                     
                     // Store token in keychain
-                    try KeychainManager.shared.storeProviderToken(apiToken, for: provider)
+                    try KeychainManager.shared.storeProviderToken(trimmedToken, for: provider)
                     
                     // Save provider to database
                     modelContext.insert(provider)
