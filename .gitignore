@@ -5,6 +5,9 @@
 ## User settings
 xcuserdata/
 
+## Machine-local agent / IDE configs (paths differ per checkout)
+.codex/
+
 ## Local build cache
 .xcodebuild-home/
 ## compatibility with Xcode 8 and earlier (ignoring not required starting Xcode 9)
@@ -202,3 +205,9 @@ MobileCode/GoogleService-Info.plist
 
 # Local cloud E2E generated credentials
 scripts/e2e/.generated/
+
+# Joplin notes manager (local sync; do not commit)
+joplin-notes/
+
+# Python bytecode (skill scripts, etc.)
+**/__pycache__/
