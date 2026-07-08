@@ -111,7 +111,7 @@ final class ProxyInstallerService {
 
     private func activeAuthMethod(for provider: ClaudeModelProvider) async -> ClaudeAuthMethod {
         if provider == .anthropic {
-            return await ClaudeCodeService.shared.getCurrentAuthMethod()
+            return await AgentDaemonAuthService.shared.getCurrentAuthMethod()
         }
         return .apiKey
     }
@@ -142,7 +142,7 @@ final class ProxyInstallerService {
             if let authMethod {
                 method = authMethod
             } else {
-                method = await ClaudeCodeService.shared.getCurrentAuthMethod()
+                method = await AgentDaemonAuthService.shared.getCurrentAuthMethod()
             }
         } else {
             method = .apiKey

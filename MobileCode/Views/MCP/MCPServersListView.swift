@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct MCPServersListView: View {
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var projectContext = ProjectContext.shared
     @StateObject private var mcpService = CodingAgentMCPService.shared
     
@@ -122,6 +123,10 @@ struct MCPServersListView: View {
             .navigationTitle("MCP Servers")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                        .accessibilityIdentifier("mcp-servers-done-button")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showingAddServer = true
@@ -178,11 +183,18 @@ struct MCPServersListView: View {
             // Update servers after fetch completes
             servers = newServers
         } catch MCPServiceError.claudeNotInstalled {
-            errorMessage = "Claude Code is not installed on this server"
+            // Claude CLI is not required for OpenCode MCP management.
+            errorMessage = "Unable to load MCP servers. Check OpenCode is running on the server."
             showError = true
             servers = []
         } catch {
-            errorMessage = error.localizedDescription
+            let description = error.localizedDescription
+            if description.localizedCaseInsensitiveContains("claude") &&
+                description.localizedCaseInsensitiveContains("not installed") {
+                errorMessage = "Unable to load MCP servers. Check OpenCode is running on the server."
+            } else {
+                errorMessage = description
+            }
             showError = true
         }
         

@@ -29,12 +29,6 @@ class ServiceManager {
     /// Project operations service
     let projectService: ProjectService
     
-    /// Claude Code service (will be implemented next)
-    // let claudeService: ClaudeCodeService
-    
-    //TODO: Add ClaudeCodeService property
-    //TODO: Make SSHService a computed property that returns the shared instance
-    
     // MARK: - Initialization
     
     private init() {

@@ -72,91 +72,171 @@ final class ProxyTaskService {
     }
 
     func fetchTasks(for project: RemoteProject) async throws -> [ProxyTaskRecord] {
-        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
-        _ = try await resolveCanonicalConversationId(for: project, session: session)
-        let agentId = project.proxyAgentId ?? project.id.uuidString
-        let query = buildQuery([
-            "agent_id": agentId
-        ])
-        let path = "/v1/agent/tasks\(query)"
-        let response = try await client.request(session: session, method: "GET", path: path, body: nil)
-        return try parseTaskList(from: response.body)
+        try await withDaemonOperation(project: project, forceRefresh: false) { session in
+            _ = try await self.resolveCanonicalConversationId(for: project, session: session)
+            let agentId = project.proxyAgentId ?? project.id.uuidString
+            let query = self.buildQuery([
+                "agent_id": agentId
+            ])
+            let path = "/v1/agent/tasks\(query)"
+            let response = try await self.client.request(session: session, method: "GET", path: path, body: nil)
+            return try self.parseTaskList(from: response.body)
+        }
     }
 
     func upsertTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
-        if let remoteId = task.remoteId, !remoteId.isEmpty {
-            return try await updateTask(task, remoteId: remoteId, project: project)
+        do {
+            if let remoteId = task.remoteId, !remoteId.isEmpty {
+                return try await updateTask(task, remoteId: remoteId, project: project)
+            }
+            return try await createTask(task, project: project)
+        } catch {
+            // One automatic retry on a fresh daemon SSH session after timeout / transport failure.
+            SSHLogger.log(
+                "Agent daemon upsert failed (\(error.localizedDescription)); retrying with fresh session",
+                level: .warning
+            )
+            sshService.closeConnections(projectId: project.id, purpose: .agentDaemon)
+            if let remoteId = task.remoteId, !remoteId.isEmpty {
+                return try await updateTask(task, remoteId: remoteId, project: project)
+            }
+            return try await createTask(task, project: project)
         }
-        return try await createTask(task, project: project)
     }
 
     func deleteTask(_ task: AgentScheduledTask, project: RemoteProject) async throws {
         guard let remoteId = task.remoteId, !remoteId.isEmpty else { return }
-        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
-        let path = "/v1/agent/tasks/\(remoteId)"
-        _ = try await client.request(session: session, method: "DELETE", path: path, body: nil)
+        try await withDaemonOperation(project: project, forceRefresh: true) { session in
+            let path = "/v1/agent/tasks/\(remoteId)"
+            _ = try await self.client.request(session: session, method: "DELETE", path: path, body: nil)
+        }
     }
 
     func recordActiveOpenCodeSession(project: RemoteProject, sessionId: String) async throws {
         guard CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode else { return }
         guard let sessionId = sanitizedOpenCodeSessionId(sessionId) else { return }
 
-        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
-        let body = try activeOpenCodeSessionPayload(project: project, sessionId: sessionId)
-        _ = try await client.request(
-            session: session,
-            method: "POST",
-            path: "/v1/opencode/active-session",
-            body: body
-        )
+        try await withDaemonOperation(project: project, forceRefresh: false) { session in
+            let body = try self.activeOpenCodeSessionPayload(project: project, sessionId: sessionId)
+            _ = try await self.client.request(
+                session: session,
+                method: "POST",
+                path: "/v1/opencode/active-session",
+                body: body
+            )
+        }
     }
 
     func clearActiveOpenCodeSession(project: RemoteProject) async throws {
         guard CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode else { return }
 
-        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
-        let body = try activeOpenCodeSessionPayload(project: project, sessionId: nil)
-        _ = try await client.request(
-            session: session,
-            method: "POST",
-            path: "/v1/opencode/active-session",
-            body: body
-        )
+        try await withDaemonOperation(project: project, forceRefresh: false) { session in
+            let body = try self.activeOpenCodeSessionPayload(project: project, sessionId: nil)
+            _ = try await self.client.request(
+                session: session,
+                method: "POST",
+                path: "/v1/opencode/active-session",
+                body: body
+            )
+        }
     }
 
+    /// Daemon writes (create/update/delete) force a fresh SSH session. Pooled channels can sit half-dead
+    /// after long idle / competing OpenCode traffic; `openDirectTCPIP` then hangs outside the HTTP timeout.
     private func createTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
-        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
-        let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
-        try await resolveOpenCodeSessionIdIfNeeded(for: project)
-        let body = try buildPayload(
-            for: task,
-            project: project,
-            conversationId: conversationId
-        )
-        let response = try await client.request(session: session,
-                                                method: "POST",
-                                                path: "/v1/agent/tasks",
-                                                body: body)
-        return try parseTask(from: response.body)
+        try await withDaemonOperation(project: project, forceRefresh: true) { session in
+            let conversationId = try await self.resolveCanonicalConversationId(for: project, session: session)
+            try await self.resolveOpenCodeSessionIdIfNeeded(for: project)
+            let body = try self.buildPayload(
+                for: task,
+                project: project,
+                conversationId: conversationId
+            )
+            let response = try await self.client.request(
+                session: session,
+                method: "POST",
+                path: "/v1/agent/tasks",
+                body: body
+            )
+            return try self.parseTask(from: response.body)
+        }
     }
 
     private func updateTask(_ task: AgentScheduledTask,
                             remoteId: String,
                             project: RemoteProject) async throws -> ProxyTaskRecord {
-        let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
-        let conversationId = try await resolveCanonicalConversationId(for: project, session: session)
-        try await resolveOpenCodeSessionIdIfNeeded(for: project)
-        let body = try buildPayload(
-            for: task,
-            project: project,
-            conversationId: conversationId
-        )
-        let path = "/v1/agent/tasks/\(remoteId)"
-        let response = try await client.request(session: session,
-                                                method: "PATCH",
-                                                path: path,
-                                                body: body)
-        return try parseTask(from: response.body)
+        try await withDaemonOperation(project: project, forceRefresh: true) { session in
+            let conversationId = try await self.resolveCanonicalConversationId(for: project, session: session)
+            try await self.resolveOpenCodeSessionIdIfNeeded(for: project)
+            let body = try self.buildPayload(
+                for: task,
+                project: project,
+                conversationId: conversationId
+            )
+            let path = "/v1/agent/tasks/\(remoteId)"
+            let response = try await self.client.request(
+                session: session,
+                method: "PATCH",
+                path: path,
+                body: body
+            )
+            return try self.parseTask(from: response.body)
+        }
+    }
+
+    /// Overall bound for connect + canonical resolve + HTTP (request client has its own 15s timeout).
+    private func withDaemonOperation<T>(
+        project: RemoteProject,
+        forceRefresh: Bool,
+        timeoutSeconds: TimeInterval = 30,
+        operation: @escaping (SSHSession) async throws -> T
+    ) async throws -> T {
+        if forceRefresh {
+            await ensureDaemonReachable(for: project)
+            sshService.closeConnections(projectId: project.id, purpose: .agentDaemon)
+        }
+
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { @MainActor in
+                let session = try await self.sshService.getConnection(for: project, purpose: .agentDaemon)
+                return try await operation(session)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw ProxyTaskError.invalidResponse("Agent daemon operation timed out")
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else {
+                throw ProxyTaskError.invalidResponse("No response")
+            }
+            return result
+        }
+    }
+
+    /// Probe / restart the CodeAgents daemon via shell (not DirectTCPIP). Stale or down daemons
+    /// otherwise hang openDirectTCPIP tunnels on 127.0.0.1:8787 during task writes.
+    private func ensureDaemonReachable(for project: RemoteProject) async {
+        do {
+            sshService.closeConnections(projectId: project.id, purpose: .fileOperations)
+            let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+            if let health = try? await session.execute(CodeAgentsDaemonProvisioning.healthCheckCommand()),
+               !health.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return
+            }
+            SSHLogger.log("Agent daemon health check failed; attempting restart", level: .warning)
+            _ = try? await session.execute(
+                """
+                if command -v systemctl >/dev/null 2>&1; then
+                  sudo -n systemctl restart codeagents-daemon 2>/dev/null || true
+                elif command -v service >/dev/null 2>&1; then
+                  sudo -n service codeagents-daemon restart 2>/dev/null || true
+                fi
+                """
+            )
+            _ = try? await session.execute(CodeAgentsDaemonProvisioning.waitForHealthScript(maxAttempts: 20))
+        } catch {
+            SSHLogger.log("Agent daemon ensure failed: \(error.localizedDescription)", level: .warning)
+        }
     }
 
     func buildPayload(

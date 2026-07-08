@@ -166,11 +166,18 @@ struct GlobalMCPServersListView: View {
             let newServers = try await mcpService.fetchServers(for: project, scope: .global)
             servers = newServers
         } catch MCPServiceError.claudeNotInstalled {
-            errorMessage = "Claude Code is not installed on this server"
+            // Claude CLI is not required for OpenCode MCP management.
+            errorMessage = "Unable to load MCP servers. Check OpenCode is running on the server."
             showError = true
             servers = []
         } catch {
-            errorMessage = error.localizedDescription
+            let description = error.localizedDescription
+            if description.localizedCaseInsensitiveContains("claude") &&
+                description.localizedCaseInsensitiveContains("not installed") {
+                errorMessage = "Unable to load MCP servers. Check OpenCode is running on the server."
+            } else {
+                errorMessage = description
+            }
             showError = true
         }
 

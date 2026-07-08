@@ -76,6 +76,15 @@ final class RemoteProject {
     var openCodeLastMessageIds: [String] = []
     var openCodeLastPartIds: [String] = []
 
+    // MARK: - Claude → OpenCode Migration
+
+    /// Migration schema version applied for this project.
+    /// `nil` means migration has never completed successfully.
+    var openCodeMigrationVersion: Int?
+
+    /// Last non-sensitive migration error (names/status only; never secrets).
+    var openCodeMigrationLastError: String?
+
     // MARK: - Claude Provider Tracking
 
     /// Raw provider value (`ClaudeModelProvider.rawValue`) recorded after the last successful chat result.
@@ -103,6 +112,8 @@ final class RemoteProject {
         self.lastModified = Date()
         self.createdAt = Date()
         self.agentRuntimeRawValue = CodingAgentRuntimeKind.openCode.rawValue
+        // New projects are created on OpenCode and do not need legacy migration.
+        self.openCodeMigrationVersion = ClaudeToOpenCodeMigration.currentVersion
     }
     
     func updateLastModified() {
@@ -113,13 +124,30 @@ final class RemoteProject {
         get {
             guard let agentRuntimeRawValue,
                   let runtime = CodingAgentRuntimeKind(rawValue: agentRuntimeRawValue) else {
-                return .claudeProxy
+                // Missing/unknown runtime markers are treated as OpenCode after Claude→OpenCode migration.
+                return .openCode
             }
             return runtime
         }
         set {
             agentRuntimeRawValue = newValue.rawValue
         }
+    }
+
+    /// Whether this project still needs the Claude → OpenCode migration pass.
+    var needsOpenCodeMigration: Bool {
+        guard openCodeMigrationVersion == nil else {
+            return false
+        }
+        guard let rawValue = agentRuntimeRawValue else {
+            // Legacy projects created before runtime markers existed.
+            return true
+        }
+        if rawValue == CodingAgentRuntimeKind.claudeProxy.rawValue {
+            return true
+        }
+        // Unknown historical values still get a one-time promote + MCP import.
+        return CodingAgentRuntimeKind(rawValue: rawValue) == nil
     }
 
     var openCodeHydrationState: OpenCodeHydrationState {
@@ -158,6 +186,20 @@ final class RemoteProject {
         openCodeLastMessageIds = []
         openCodeLastPartIds = []
         lastSuccessfulRuntimeProviderRawValue = nil
+        updateLastModified()
+    }
+
+    /// Clears Claude proxy transport anchors used for SSE recovery.
+    /// Does not remove `proxyAgentId` (identity/tasks) or unread cursors.
+    func clearClaudeProxyTransportState(clearActiveStreamingMessage: Bool = true) {
+        claudeSessionId = nil
+        proxyConversationId = nil
+        proxyConversationGroupId = nil
+        proxyLastEventId = nil
+        hasActiveClaudeStream = false
+        if clearActiveStreamingMessage {
+            activeStreamingMessageId = nil
+        }
         updateLastModified()
     }
 

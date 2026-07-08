@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": {
+        "ROOT": "/workspace"
+      }
+    },
+    "remote-api": {
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer token"
+      }
+    },
+    "codeagents-scheduled-tasks": {
+      "type": "http",
+      "url": "http://127.0.0.1:8787/mcp",
+      "headers": {
+        "x-codeagents-agent-id": "agent-demo"
+      }
+    },
+    "broken": {
+    }
+  }
+}

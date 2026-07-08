@@ -88,17 +88,21 @@ struct ManagedServerListView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showCreateServer = true }) {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Create Server")
+                    .accessibilityIdentifier("managed-create-cloud-server-button")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         Button(action: loadServers) {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
-                        
-                        Button(action: { showCreateServer = true }) {
-                            Label("Create Server", systemImage: "plus")
-                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
+                    .accessibilityLabel("More")
                 }
             }
             .onAppear {

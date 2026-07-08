@@ -143,6 +143,82 @@ final class OpenCodeMCPService: ObservableObject {
         }
     }
 
+    /// Import Claude `.mcp.json` (and optional CLI fallback) servers into project OpenCode config.
+    /// Idempotent: existing OpenCode names are kept; managed scheduler is never copied from Claude.
+    func importServersFromClaudeIfNeeded(
+        for project: RemoteProject,
+        claudeServersOverride: [MCPServer]? = nil
+    ) async throws -> MCPMigrationReport {
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        var loaded = try await loadConfiguration(for: project, scope: .project, session: session)
+        let previousJSON = try loaded.document.toJSONString()
+
+        let claudeServers: [MCPServer]
+        if let claudeServersOverride {
+            claudeServers = claudeServersOverride
+        } else {
+            claudeServers = try await loadClaudeMCPServers(for: project, session: session)
+        }
+
+        guard !claudeServers.isEmpty else {
+            var empty = MCPMigrationReport()
+            empty.note = "no_claude_mcp_source"
+            return empty
+        }
+
+        let mergeResult = MCPClaudeToOpenCodeMigrator.merge(servers: claudeServers, into: loaded.document)
+        loaded.document = mergeResult.document
+        let report = mergeResult.report
+
+        try await writeConfigurationIfChanged(
+            loaded.document,
+            previousJSON: previousJSON,
+            to: loaded.path,
+            session: session
+        )
+
+        // Live-register imported servers when OpenCode is up (soft-fail per server).
+        let configurations = loaded.document.serverConfigurations()
+        for name in report.imported {
+            guard let configuration = configurations[name] else { continue }
+            await addLiveServer(name: name, configuration: configuration, for: project)
+        }
+
+        return report
+    }
+
+    private func loadClaudeMCPServers(for project: RemoteProject, session: SSHSession) async throws -> [MCPServer] {
+        let claudePath = "\(project.path)/.mcp.json"
+        if let contents = try await readFileIfPresent(at: claudePath, session: session) {
+            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                do {
+                    return try MCPClaudeToOpenCodeMigrator.servers(fromClaudeMCPJSON: trimmed)
+                } catch {
+                    SSHLogger.log(
+                        "Failed to parse Claude .mcp.json for migration: \(error.localizedDescription)",
+                        level: .warning
+                    )
+                }
+            }
+        }
+
+        // Optional CLI fallback is handled by CodingAgentMCPService when file is empty.
+        return []
+    }
+
+    private func readFileIfPresent(at path: String, session: SSHSession) async throws -> String? {
+        do {
+            return try await session.readFile(path)
+        } catch {
+            let errorMessage = error.localizedDescription.lowercased()
+            if errorMessage.contains("no such file") || errorMessage.contains("cannot open") {
+                return nil
+            }
+            throw error
+        }
+    }
+
     private func validateManagedServerWrite(_ name: String, server: MCPServer, allowManaged: Bool) throws {
         guard !MCPServer.isManagedSchedulerServer(name) else {
             if allowManaged {

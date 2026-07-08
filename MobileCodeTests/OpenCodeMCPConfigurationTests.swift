@@ -103,6 +103,44 @@ final class OpenCodeMCPConfigurationTests: XCTestCase {
         XCTAssertEqual(decoded.root["formatter"] as? Bool, false)
     }
 
+    func testClaudeMCPMergeIntoOpenCodeJSONCPreservesKeysAndSkipsExisting() throws {
+        let claudeJSON = """
+        {
+          "mcpServers": {
+            "remote": {
+              "url": "https://claude-only.example/mcp"
+            },
+            "new-local": {
+              "command": "node",
+              "args": ["server.js"]
+            }
+          }
+        }
+        """
+        let openCodeJSONC = """
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "formatter": false,
+          "mcp": {
+            "remote": {
+              "type": "remote",
+              "url": "https://example.com/mcp",
+              "enabled": true
+            }
+          }
+        }
+        """
+        let claudeServers = try MCPClaudeToOpenCodeMigrator.servers(fromClaudeMCPJSON: claudeJSON)
+        let document = try OpenCodeMCPConfigDocument(jsonString: openCodeJSONC)
+        let result = MCPClaudeToOpenCodeMigrator.merge(servers: claudeServers, into: document)
+
+        XCTAssertEqual(result.report.skippedExisting, ["remote"])
+        XCTAssertEqual(result.report.imported, ["new-local"])
+        XCTAssertEqual(result.document.server(named: "remote")?.url, "https://example.com/mcp")
+        XCTAssertEqual(result.document.server(named: "new-local")?.command, "node")
+        XCTAssertEqual(result.document.root["formatter"] as? Bool, false)
+    }
+
     func testOpenCodeStatusMapsToSharedMCPStatus() {
         XCTAssertEqual(OpenCodeMCPStatus(status: "connected", error: nil).mcpStatus, .connected)
         XCTAssertEqual(OpenCodeMCPStatus(status: "disabled", error: nil).mcpStatus, .disconnected)

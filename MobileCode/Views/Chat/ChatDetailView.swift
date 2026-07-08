@@ -325,7 +325,7 @@ struct ChatDetailView: View {
             )
             .sheet(isPresented: $showingProviderSettings) {
                 NavigationStack {
-                    AIProviderSettingsView(initialMode: .claudeProxy)
+                    AIProviderSettingsView(initialMode: .openCode)
                 }
             }
             .sheet(isPresented: $showingSkillPicker) {

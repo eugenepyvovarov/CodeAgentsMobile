@@ -2,7 +2,7 @@
 //  AIProviderSettingsView.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Unified AI provider settings surface for OpenCode and Claude Code Proxy
+//  Purpose: AI provider settings (OpenCode). Legacy Claude mode remains only for task-daemon credentials.
 //
 
 import SwiftUI
@@ -18,7 +18,7 @@ enum AIProviderSettingsMode: String, CaseIterable, Identifiable {
         case .openCode:
             return "OpenCode"
         case .claudeProxy:
-            return "Claude Code Proxy"
+            return "Task Provider"
         }
     }
 
@@ -34,38 +34,35 @@ enum AIProviderSettingsMode: String, CaseIterable, Identifiable {
 
 struct AIProviderSettingsView: View {
     let server: Server?
-    @State private var selectedMode: AIProviderSettingsMode
+    private let mode: AIProviderSettingsMode
 
     init(initialMode: AIProviderSettingsMode = .openCode, server: Server? = nil) {
         self.server = server
-        _selectedMode = State(initialValue: initialMode)
+        self.mode = initialMode
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Provider Mode", selection: $selectedMode) {
-                ForEach(AIProviderSettingsMode.allCases) { mode in
-                    Text(mode.displayName)
-                        .tag(mode)
-                        .accessibilityIdentifier(mode.accessibilityIdentifier)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding([.horizontal, .top])
-            .accessibilityIdentifier("ai-provider-settings-mode-picker")
-
-            Group {
-                switch selectedMode {
-                case .openCode:
-                    OpenCodeAIProviderSettingsView(server: server, navigationTitle: "AI Providers")
-                case .claudeProxy:
-                    ClaudeProviderSettingsView(navigationTitle: "AI Providers")
-                }
+        Group {
+            switch mode {
+            case .openCode:
+                // OpenCode is the only chat runtime — no dual-mode segmented control.
+                OpenCodeAIProviderSettingsView(server: server, navigationTitle: "AI Providers")
+            case .claudeProxy:
+                // Scheduled-task / agent-daemon credential flows only (not chat).
+                ClaudeProviderSettingsView(navigationTitle: "Task Provider")
             }
         }
-        .navigationTitle("AI Providers")
+        .navigationTitle(mode == .openCode ? "AI Providers" : "Task Provider")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("ai-providers-settings-view")
+        // Stable marker for UI tests: OpenCode path has no mode picker.
+        .background(
+            Text(mode.displayName)
+                .accessibilityIdentifier("ai-provider-settings-mode")
+                .accessibilityValue(mode.rawValue)
+                .opacity(0.01)
+                .allowsHitTesting(false)
+        )
     }
 }
 
@@ -76,7 +73,7 @@ struct AIProviderSettingsView: View {
     .modelContainer(for: [Server.self], inMemory: true)
 }
 
-#Preview("AI Providers - Claude Code Proxy") {
+#Preview("Task Provider") {
     NavigationStack {
         AIProviderSettingsView(initialMode: .claudeProxy)
     }

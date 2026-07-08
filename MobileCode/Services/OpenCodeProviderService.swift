@@ -341,14 +341,15 @@ final class OpenCodeProviderService: ObservableObject {
 
         try KeychainManager.shared.storeOpenCodeAPIKey(trimmedKey, providerID: trimmedProviderID)
 
-        let session = try await sshService.getConnection(for: project, purpose: .opencode)
-        let client = client(for: project)
-        _ = try await client.setProviderAPIKey(
-            sshSession: session,
-            providerID: trimmedProviderID,
-            apiKey: trimmedKey,
-            directory: project.path
-        )
+        try await withFreshOpenCodeSession(for: project) { session in
+            let client = self.client(for: project)
+            _ = try await client.setProviderAPIKey(
+                sshSession: session,
+                providerID: trimmedProviderID,
+                apiKey: trimmedKey,
+                directory: project.path
+            )
+        }
     }
 
     func applyAIProviderProfile(
@@ -436,19 +437,42 @@ final class OpenCodeProviderService: ObservableObject {
         scope: OpenCodeConfigurationScope,
         for project: RemoteProject
     ) async throws {
+        sshService.closeConnections(projectId: project.id, purpose: .fileOperations)
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         var loaded = try await loadConfiguration(for: project, scope: scope, session: session)
         loaded.document.setModelSelection(modelID: modelID, smallModelID: smallModelID)
         loaded.document.setProviderFilters(enabled: enabledProviderIDs, disabled: disabledProviderIDs)
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
 
-        let openCodeSession = try await sshService.getConnection(for: project, purpose: .opencode)
-        try await reloadConfiguration(
-            loaded.document,
-            client: client(for: project),
-            session: openCodeSession,
-            directory: scope == .project ? project.path : nil
-        )
+        try await withFreshOpenCodeSession(for: project) { openCodeSession in
+            try await self.reloadConfiguration(
+                loaded.document,
+                client: self.client(for: project),
+                session: openCodeSession,
+                directory: scope == .project ? project.path : nil
+            )
+        }
+    }
+
+    /// Force a new OpenCode-purpose SSH session, retrying once after a failed HTTP tunnel.
+    /// Pooled sessions often return truncated DirectTCPIP payloads ("Missing header/body separator").
+    private func withFreshOpenCodeSession(
+        for project: RemoteProject,
+        operation: @escaping (SSHSession) async throws -> Void
+    ) async throws {
+        sshService.closeConnections(projectId: project.id, purpose: .opencode)
+        do {
+            let session = try await sshService.getConnection(for: project, purpose: .opencode)
+            try await operation(session)
+        } catch {
+            SSHLogger.log(
+                "OpenCode SSH operation failed (\(error.localizedDescription)); retrying with fresh session",
+                level: .warning
+            )
+            sshService.closeConnections(projectId: project.id, purpose: .opencode)
+            let session = try await sshService.getConnection(for: project, purpose: .opencode)
+            try await operation(session)
+        }
     }
 
     func saveCustomOpenAICompatibleProvider(

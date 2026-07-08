@@ -27,7 +27,7 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         XCTAssertEqual(store.selectedRuntime(), .openCode)
     }
 
-    func testRuntimeResolverUsesProjectRuntimeAndPreservesLegacyNilRuntime() throws {
+    func testRuntimeResolverUsesProjectRuntimeAndFallsBackNilToOpenCode() throws {
         let defaults = try makeDefaults()
         let store = CodingAgentRuntimeSelectionStore(userDefaults: defaults)
         store.setSelectedRuntime(.openCode)
@@ -36,7 +36,7 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
         XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .openCode)
 
         project.agentRuntimeRawValue = nil
-        XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .claudeProxy)
+        XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .openCode)
 
         project.selectedAgentRuntime = .claudeProxy
         XCTAssertEqual(CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: store), .claudeProxy)
@@ -90,6 +90,21 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
                 .localizedDescription
                 .contains("sessionID=ses_fixture")
         )
+        XCTAssertTrue(
+            OpenCodeRuntimeError.streamAttachmentTimedOut(diagnostics)
+                .localizedDescription
+                .contains("event stream did not attach")
+        )
+    }
+
+    func testOpenCodeStreamAttachDefaultsAllowSlowHostsAndOneRetry() {
+        // Regression guard: a 5s attach window was too aggressive for real droplets and
+        // produced "OpenCode event stream did not attach before sending the prompt".
+        XCTAssertGreaterThanOrEqual(
+            OpenCodeRuntimeService.defaultStreamAttachTimeoutNanoseconds,
+            15_000_000_000
+        )
+        XCTAssertEqual(OpenCodeRuntimeService.defaultStreamAttachRetryCount, 1)
     }
 
     func testOpenCodeCompletedToolChunkDoesNotFinishRuntimeStream() {
@@ -122,12 +137,11 @@ final class CodingAgentRuntimeSelectionTests: XCTestCase {
     }
 
     @MainActor
-    func testRuntimeRegistryReturnsRuntimeForKind() {
-        let claude = StubRuntime(kind: .claudeProxy)
+    func testRuntimeRegistryAlwaysResolvesToOpenCode() {
         let openCode = StubRuntime(kind: .openCode)
-        let registry = CodingAgentRuntimeRegistry(claudeRuntime: claude, openCodeRuntime: openCode)
+        let registry = CodingAgentRuntimeRegistry(openCodeRuntime: openCode)
 
-        XCTAssertTrue(registry.runtime(for: .claudeProxy) === claude)
+        XCTAssertTrue(registry.runtime(for: .claudeProxy) === openCode)
         XCTAssertTrue(registry.runtime(for: .openCode) === openCode)
     }
 

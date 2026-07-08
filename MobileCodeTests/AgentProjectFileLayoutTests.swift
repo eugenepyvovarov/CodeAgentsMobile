@@ -84,4 +84,58 @@ final class AgentProjectFileLayoutTests: XCTestCase {
             "/workspace/app/.codeagents/codeagents.json"
         )
     }
+
+    func testShouldAutoCopyLegacyRulesOnlyWhenAgentsMissing() {
+        XCTAssertTrue(
+            AgentProjectFileLayout.shouldAutoCopyLegacyRulesToAgents(
+                hasAgents: false,
+                hasLegacyClaudeDirectory: true,
+                hasLegacyClaudeRoot: false
+            )
+        )
+        XCTAssertTrue(
+            AgentProjectFileLayout.shouldAutoCopyLegacyRulesToAgents(
+                hasAgents: false,
+                hasLegacyClaudeDirectory: false,
+                hasLegacyClaudeRoot: true
+            )
+        )
+        XCTAssertFalse(
+            AgentProjectFileLayout.shouldAutoCopyLegacyRulesToAgents(
+                hasAgents: true,
+                hasLegacyClaudeDirectory: true,
+                hasLegacyClaudeRoot: true
+            )
+        )
+        XCTAssertFalse(
+            AgentProjectFileLayout.shouldAutoCopyLegacyRulesToAgents(
+                hasAgents: false,
+                hasLegacyClaudeDirectory: false,
+                hasLegacyClaudeRoot: false
+            )
+        )
+    }
+
+    func testPreferredLegacyRulesRelativePathPrefersClaudeDirectory() {
+        XCTAssertEqual(
+            AgentProjectFileLayout.preferredLegacyRulesRelativePath(
+                hasLegacyClaudeDirectory: true,
+                hasLegacyClaudeRoot: true
+            ),
+            ".claude/CLAUDE.md"
+        )
+        XCTAssertEqual(
+            AgentProjectFileLayout.preferredLegacyRulesRelativePath(
+                hasLegacyClaudeDirectory: false,
+                hasLegacyClaudeRoot: true
+            ),
+            "CLAUDE.md"
+        )
+        XCTAssertNil(
+            AgentProjectFileLayout.preferredLegacyRulesRelativePath(
+                hasLegacyClaudeDirectory: false,
+                hasLegacyClaudeRoot: false
+            )
+        )
+    }
 }

@@ -19,11 +19,11 @@ struct ClaudeProviderSettingsView: View {
     @State private var showError = false
     @State private var errorMessage: String?
 
-    init(navigationTitle: String = "Legacy Claude Provider") {
+    init(navigationTitle: String = "Task Provider") {
         self.navigationTitle = navigationTitle
         let configuration = ClaudeProviderConfigurationStore.load()
         _selectedProvider = State(initialValue: configuration.selectedProvider)
-        _selectedAuthMethod = State(initialValue: ClaudeCodeService.shared.getCurrentAuthMethod())
+        _selectedAuthMethod = State(initialValue: AgentDaemonAuthService.shared.getCurrentAuthMethod())
     }
 
     var body: some View {
@@ -88,7 +88,7 @@ struct ClaudeProviderSettingsView: View {
         }
         .onChange(of: selectedAuthMethod) { _, _ in
             if selectedProvider == .anthropic {
-                ClaudeCodeService.shared.setAuthMethod(selectedAuthMethod)
+                AgentDaemonAuthService.shared.setAuthMethod(selectedAuthMethod)
                 loadCredential()
             }
         }
@@ -105,7 +105,7 @@ struct ClaudeProviderSettingsView: View {
             case .apiKey:
                 return "Anthropic API Key"
             case .token:
-                return "Claude Code Auth Token"
+                return "Anthropic Auth Token"
             }
         }
         return "\(selectedProvider.displayName) API Key"
@@ -117,7 +117,7 @@ struct ClaudeProviderSettingsView: View {
             case .apiKey:
                 return "Stored securely in the device keychain and synced to all servers running the CodeAgents daemon."
             case .token:
-                return "Generate a token on your server with `claude setup-token`. Stored securely in the device keychain."
+                return "Generate a token on your server (Anthropic setup-token). Stored securely in the device keychain."
             }
         }
         return "Stored securely in the device keychain and synced to all servers running the CodeAgents daemon."

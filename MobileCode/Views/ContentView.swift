@@ -133,7 +133,9 @@ struct ContentView: View {
             serverId: server.id,
             basePath: "/tmp/codeagents-evidence"
         )
-        project.selectedAgentRuntime = .claudeProxy
+        // Seed as pre-migration legacy Claude so migration path can be exercised in evidence runs.
+        project.agentRuntimeRawValue = CodingAgentRuntimeKind.claudeProxy.rawValue
+        project.openCodeMigrationVersion = nil
         project.lastSuccessfulClaudeProviderRawValue = ClaudeModelProvider.miniMax.rawValue
 
         modelContext.insert(server)
@@ -141,7 +143,6 @@ struct ContentView: View {
         try? modelContext.save()
 
         serverManager.loadServers(from: modelContext)
-        ClaudeCodeService.shared.claudeInstallationStatus[server.id] = true
         projectContext.setActiveProject(project)
     }
 
@@ -207,7 +208,8 @@ struct ContentView: View {
             serverId: server.id,
             basePath: "/tmp/codeagents-evidence"
         )
-        project.selectedAgentRuntime = .claudeProxy
+        project.selectedAgentRuntime = .openCode
+        project.openCodeMigrationVersion = ClaudeToOpenCodeMigration.currentVersion
         project.proxyAgentId = "evidence-deferred-startup-agent"
         project.proxyConversationId = "evidence-deferred-startup-conversation"
         project.lastSuccessfulClaudeProviderRawValue = ClaudeModelProvider.anthropic.rawValue
@@ -233,7 +235,6 @@ struct ContentView: View {
         try? modelContext.save()
 
         serverManager.loadServers(from: modelContext)
-        ClaudeCodeService.shared.claudeInstallationStatus[server.id] = true
         projectContext.setActiveProject(project)
     }
 }

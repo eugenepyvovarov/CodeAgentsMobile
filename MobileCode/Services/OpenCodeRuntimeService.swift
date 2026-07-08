@@ -1,144 +1,11 @@
 //
-//  CodingAgentRuntimeService.swift
+//  OpenCodeRuntimeService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Runtime-neutral boundary for Claude proxy and OpenCode integrations
+//  Purpose: OpenCode runtime implementation (health, send/stream, hydrate, permissions).
 //
 
 import Foundation
-
-enum CodingAgentRuntimeKind: String, CaseIterable, Codable, Identifiable, Hashable {
-    case claudeProxy = "claudeProxy"
-    case openCode = "openCode"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .claudeProxy:
-            return "Claude Proxy (Legacy)"
-        case .openCode:
-            return "OpenCode"
-        }
-    }
-}
-
-struct CodingAgentRuntimeSelectionStore {
-    static let selectedRuntimeKey = "CodingAgentRuntime.SelectedRuntime"
-    static let defaultRuntime = CodingAgentRuntimeKind.openCode
-
-    private let userDefaults: UserDefaults
-
-    init(userDefaults: UserDefaults = .standard) {
-        self.userDefaults = userDefaults
-    }
-
-    func selectedRuntime() -> CodingAgentRuntimeKind {
-        guard let rawValue = userDefaults.string(forKey: Self.selectedRuntimeKey),
-              let runtime = CodingAgentRuntimeKind(rawValue: rawValue) else {
-            return Self.defaultRuntime
-        }
-        return runtime
-    }
-
-    func setSelectedRuntime(_ runtime: CodingAgentRuntimeKind) {
-        userDefaults.set(runtime.rawValue, forKey: Self.selectedRuntimeKey)
-    }
-}
-
-enum CodingAgentRuntimeResolver {
-    static func runtimeKind(
-        for project: RemoteProject,
-        selectionStore: CodingAgentRuntimeSelectionStore = CodingAgentRuntimeSelectionStore()
-    ) -> CodingAgentRuntimeKind {
-        // Keep the parameter for call-site compatibility; missing per-project runtime markers are legacy projects.
-        _ = selectionStore
-        guard let rawValue = project.agentRuntimeRawValue,
-              let runtime = CodingAgentRuntimeKind(rawValue: rawValue) else {
-            return .claudeProxy
-        }
-        return runtime
-    }
-}
-
-struct CodingAgentRuntimeHealth: Equatable {
-    enum Status: Equatable {
-        case available
-        case unavailable
-        case unknown
-    }
-
-    let status: Status
-    let runtime: CodingAgentRuntimeKind
-    let version: String?
-    let message: String?
-
-    static func available(runtime: CodingAgentRuntimeKind, version: String? = nil) -> Self {
-        CodingAgentRuntimeHealth(status: .available, runtime: runtime, version: version, message: nil)
-    }
-
-    static func unavailable(runtime: CodingAgentRuntimeKind, message: String) -> Self {
-        CodingAgentRuntimeHealth(status: .unavailable, runtime: runtime, version: nil, message: message)
-    }
-
-    static func unknown(runtime: CodingAgentRuntimeKind, message: String? = nil) -> Self {
-        CodingAgentRuntimeHealth(status: .unknown, runtime: runtime, version: nil, message: message)
-    }
-}
-
-struct CodingAgentRuntimeSessionState: Equatable {
-    enum Status: Equatable {
-        case idle
-        case busy
-        case retrying
-        case unknown(String?)
-    }
-
-    let runtime: CodingAgentRuntimeKind
-    let status: Status
-
-    static func idle(runtime: CodingAgentRuntimeKind) -> Self {
-        CodingAgentRuntimeSessionState(runtime: runtime, status: .idle)
-    }
-
-    static func openCode(runtime: CodingAgentRuntimeKind, rawStatus: String?) -> Self {
-        switch rawStatus?.lowercased() {
-        case nil:
-            return CodingAgentRuntimeSessionState(runtime: runtime, status: .idle)
-        case "idle":
-            return CodingAgentRuntimeSessionState(runtime: runtime, status: .idle)
-        case "busy":
-            return CodingAgentRuntimeSessionState(runtime: runtime, status: .busy)
-        case "retry", "retrying":
-            return CodingAgentRuntimeSessionState(runtime: runtime, status: .retrying)
-        case let value:
-            return CodingAgentRuntimeSessionState(runtime: runtime, status: .unknown(value))
-        }
-    }
-}
-
-struct CodingAgentRuntimeHydratedMessage: Equatable {
-    let runtimeMessageID: String
-    let runtimePartIDs: [String]
-    let role: MessageRole
-    let text: String
-    let createdAt: Date?
-    let originalPayload: Data?
-}
-
-enum CodingAgentRuntimeError: LocalizedError {
-    case unsupported(String)
-    case missingSession
-
-    var errorDescription: String? {
-        switch self {
-        case .unsupported(let message):
-            return message
-        case .missingSession:
-            return "No runtime session is available."
-        }
-    }
-}
 
 struct OpenCodeRuntimeDiagnostics: Equatable, CustomStringConvertible {
     let eventPath: String
@@ -166,131 +33,10 @@ enum OpenCodeRuntimeError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .streamAttachmentTimedOut(let diagnostics):
-            return "OpenCode event stream did not attach before sending the prompt. \(diagnostics.description)"
+            return "OpenCode event stream did not attach before sending the prompt (server may be slow or /event stalled). \(diagnostics.description)"
         case .streamEndedBeforePrompt(let diagnostics):
-            return "OpenCode event stream ended before sending the prompt. \(diagnostics.description)"
+            return "OpenCode event stream ended before sending the prompt (check OpenCode service on the host). \(diagnostics.description)"
         }
-    }
-}
-
-@MainActor
-protocol CodingAgentRuntimeService: AnyObject {
-    var kind: CodingAgentRuntimeKind { get }
-    var displayName: String { get }
-
-    func health(for project: RemoteProject) async -> CodingAgentRuntimeHealth
-    func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState
-    func sendMessage(
-        _ text: String,
-        in project: RemoteProject,
-        messageId: UUID?,
-        mcpServers: [MCPServer]
-    ) -> AsyncThrowingStream<MessageChunk, Error>
-    func hydrateMessages(for project: RemoteProject) async throws -> [CodingAgentRuntimeHydratedMessage]
-    func hydrateMessages(for project: RemoteProject, mode: OpenCodeHydrationMode) async throws -> OpenCodeHydrationResult
-    func abort(project: RemoteProject) async throws
-    func replyToPermission(
-        project: RemoteProject,
-        permissionId: String,
-        decision: ToolApprovalDecision,
-        scope: ToolApprovalScope,
-        message: String?
-    ) async throws
-    func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws
-    func rejectQuestion(project: RemoteProject, questionId: String) async throws
-    func reset(project: RemoteProject) async throws
-}
-
-extension CodingAgentRuntimeService {
-    var displayName: String { kind.displayName }
-
-    func sessionState(for project: RemoteProject) async throws -> CodingAgentRuntimeSessionState {
-        .idle(runtime: kind)
-    }
-
-    func hydrateMessages(for project: RemoteProject, mode: OpenCodeHydrationMode) async throws -> OpenCodeHydrationResult {
-        let hydratedMessages = try await hydrateMessages(for: project)
-        let state = project.openCodeHydrationState
-        return OpenCodeHydrationResult(
-            mode: mode,
-            fetchedCount: hydratedMessages.count,
-            selectedCount: hydratedMessages.count,
-            hydratedMessages: hydratedMessages,
-            previousState: state,
-            observedState: state,
-            storedState: state,
-            diff: OpenCodeHydrationDiffer.diff(local: state, remote: state)
-        )
-    }
-
-    func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws {
-        throw CodingAgentRuntimeError.unsupported("This runtime does not support interactive questions.")
-    }
-
-    func rejectQuestion(project: RemoteProject, questionId: String) async throws {
-        throw CodingAgentRuntimeError.unsupported("This runtime does not support interactive questions.")
-    }
-}
-
-@MainActor
-final class ClaudeProxyRuntimeService: CodingAgentRuntimeService {
-    let kind = CodingAgentRuntimeKind.claudeProxy
-
-    private let claudeService: ClaudeCodeService
-
-    init(claudeService: ClaudeCodeService? = nil) {
-        self.claudeService = claudeService ?? .shared
-    }
-
-    func health(for project: RemoteProject) async -> CodingAgentRuntimeHealth {
-        guard let server = ServerManager.shared.server(withId: project.serverId) else {
-            return .unavailable(runtime: kind, message: "Project server is not available.")
-        }
-
-        let installed = await claudeService.checkClaudeInstallation(for: server)
-        return installed
-            ? .available(runtime: kind)
-            : .unavailable(runtime: kind, message: "Claude Code is not installed.")
-    }
-
-    func sendMessage(
-        _ text: String,
-        in project: RemoteProject,
-        messageId: UUID? = nil,
-        mcpServers: [MCPServer] = []
-    ) -> AsyncThrowingStream<MessageChunk, Error> {
-        claudeService.sendMessage(text, in: project, messageId: messageId, mcpServers: mcpServers)
-    }
-
-    func hydrateMessages(for project: RemoteProject) async throws -> [CodingAgentRuntimeHydratedMessage] {
-        throw CodingAgentRuntimeError.unsupported("Claude proxy hydration still uses proxy event replay.")
-    }
-
-    func abort(project: RemoteProject) async throws {
-        throw CodingAgentRuntimeError.unsupported("Claude proxy abort is still handled by the existing chat flow.")
-    }
-
-    func replyToPermission(
-        project: RemoteProject,
-        permissionId: String,
-        decision: ToolApprovalDecision,
-        scope: ToolApprovalScope = .once,
-        message: String?
-    ) async throws {
-        try await claudeService.sendProxyToolPermission(
-            project: project,
-            permissionId: permissionId,
-            decision: decision,
-            message: message
-        )
-    }
-
-    func reset(project: RemoteProject) async throws {
-        project.claudeSessionId = nil
-        project.proxyConversationId = nil
-        project.proxyConversationGroupId = nil
-        project.proxyLastEventId = nil
-        project.updateLastModified()
     }
 }
 
@@ -298,13 +44,27 @@ final class ClaudeProxyRuntimeService: CodingAgentRuntimeService {
 final class OpenCodeRuntimeService: CodingAgentRuntimeService {
     let kind = CodingAgentRuntimeKind.openCode
 
+    /// How long to wait for the first SSE event on `/event` before treating attach as failed.
+    /// Slow hosts / fresh OpenCode processes often need more than a few seconds.
+    static let defaultStreamAttachTimeoutNanoseconds: UInt64 = 20_000_000_000
+    /// Extra attach attempts after the first timeout (total attempts = 1 + this value).
+    static let defaultStreamAttachRetryCount = 1
+
     private let sshService: SSHConnectionProviding
     private let clientOverride: OpenCodeClient?
-    private let streamAttachTimeoutNanoseconds: UInt64 = 5_000_000_000
+    private let streamAttachTimeoutNanoseconds: UInt64
+    private let streamAttachRetryCount: Int
 
-    init(sshService: SSHConnectionProviding? = nil, client: OpenCodeClient? = nil) {
+    init(
+        sshService: SSHConnectionProviding? = nil,
+        client: OpenCodeClient? = nil,
+        streamAttachTimeoutNanoseconds: UInt64 = OpenCodeRuntimeService.defaultStreamAttachTimeoutNanoseconds,
+        streamAttachRetryCount: Int = OpenCodeRuntimeService.defaultStreamAttachRetryCount
+    ) {
         self.sshService = sshService ?? SSHService.shared
         self.clientOverride = client
+        self.streamAttachTimeoutNanoseconds = streamAttachTimeoutNanoseconds
+        self.streamAttachRetryCount = max(0, streamAttachRetryCount)
     }
 
     func health(for project: RemoteProject) async -> CodingAgentRuntimeHealth {
@@ -341,9 +101,10 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         sessionID: sessionID,
                         modelID: promptModel?.fullID
                     )
-                    let eventIterator = OpenCodeEventIterator(stream: client.streamEvents(session: sshSession, path: eventPath))
-                    let firstEvent = try await waitForStreamAttachment(
-                        eventIterator: eventIterator,
+                    let (eventIterator, firstEvent) = try await attachEventStream(
+                        client: client,
+                        sshSession: sshSession,
+                        eventPath: eventPath,
                         diagnostics: diagnostics
                     )
                     if case .serverConnected = firstEvent {
@@ -598,6 +359,13 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         project.resetOpenCodeRuntimeState()
     }
 
+    /// Ensures a durable OpenCode session id exists for the project (create if missing).
+    @discardableResult
+    func ensureSession(for project: RemoteProject) async throws -> String {
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        return try await resolveSessionID(for: project, sshSession: sshSession)
+    }
+
     private func resolveSessionID(for project: RemoteProject, sshSession: SSHSession) async throws -> String {
         if let existing = sanitizedSessionID(project.openCodeSessionId) {
             try? await ProxyTaskService.shared.recordActiveOpenCodeSession(project: project, sessionId: existing)
@@ -749,6 +517,51 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         }
     }
 
+    /// Opens `/event` and waits for the first SSE payload, retrying on attach timeout.
+    private func attachEventStream(
+        client: OpenCodeClient,
+        sshSession: SSHSession,
+        eventPath: String,
+        diagnostics: OpenCodeRuntimeDiagnostics
+    ) async throws -> (OpenCodeEventIterator, OpenCodeEvent) {
+        let attempts = 1 + streamAttachRetryCount
+        var lastError: Error?
+
+        for attempt in 1...attempts {
+            let eventIterator = OpenCodeEventIterator(
+                stream: client.streamEvents(session: sshSession, path: eventPath)
+            )
+            do {
+                let firstEvent = try await waitForStreamAttachment(
+                    eventIterator: eventIterator,
+                    diagnostics: diagnostics
+                )
+                if attempt > 1 {
+                    SSHLogger.log(
+                        "OpenCode event stream attached on retry \(attempt)/\(attempts): \(diagnostics.description)",
+                        level: .info
+                    )
+                }
+                return (eventIterator, firstEvent)
+            } catch let error as OpenCodeRuntimeError {
+                lastError = error
+                switch error {
+                case .streamAttachmentTimedOut, .streamEndedBeforePrompt:
+                    if attempt < attempts {
+                        SSHLogger.log(
+                            "OpenCode event stream attach failed (attempt \(attempt)/\(attempts)), retrying: \(error.localizedDescription)",
+                            level: .warning
+                        )
+                        continue
+                    }
+                    throw error
+                }
+            }
+        }
+
+        throw lastError ?? OpenCodeRuntimeError.streamAttachmentTimedOut(diagnostics)
+    }
+
     private func waitForStreamAttachment(
         eventIterator: OpenCodeEventIterator,
         diagnostics: OpenCodeRuntimeDiagnostics
@@ -872,28 +685,5 @@ private actor OpenCodeEventIterator {
         let event = try await activeIterator.next()
         iterator = activeIterator
         return event
-    }
-}
-
-@MainActor
-final class CodingAgentRuntimeRegistry {
-    private let claudeRuntime: CodingAgentRuntimeService
-    private let openCodeRuntime: CodingAgentRuntimeService
-
-    init(
-        claudeRuntime: CodingAgentRuntimeService? = nil,
-        openCodeRuntime: CodingAgentRuntimeService? = nil
-    ) {
-        self.claudeRuntime = claudeRuntime ?? ClaudeProxyRuntimeService()
-        self.openCodeRuntime = openCodeRuntime ?? OpenCodeRuntimeService()
-    }
-
-    func runtime(for kind: CodingAgentRuntimeKind) -> CodingAgentRuntimeService {
-        switch kind {
-        case .claudeProxy:
-            return claudeRuntime
-        case .openCode:
-            return openCodeRuntime
-        }
     }
 }

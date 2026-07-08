@@ -124,6 +124,30 @@ enum AgentProjectFileLayout {
         )
     }
 
+    /// Whether migration should auto-copy a legacy Claude rules file into `AGENTS.md`.
+    /// Never overwrites an existing `AGENTS.md`.
+    static func shouldAutoCopyLegacyRulesToAgents(
+        hasAgents: Bool,
+        hasLegacyClaudeDirectory: Bool,
+        hasLegacyClaudeRoot: Bool
+    ) -> Bool {
+        !hasAgents && (hasLegacyClaudeDirectory || hasLegacyClaudeRoot)
+    }
+
+    /// Preferred legacy source path (relative) when auto-copying rules.
+    static func preferredLegacyRulesRelativePath(
+        hasLegacyClaudeDirectory: Bool,
+        hasLegacyClaudeRoot: Bool
+    ) -> String? {
+        if hasLegacyClaudeDirectory {
+            return legacyClaudeDirectoryRulesRelativePath
+        }
+        if hasLegacyClaudeRoot {
+            return legacyClaudeRootRulesRelativePath
+        }
+        return nil
+    }
+
     static func remotePath(projectPath: String, relativePath: String) -> String {
         PathUtils.join(projectPath, relativePath)
     }

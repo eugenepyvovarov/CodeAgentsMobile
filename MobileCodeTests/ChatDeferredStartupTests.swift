@@ -2,6 +2,56 @@ import XCTest
 @testable import CodeAgentsMobile
 
 final class ChatDeferredStartupTests: XCTestCase {
+    func testOpenCodeIdleReopenWithLocalHistoryDoesNotBlockChatOpen() {
+        let decision = OpenCodeChatOpenPolicy.decision(
+            hasOpenCodeSession: true,
+            localMessageCount: 12,
+            activeStreamingMessageId: nil,
+            messages: []
+        )
+        XCTAssertEqual(decision, OpenCodeChatOpenPolicy.Decision.idleLocalFirst)
+        XCTAssertFalse(OpenCodeChatOpenPolicy.blocksChatOpen(for: decision))
+    }
+
+    func testOpenCodeEmptyLocalHistoryRequiresRemoteHydration() {
+        let decision = OpenCodeChatOpenPolicy.decision(
+            hasOpenCodeSession: true,
+            localMessageCount: 0,
+            activeStreamingMessageId: nil,
+            messages: []
+        )
+        XCTAssertEqual(decision, OpenCodeChatOpenPolicy.Decision.remoteHydrationRequired)
+        XCTAssertTrue(OpenCodeChatOpenPolicy.blocksChatOpen(for: decision))
+    }
+
+    func testOpenCodeActiveStreamingMessageBlocksChatOpenForRecovery() {
+        let message = Message(content: "streaming", role: .assistant, projectId: UUID())
+        message.isStreaming = true
+        message.isComplete = false
+        let decision = OpenCodeChatOpenPolicy.decision(
+            hasOpenCodeSession: true,
+            localMessageCount: 3,
+            activeStreamingMessageId: message.id,
+            messages: [message]
+        )
+        XCTAssertEqual(decision, OpenCodeChatOpenPolicy.Decision.activeStreamRecovery)
+        XCTAssertTrue(OpenCodeChatOpenPolicy.blocksChatOpen(for: decision))
+    }
+
+    func testOpenCodeStaleActiveMarkerWithLocalHistoryStaysLocalFirst() {
+        let message = Message(content: "done", role: .assistant, projectId: UUID())
+        message.isStreaming = false
+        message.isComplete = true
+        let decision = OpenCodeChatOpenPolicy.decision(
+            hasOpenCodeSession: true,
+            localMessageCount: 5,
+            activeStreamingMessageId: message.id,
+            messages: [message]
+        )
+        XCTAssertEqual(decision, OpenCodeChatOpenPolicy.Decision.idleLocalFirst)
+        XCTAssertFalse(OpenCodeChatOpenPolicy.blocksChatOpen(for: decision))
+    }
+
     func testSendTimeMCPPolicyFetchesWhenCacheIsEmpty() {
         let now = Date()
 

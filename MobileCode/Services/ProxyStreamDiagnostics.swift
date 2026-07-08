@@ -2,7 +2,7 @@
 //  ProxyStreamDiagnostics.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Lightweight, opt-in diagnostics for proxy SSE streams
+//  Purpose: Lightweight, opt-in diagnostics for agent-daemon HTTP (legacy ProxyStream* name)
 //
 
 import Foundation

@@ -14,11 +14,11 @@ final class RemoteProjectOpenCodeStateTests: XCTestCase {
         XCTAssertNil(project.lastSuccessfulRuntimeProviderRawValue)
     }
 
-    func testLegacyProjectWithoutStoredRuntimeDefaultsToClaudeProxy() {
+    func testLegacyProjectWithoutStoredRuntimeDefaultsToOpenCode() {
         let project = makeProject()
         project.agentRuntimeRawValue = nil
 
-        XCTAssertEqual(project.selectedAgentRuntime, .claudeProxy)
+        XCTAssertEqual(project.selectedAgentRuntime, .openCode)
         XCTAssertNil(project.agentRuntimeRawValue)
     }
 
@@ -44,11 +44,11 @@ final class RemoteProjectOpenCodeStateTests: XCTestCase {
         ))
     }
 
-    func testUnknownStoredRuntimeFallsBackToClaudeProxy() {
+    func testUnknownStoredRuntimeFallsBackToOpenCode() {
         let project = makeProject()
         project.agentRuntimeRawValue = "futureRuntime"
 
-        XCTAssertEqual(project.selectedAgentRuntime, .claudeProxy)
+        XCTAssertEqual(project.selectedAgentRuntime, .openCode)
         XCTAssertEqual(project.agentRuntimeRawValue, "futureRuntime")
     }
 

@@ -14,7 +14,6 @@ struct RegularTaskEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @StateObject private var projectContext = ProjectContext.shared
-    @StateObject private var claudeService = ClaudeCodeService.shared
     @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
 
     let task: AgentScheduledTask?
@@ -664,11 +663,9 @@ struct RegularTaskEditorView: View {
         syncReporter?.markSyncing()
 
         do {
-            do {
-                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
-            } catch {
-                SSHLogger.log("Failed to ensure agent id for task save (projectId=\(project.id)): \(error)", level: .warning)
-            }
+            // Do not await identity SSH here. A stale pooled `.fileOperations` session can hang
+            // indefinitely and pin isSaving, so Save never recovers. Daemon upsert already falls
+            // back to project.proxyAgentId ?? project.id when identity is missing.
             let record = try await AgentTaskService.shared.upsertTask(localTask, project: project)
             applySyncRecord(record, to: localTask)
             syncReporter?.markSuccess()
@@ -678,6 +675,15 @@ struct RegularTaskEditorView: View {
             syncReporter?.markError(error.localizedDescription)
             errorMessage = error.localizedDescription
             showError = true
+        }
+
+        // Best-effort identity sync after a successful or failed save attempt — never on the save critical path.
+        Task { @MainActor in
+            do {
+                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure agent id after task save (projectId=\(project.id)): \(error)", level: .warning)
+            }
         }
     }
 
@@ -731,10 +737,8 @@ struct RegularTaskEditorView: View {
         Task { @MainActor in
             project.lastSuccessfulClaudeProviderRawValue = nil
             project.activeStreamingMessageId = nil
-            claudeService.clearSessions()
-            if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
-                project.resetOpenCodeRuntimeState()
-            }
+            project.clearLegacyClaudeTransportState()
+            project.resetOpenCodeRuntimeState()
 
             do {
                 let projectId: UUID? = project.id
@@ -751,18 +755,10 @@ struct RegularTaskEditorView: View {
                 SSHLogger.log("Failed to clear messages for project \(project.id): \(error)", level: .warning)
             }
 
-            if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
-                do {
-                    try await ProxyTaskService.shared.clearActiveOpenCodeSession(project: project)
-                } catch {
-                    SSHLogger.log("Failed to clear active OpenCode task session for project \(project.id): \(error)", level: .warning)
-                }
-            } else if claudeService.isProxyChatEnabled {
-                do {
-                    try await claudeService.resetProxyConversation(project: project)
-                } catch {
-                    SSHLogger.log("Failed to reset proxy conversation for project \(project.id): \(error)", level: .warning)
-                }
+            do {
+                try await ProxyTaskService.shared.clearActiveOpenCodeSession(project: project)
+            } catch {
+                SSHLogger.log("Failed to clear active OpenCode task session for project \(project.id): \(error)", level: .warning)
             }
 
             do {

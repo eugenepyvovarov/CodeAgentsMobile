@@ -2,7 +2,7 @@
 //  CodingAgentMCPService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Runtime-aware MCP management facade
+//  Purpose: Runtime-aware MCP management facade (OpenCode-primary after Claude migration)
 //
 
 import Foundation
@@ -11,11 +11,13 @@ import Foundation
 final class CodingAgentMCPService: ObservableObject {
     static let shared = CodingAgentMCPService()
 
-    private let claudeService: MCPService
     private let openCodeService: OpenCodeMCPService
     private let schedulerProvisionService: MCPTaskSchedulerProvisionService
     private let runtimeSelectionStore: CodingAgentRuntimeSelectionStore
     private var schedulerProvisionTasks: [UUID: Task<Void, Error>] = [:]
+
+    /// Retained for Claude CLI fallback during one-time Path D migration only.
+    private let claudeService: MCPService
 
     init(
         claudeService: MCPService? = nil,
@@ -30,12 +32,7 @@ final class CodingAgentMCPService: ObservableObject {
     }
 
     func fetchServers(for project: RemoteProject, scope: MCPServer.MCPScope? = nil) async throws -> [MCPServer] {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            return try await claudeService.fetchServers(for: project, scope: scope)
-        case .openCode:
-            return try await openCodeService.fetchServers(for: project, scope: scope)
-        }
+        try await openCodeService.fetchServers(for: project, scope: scope)
     }
 
     func addServer(
@@ -44,12 +41,7 @@ final class CodingAgentMCPService: ObservableObject {
         for project: RemoteProject,
         allowManaged: Bool = false
     ) async throws {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            try await claudeService.addServer(server, scope: scope, for: project, allowManaged: allowManaged)
-        case .openCode:
-            try await openCodeService.addServer(server, scope: scope, for: project, allowManaged: allowManaged)
-        }
+        try await openCodeService.addServer(server, scope: scope, for: project, allowManaged: allowManaged)
     }
 
     func removeServer(
@@ -58,12 +50,7 @@ final class CodingAgentMCPService: ObservableObject {
         for project: RemoteProject,
         allowManaged: Bool = false
     ) async throws {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            try await claudeService.removeServer(named: name, scope: scope, for: project, allowManaged: allowManaged)
-        case .openCode:
-            try await openCodeService.removeServer(named: name, scope: scope, for: project, allowManaged: allowManaged)
-        }
+        try await openCodeService.removeServer(named: name, scope: scope, for: project, allowManaged: allowManaged)
     }
 
     func editServer(
@@ -73,33 +60,17 @@ final class CodingAgentMCPService: ObservableObject {
         for project: RemoteProject,
         allowManaged: Bool = false
     ) async throws {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            try await claudeService.editServer(
-                oldName: oldName,
-                newServer: newServer,
-                scope: scope,
-                for: project,
-                allowManaged: allowManaged
-            )
-        case .openCode:
-            try await openCodeService.editServer(
-                oldName: oldName,
-                newServer: newServer,
-                scope: scope,
-                for: project,
-                allowManaged: allowManaged
-            )
-        }
+        try await openCodeService.editServer(
+            oldName: oldName,
+            newServer: newServer,
+            scope: scope,
+            for: project,
+            allowManaged: allowManaged
+        )
     }
 
     func getServer(named name: String, for project: RemoteProject) async throws -> MCPServer? {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            return try await claudeService.getServer(named: name, for: project)
-        case .openCode:
-            return try await openCodeService.getServer(named: name, for: project)
-        }
+        try await openCodeService.getServer(named: name, for: project)
     }
 
     func getServerDetails(
@@ -107,12 +78,7 @@ final class CodingAgentMCPService: ObservableObject {
         scope: MCPServer.MCPScope? = nil,
         for project: RemoteProject
     ) async throws -> (server: MCPServer, scope: MCPServer.MCPScope)? {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            return try await claudeService.getServerDetails(named: name, scope: scope, for: project)
-        case .openCode:
-            return try await openCodeService.getServerDetails(named: name, scope: scope, for: project)
-        }
+        try await openCodeService.getServerDetails(named: name, scope: scope, for: project)
     }
 
     func ensureManagedSchedulerServerIfNeeded(for project: RemoteProject) async throws {
@@ -131,22 +97,57 @@ final class CodingAgentMCPService: ObservableObject {
         try await task.value
     }
 
-    private func ensureManagedSchedulerServer(for project: RemoteProject) async throws {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            try await schedulerProvisionService.ensureManagedSchedulerServer(for: project)
-        case .openCode:
-            guard await isDaemonHealthy(for: project) else {
-                SSHLogger.log("Skipping OpenCode scheduler MCP provisioning: CodeAgents daemon is not healthy", level: .warning)
-                return
+    /// Path D: import Claude MCP definitions into OpenCode project config.
+    /// Prefers `.mcp.json`; falls back to `claude mcp list` when the file is missing/empty.
+    func migrateClaudeMCPToOpenCode(for project: RemoteProject) async throws -> MCPMigrationReport {
+        do {
+            let fileReport = try await openCodeService.importServersFromClaudeIfNeeded(for: project)
+            if fileReport.note != "no_claude_mcp_source" || !fileReport.imported.isEmpty {
+                return fileReport
             }
-            try await openCodeService.addServer(
-                schedulerProvisionService.managedSchedulerServer(for: project),
-                scope: .project,
-                for: project,
-                allowManaged: true
+        } catch {
+            SSHLogger.log(
+                "OpenCode MCP file import failed, trying Claude CLI fallback: \(error.localizedDescription)",
+                level: .warning
             )
         }
+
+        // CLI fallback — best effort only (legacy Claude install).
+        do {
+            let claudeServers = try await claudeService.fetchServers(for: project, scope: .project)
+                .map { $0.normalizedForOpenCodeImport() }
+            if claudeServers.isEmpty {
+                var report = MCPMigrationReport()
+                report.note = "no_claude_mcp_source"
+                return report
+            }
+            return try await openCodeService.importServersFromClaudeIfNeeded(
+                for: project,
+                claudeServersOverride: claudeServers
+            )
+        } catch {
+            var report = MCPMigrationReport()
+            report.note = "no_claude_mcp_source"
+            SSHLogger.log(
+                "Claude CLI MCP fallback unavailable during migration: \(error.localizedDescription)",
+                level: .debug
+            )
+            return report
+        }
+    }
+
+    private func ensureManagedSchedulerServer(for project: RemoteProject) async throws {
+        // Always provision managed scheduler via OpenCode config after Claude chat retirement.
+        guard await isDaemonHealthy(for: project) else {
+            SSHLogger.log("Skipping OpenCode scheduler MCP provisioning: CodeAgents daemon is not healthy", level: .warning)
+            return
+        }
+        try await openCodeService.addServer(
+            schedulerProvisionService.managedSchedulerServer(for: project),
+            scope: .project,
+            for: project,
+            allowManaged: true
+        )
     }
 
     func configurationPreview(
@@ -154,16 +155,15 @@ final class CodingAgentMCPService: ObservableObject {
         scope: MCPServer.MCPScope,
         in project: RemoteProject
     ) -> String {
-        switch runtimeKind(for: project) {
-        case .claudeProxy:
-            return server.generateAddJsonCommand(scope: scope) ?? "Invalid configuration"
-        case .openCode:
-            return openCodeService.configurationPreview(for: server, scope: scope)
-        }
+        _ = project
+        _ = scope
+        return openCodeService.configurationPreview(for: server, scope: .project)
     }
 
     func runtimeKind(for project: RemoteProject) -> CodingAgentRuntimeKind {
-        CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: runtimeSelectionStore)
+        // Facade is OpenCode-primary; resolver still used for diagnostics/logging.
+        let resolved = CodingAgentRuntimeResolver.runtimeKind(for: project, selectionStore: runtimeSelectionStore)
+        return resolved == .openCode ? .openCode : .openCode
     }
 
     private func isDaemonHealthy(for project: RemoteProject) async -> Bool {

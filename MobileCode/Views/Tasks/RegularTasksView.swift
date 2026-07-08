@@ -10,7 +10,6 @@ import SwiftData
 
 struct RegularTasksView: View {
     @StateObject private var projectContext = ProjectContext.shared
-    @StateObject private var claudeService = ClaudeCodeService.shared
     @Environment(\.modelContext) private var modelContext
     @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
     @Query(
@@ -87,6 +86,7 @@ struct RegularTasksView: View {
                         Image(systemName: "plus")
                     }
                     .disabled(isLocked)
+                    .accessibilityLabel("Add Task")
                     .accessibilityIdentifier("regular-tasks-add-button")
                 }
             }
@@ -327,10 +327,8 @@ struct RegularTasksView: View {
         Task { @MainActor in
             project.lastSuccessfulClaudeProviderRawValue = nil
             project.activeStreamingMessageId = nil
-            claudeService.clearSessions()
-            if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
-                project.resetOpenCodeRuntimeState()
-            }
+            project.clearLegacyClaudeTransportState()
+            project.resetOpenCodeRuntimeState()
 
             do {
                 let projectId: UUID? = project.id
@@ -347,18 +345,10 @@ struct RegularTasksView: View {
                 SSHLogger.log("Failed to clear messages for project \(project.id): \(error)", level: .warning)
             }
 
-            if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
-                do {
-                    try await ProxyTaskService.shared.clearActiveOpenCodeSession(project: project)
-                } catch {
-                    SSHLogger.log("Failed to clear active OpenCode task session for project \(project.id): \(error)", level: .warning)
-                }
-            } else if claudeService.isProxyChatEnabled {
-                do {
-                    try await claudeService.resetProxyConversation(project: project)
-                } catch {
-                    SSHLogger.log("Failed to reset proxy conversation for project \(project.id): \(error)", level: .warning)
-                }
+            do {
+                try await ProxyTaskService.shared.clearActiveOpenCodeSession(project: project)
+            } catch {
+                SSHLogger.log("Failed to clear active OpenCode task session for project \(project.id): \(error)", level: .warning)
             }
 
             do {

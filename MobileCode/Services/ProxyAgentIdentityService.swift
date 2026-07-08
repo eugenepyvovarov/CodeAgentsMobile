@@ -19,6 +19,8 @@ final class ProxyAgentIdentityService {
     private init() {}
 
     func ensureProxyAgentId(for project: RemoteProject, modelContext: ModelContext) async throws -> String {
+        // Prefer a fresh file-ops session — pooled channels can hang on execute after long idle.
+        sshService.closeConnections(projectId: project.id, purpose: .fileOperations)
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         let identityPath = AgentProjectFileLayout.remotePath(
             projectPath: project.path,

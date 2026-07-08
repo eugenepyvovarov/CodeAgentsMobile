@@ -64,33 +64,72 @@ struct AgentRuntimeSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Runtime", selection: runtimeBinding) {
-                    ForEach(CodingAgentRuntimeKind.allCases) { runtime in
-                        Text(runtime.displayName).tag(runtime)
+                HStack(alignment: .center, spacing: 14) {
+                    Image(systemName: "cpu.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.accentColor, Color.accentColor.opacity(0.75)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        )
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("OpenCode")
+                            .font(.headline)
+                        Text("Primary coding agent on your server")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
+                    Spacer(minLength: 0)
+                    Text("Active")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.green.opacity(0.15), in: Capsule())
+                        .foregroundStyle(.green)
+                        .accessibilityIdentifier("agent-runtime-active-badge")
                 }
-                .accessibilityIdentifier("agent-runtime-picker")
-                .accessibilityValue(runtimeOptionsAccessibilityValue)
+                .padding(.vertical, 4)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("agent-runtime-hero")
+                // Keep picker identifier for UI tests / E2E that still look it up; value is OpenCode-only.
+                .accessibilityValue(CodingAgentRuntimeKind.openCode.displayName)
+                .background(
+                    Text(CodingAgentRuntimeKind.openCode.displayName)
+                        .accessibilityIdentifier("agent-runtime-picker")
+                        .accessibilityValue(CodingAgentRuntimeKind.openCode.displayName)
+                        .opacity(0.01)
+                        .allowsHitTesting(false)
+                )
 
                 if let project = activeProject {
-                    LabeledContent("Active Agent", value: project.displayTitle)
-                    LabeledContent("Agent Runtime", value: project.selectedAgentRuntime.displayName)
+                    LabeledContent("Active agent", value: project.displayTitle)
+                    if project.needsOpenCodeMigration {
+                        Label("Finishing upgrade from Claude Proxy…", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("agent-runtime-migration-hint")
+                    }
                 } else {
-                    Text("Select an agent to check runtime health.")
+                    Text("Select an agent to check live runtime health on its server.")
                         .font(.footnote)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 }
-            } header: {
-                Text("Runtime")
             } footer: {
-                Text("New agents use OpenCode by default. Existing legacy agents stay on Claude Proxy until you switch them here.")
+                Text("Chat runs on OpenCode. MCP servers and models sync to this agent’s server.")
             }
 
             Section {
                 NavigationLink {
                     AIProviderSettingsView(initialMode: .openCode)
                 } label: {
-                    Label("Global Provider & Models", systemImage: "sparkles")
+                    Label("Global provider & models", systemImage: "sparkles")
                 }
                 .accessibilityIdentifier("agent-runtime-ai-providers-global-link")
 
@@ -98,28 +137,28 @@ struct AgentRuntimeSettingsView: View {
                     NavigationLink {
                         AIProviderSettingsView(initialMode: .openCode, server: activeServer)
                     } label: {
-                        Label("This Server Override", systemImage: "server.rack")
+                        Label("This server override", systemImage: "server.rack")
                     }
                     .accessibilityIdentifier("agent-runtime-ai-providers-server-link")
                 }
             } header: {
-                Text("AI Provider Defaults")
+                Text("Providers")
             } footer: {
-                Text("Store provider credentials on this device and sync the selected provider/model profile to each OpenCode server.")
+                Text("Keys stay on this device. The selected provider and model sync to each OpenCode server.")
             }
 
             if let activeProject {
-                Section("Status") {
+                Section {
                     Button {
                         Task { await refreshStatus(for: activeProject) }
                     } label: {
                         if isLoadingStatus {
                             HStack {
                                 ProgressView()
-                                Text("Checking...")
+                                Text("Checking…")
                             }
                         } else {
-                            Label("Check Runtime", systemImage: "arrow.clockwise")
+                            Label("Check runtime", systemImage: "arrow.clockwise")
                         }
                     }
                     .disabled(isLoadingStatus)
@@ -133,17 +172,17 @@ struct AgentRuntimeSettingsView: View {
                         if let message = runtimeHealth.message {
                             Text(message)
                                 .font(.footnote)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(.secondary)
                         }
                     }
+                } header: {
+                    Text("Status")
                 }
 
-                if effectiveRuntime == .openCode {
-                    openCodeProviderSections(project: activeProject)
-                }
+                openCodeProviderSections(project: activeProject)
             }
         }
-        .navigationTitle("Agent Runtime")
+        .navigationTitle("OpenCode")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -155,7 +194,14 @@ struct AgentRuntimeSettingsView: View {
         }
         .task {
             applyUITestAIProviderAutofillIfNeeded()
+            // Quietly promote any legacy Claude agent when this screen opens.
             if let activeProject {
+                _ = await ClaudeToOpenCodeMigrationService.shared.migrateIfNeeded(
+                    project: activeProject,
+                    modelContext: nil
+                )
+                selectedRuntimeRawValue = CodingAgentRuntimeKind.openCode.rawValue
+                runtimeSelectionStore.setSelectedRuntime(.openCode)
                 await refreshStatus(for: activeProject)
             }
         }
@@ -390,38 +436,12 @@ struct AgentRuntimeSettingsView: View {
         }
     }
 
-    private var runtimeBinding: Binding<CodingAgentRuntimeKind> {
-        Binding(
-            get: { effectiveRuntime },
-            set: { applyRuntimeSelection($0) }
-        )
-    }
-
-    private var runtimeOptionsAccessibilityValue: String {
-        CodingAgentRuntimeKind.allCases.map(\.displayName).joined(separator: ", ")
-    }
-
-    private func applyRuntimeSelection(_ runtime: CodingAgentRuntimeKind) {
-        selectedRuntimeRawValue = runtime.rawValue
-        runtimeSelectionStore.setSelectedRuntime(runtime)
-        if let activeProject {
-            activeProject.selectedAgentRuntime = runtime
-            activeProject.updateLastModified()
-            Task { await refreshStatus(for: activeProject) }
-        }
-    }
-
     private func refreshStatus(for project: RemoteProject) async {
         isLoadingStatus = true
         defer { isLoadingStatus = false }
 
-        let runtime = CodingAgentRuntimeResolver.runtimeKind(for: project)
-        runtimeHealth = await runtimeRegistry.runtime(for: runtime).health(for: project)
-
-        guard runtime == .openCode else {
-            providerStatus = nil
-            return
-        }
+        // Chat path is OpenCode-only.
+        runtimeHealth = await runtimeRegistry.runtime(for: .openCode).health(for: project)
 
         do {
             providerStatus = try await providerService.status(for: project)
