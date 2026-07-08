@@ -462,6 +462,47 @@ struct OpenCodeMCPConfigDocument {
         ensureSchema()
     }
 
+    /// Merge thinking/reasoning options under `provider.<id>.models.<modelId>.options`.
+    /// Pass `options: nil` to clear previously written options for that model key.
+    mutating func setModelThinkingOptions(
+        providerID: String,
+        modelID: String,
+        options: [String: Any]?
+    ) {
+        let providerKey = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelKey = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !providerKey.isEmpty, !modelKey.isEmpty else {
+            ensureSchema()
+            return
+        }
+
+        var providers = root["provider"] as? [String: Any] ?? [:]
+        let existingProviderKey = providers.keys.first {
+            $0.caseInsensitiveCompare(providerKey) == .orderedSame
+        } ?? providerKey
+        var providerConfig = providers[existingProviderKey] as? [String: Any] ?? [:]
+        var models = providerConfig["models"] as? [String: Any] ?? [:]
+        let existingModelKey = models.keys.first {
+            $0.caseInsensitiveCompare(modelKey) == .orderedSame
+        } ?? modelKey
+        var modelConfig = models[existingModelKey] as? [String: Any] ?? ["name": modelKey]
+
+        if let options, !options.isEmpty {
+            modelConfig["options"] = options
+        } else {
+            modelConfig.removeValue(forKey: "options")
+        }
+
+        models[existingModelKey] = modelConfig
+        providerConfig["models"] = models
+        if providerConfig["name"] == nil {
+            providerConfig["name"] = providerKey
+        }
+        providers[existingProviderKey] = providerConfig
+        root["provider"] = providers
+        ensureSchema()
+    }
+
     mutating func setProviderFilters(enabled: [String], disabled: [String]) {
         setOptionalStringArray(enabled, forKey: "enabled_providers")
         setOptionalStringArray(disabled, forKey: "disabled_providers")

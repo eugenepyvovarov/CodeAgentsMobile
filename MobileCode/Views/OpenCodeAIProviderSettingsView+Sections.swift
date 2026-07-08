@@ -353,6 +353,38 @@ extension OpenCodeAIProviderSettingsView {
         }
     }
 
+    @ViewBuilder
+    var thinkingSection: some View {
+        if showsThinkingSection {
+            Section {
+                Button {
+                    showThinkingPicker = true
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(selectedThinkingTitle)
+                                .foregroundColor(.primary)
+                            Text(selectedThinkingSubtitle)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .disabled(editsDisabled)
+                .accessibilityIdentifier("opencode-ai-thinking-picker-button")
+            } header: {
+                Text("Thinking")
+            } footer: {
+                Text("Maps to OpenCode model options and optional prompt variant. Default leaves the server’s model default.")
+            }
+        }
+    }
+
     var advancedSection: some View {
         Section {
             if customProviderEnabled {

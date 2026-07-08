@@ -54,6 +54,8 @@ struct OpenCodeAIProviderProfile: Codable, Equatable {
     var authModeRawValue: String
     var modelID: String
     var smallModelID: String
+    /// OpenCode thinking / reasoning variant (empty = model default).
+    var variant: String
     var customBaseURL: String
     var customModelID: String
     var customModelName: String
@@ -65,6 +67,7 @@ struct OpenCodeAIProviderProfile: Codable, Equatable {
         authMode: OpenCodeProviderAuthMode = .apiKey,
         modelID: String = "",
         smallModelID: String = "",
+        variant: String = "",
         customBaseURL: String = "",
         customModelID: String = "",
         customModelName: String = "",
@@ -75,10 +78,32 @@ struct OpenCodeAIProviderProfile: Codable, Equatable {
         self.authModeRawValue = authMode.rawValue
         self.modelID = modelID
         self.smallModelID = smallModelID
+        self.variant = variant
         self.customBaseURL = customBaseURL
         self.customModelID = customModelID
         self.customModelName = customModelName
         self.npmPackage = npmPackage
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case providerID, providerName, authModeRawValue, modelID, smallModelID
+        case variant, customBaseURL, customModelID, customModelName, npmPackage
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        providerID = try container.decodeIfPresent(String.self, forKey: .providerID) ?? "openai"
+        providerName = try container.decodeIfPresent(String.self, forKey: .providerName) ?? "OpenAI"
+        authModeRawValue = try container.decodeIfPresent(String.self, forKey: .authModeRawValue)
+            ?? OpenCodeProviderAuthMode.apiKey.rawValue
+        modelID = try container.decodeIfPresent(String.self, forKey: .modelID) ?? ""
+        smallModelID = try container.decodeIfPresent(String.self, forKey: .smallModelID) ?? ""
+        variant = try container.decodeIfPresent(String.self, forKey: .variant) ?? ""
+        customBaseURL = try container.decodeIfPresent(String.self, forKey: .customBaseURL) ?? ""
+        customModelID = try container.decodeIfPresent(String.self, forKey: .customModelID) ?? ""
+        customModelName = try container.decodeIfPresent(String.self, forKey: .customModelName) ?? ""
+        npmPackage = try container.decodeIfPresent(String.self, forKey: .npmPackage)
+            ?? OpenCodeProviderNPMDriver.openAICompatible.rawValue
     }
 
     static func defaults() -> OpenCodeAIProviderProfile {
@@ -150,6 +175,12 @@ struct OpenCodeAIProviderProfile: Codable, Equatable {
         return trimmedSmallModelID.isEmpty ? resolvedModelID : trimmedSmallModelID
     }
 
+    /// Non-empty thinking/variant id, or nil for OpenCode default.
+    var resolvedVariant: String? {
+        let trimmed = variant.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     var isReadyToSave: Bool {
         !normalizedProviderID.isEmpty
             && (!isCustomProvider || (
@@ -165,6 +196,7 @@ struct OpenCodeAIProviderProfile: Codable, Equatable {
         copy.providerName = trimmedProviderName
         copy.modelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.smallModelID = smallModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.variant = variant.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.customBaseURL = customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.customModelID = customModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.customModelName = customModelName.trimmingCharacters(in: .whitespacesAndNewlines)

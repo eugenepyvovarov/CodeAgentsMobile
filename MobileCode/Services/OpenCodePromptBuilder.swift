@@ -53,6 +53,7 @@ enum OpenCodePromptBuilder {
         composedPrompt: String,
         projectPath: String,
         model: OpenCodePromptModel? = nil,
+        variant: String? = nil,
         systemRules: String = CodeAgentsUIRules.rulesMarkdown
     ) throws -> OpenCodePromptBuildResult {
         let components = ComposedPromptParser.parse(composedPrompt)
@@ -64,6 +65,7 @@ enum OpenCodePromptBuilder {
         let payload = OpenCodePromptPayload(
             messageID: openCodeMessageID(from: messageID),
             model: model,
+            variant: variant,
             system: makeSystemPrompt(systemRules: systemRules, skillReference: skillReference),
             tools: skillReference == nil ? nil : ["skill": true],
             parts: makeParts(message: components.message, files: fileReferences, skillReference: skillReference)

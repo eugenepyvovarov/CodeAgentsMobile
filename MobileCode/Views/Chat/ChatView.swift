@@ -53,6 +53,17 @@ struct ChatView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
+                        if let openCodeModelSummary {
+                            Section(openCodeModelSummary) {
+                                Button {
+                                    showingRuntimeSettings = true
+                                } label: {
+                                    Label("Change Model…", systemImage: "cpu")
+                                }
+                                .accessibilityIdentifier("chat-change-model-button")
+                            }
+                        }
+
                         Button {
                             showingMCPServers = true
                         } label: {
@@ -222,6 +233,18 @@ struct ChatView: View {
 
     private var chatTitle: String {
         assistantLabel
+    }
+
+    /// Compact model + thinking label for the chat overflow menu.
+    private var openCodeModelSummary: String? {
+        guard let serverId = projectContext.activeProject?.serverId else { return nil }
+        let profile = OpenCodeAIProviderSettingsStore().effectiveProfile(for: serverId)
+        guard let modelID = profile.resolvedModelID, !modelID.isEmpty else { return nil }
+        if let variant = profile.resolvedVariant {
+            let thinking = OpenCodeThinkingSupport.displayTitle(for: variant)
+            return "\(modelID) · \(thinking)"
+        }
+        return modelID
     }
 
     private var activeRuntimeKind: CodingAgentRuntimeKind { .openCode }

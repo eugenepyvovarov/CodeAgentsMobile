@@ -88,17 +88,41 @@ struct OpenCodeProviderStatus: Equatable {
     }
 
     private func modelChoices(from provider: OpenCodeProvider) -> [OpenCodeModelChoice] {
-        provider.models.values.map { model in
-            OpenCodeModelChoice(
-                providerID: provider.id,
-                providerName: provider.name,
-                modelID: model.id,
-                modelName: model.name
-            )
+        provider.models.values
+            .filter(\.isChatCapable)
+            .map { model in
+                OpenCodeModelChoice(
+                    providerID: provider.id,
+                    providerName: provider.name,
+                    modelID: model.id,
+                    modelName: model.name,
+                    supportsReasoning: model.supportsReasoning,
+                    effortLevels: model.effortLevels,
+                    isDeprecated: model.isDeprecated
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.isDeprecated != rhs.isDeprecated {
+                    return !lhs.isDeprecated && rhs.isDeprecated
+                }
+                let nameOrder = lhs.modelName.localizedCaseInsensitiveCompare(rhs.modelName)
+                if nameOrder != .orderedSame {
+                    return nameOrder == .orderedAscending
+                }
+                return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+            }
+    }
+
+    func thinkingChoices(for providerID: String, modelID: String) -> [OpenCodeThinkingChoice] {
+        let choices = modelChoices(for: providerID)
+        let bareModelID = OpenCodePromptModel(fullID: modelID)?.modelID ?? modelID
+        if let match = choices.first(where: {
+            $0.modelID.caseInsensitiveCompare(bareModelID) == .orderedSame
+                || $0.id.caseInsensitiveCompare(modelID) == .orderedSame
+        }) {
+            return OpenCodeThinkingSupport.choices(for: match, providerID: providerID)
         }
-        .sorted { lhs, rhs in
-            lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
-        }
+        return OpenCodeThinkingSupport.fallbackChoices(providerID: providerID, supportsReasoning: false)
     }
 }
 
@@ -168,6 +192,27 @@ struct OpenCodeModelChoice: Identifiable, Hashable {
     let providerName: String
     let modelID: String
     let modelName: String
+    let supportsReasoning: Bool
+    let effortLevels: [String]
+    let isDeprecated: Bool
+
+    init(
+        providerID: String,
+        providerName: String,
+        modelID: String,
+        modelName: String,
+        supportsReasoning: Bool = false,
+        effortLevels: [String] = [],
+        isDeprecated: Bool = false
+    ) {
+        self.providerID = providerID
+        self.providerName = providerName
+        self.modelID = modelID
+        self.modelName = modelName
+        self.supportsReasoning = supportsReasoning
+        self.effortLevels = effortLevels
+        self.isDeprecated = isDeprecated
+    }
 
     var id: String {
         "\(providerID)/\(modelID)"
@@ -175,6 +220,158 @@ struct OpenCodeModelChoice: Identifiable, Hashable {
 
     var label: String {
         "\(providerName) · \(modelName)"
+    }
+}
+
+/// UI option for OpenCode thinking / reasoning effort (maps to variants + model options).
+struct OpenCodeThinkingChoice: Identifiable, Hashable {
+    /// Empty id means OpenCode default (omit variant/options).
+    let id: String
+    let title: String
+    let subtitle: String?
+
+    static let automatic = OpenCodeThinkingChoice(
+        id: "",
+        title: "Default",
+        subtitle: "Use OpenCode model default"
+    )
+}
+
+enum OpenCodeThinkingSupport {
+    /// Build thinking choices for a model, falling back to provider family defaults when needed.
+    static func choices(for model: OpenCodeModelChoice, providerID: String) -> [OpenCodeThinkingChoice] {
+        var result: [OpenCodeThinkingChoice] = [.automatic]
+        var seen = Set<String>([""])
+
+        let levels: [String]
+        if !model.effortLevels.isEmpty {
+            levels = model.effortLevels
+        } else if model.supportsReasoning {
+            levels = fallbackEffortKeys(providerID: providerID)
+        } else {
+            return result
+        }
+
+        for raw in levels {
+            let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = key.lowercased()
+            guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
+            seen.insert(normalized)
+            result.append(OpenCodeThinkingChoice(
+                id: key,
+                title: displayTitle(for: key),
+                subtitle: displaySubtitle(for: key)
+            ))
+        }
+        return result
+    }
+
+    static func fallbackChoices(providerID: String, supportsReasoning: Bool) -> [OpenCodeThinkingChoice] {
+        guard supportsReasoning else { return [.automatic] }
+        let synthetic = OpenCodeModelChoice(
+            providerID: providerID,
+            providerName: providerID,
+            modelID: "",
+            modelName: "",
+            supportsReasoning: true,
+            effortLevels: fallbackEffortKeys(providerID: providerID)
+        )
+        return choices(for: synthetic, providerID: providerID)
+    }
+
+    static func displayTitle(for effort: String) -> String {
+        switch effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "", "auto", "default":
+            return "Default"
+        case "none", "off":
+            return "Off"
+        case "minimal":
+            return "Minimal"
+        case "low":
+            return "Low"
+        case "medium":
+            return "Medium"
+        case "high":
+            return "High"
+        case "xhigh", "extra-high", "extra_high":
+            return "Extra High"
+        case "max", "maximum":
+            return "Max"
+        default:
+            return effort.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    static func displaySubtitle(for effort: String) -> String? {
+        switch effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "none", "off":
+            return "Disable extended thinking when supported"
+        case "minimal", "low":
+            return "Faster, lighter reasoning"
+        case "medium":
+            return "Balanced reasoning"
+        case "high":
+            return "Deeper reasoning"
+        case "xhigh", "max", "maximum":
+            return "Maximum thinking budget"
+        default:
+            return nil
+        }
+    }
+
+    /// Provider-family fallbacks when the API omits `reasoning_options` / variants.
+    static func fallbackEffortKeys(providerID: String) -> [String] {
+        switch providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "anthropic", "opencode":
+            return ["high", "max"]
+        case "openai", "azure", "azure-cognitive-services":
+            return ["none", "minimal", "low", "medium", "high", "xhigh"]
+        case "google", "google-vertex":
+            return ["low", "high"]
+        case "xai":
+            return ["low", "medium", "high", "xhigh"]
+        default:
+            return ["low", "medium", "high"]
+        }
+    }
+
+    /// Map a selected thinking level into OpenCode model `options` for opencode.json.
+    static func modelOptions(variant: String, providerID: String) -> [String: Any]? {
+        let level = variant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !level.isEmpty else { return nil }
+
+        let provider = providerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalized = level.lowercased()
+
+        switch provider {
+        case "anthropic":
+            if normalized == "none" || normalized == "off" {
+                return ["thinking": ["type": "disabled"]]
+            }
+            let budget: Int
+            switch normalized {
+            case "low", "minimal":
+                budget = 4_000
+            case "medium":
+                budget = 10_000
+            case "max", "maximum", "xhigh":
+                budget = 32_000
+            default:
+                budget = 16_000
+            }
+            return [
+                "thinking": [
+                    "type": "enabled",
+                    "budgetTokens": budget
+                ]
+            ]
+        default:
+            // OpenAI / Google / xAI / Zen and most gateways accept reasoningEffort.
+            if normalized == "off" {
+                return ["reasoningEffort": "none"]
+            }
+            return ["reasoningEffort": level]
+        }
     }
 }
 
@@ -393,6 +590,7 @@ final class OpenCodeProviderService: ObservableObject {
             modelID: normalizedProfile.resolvedModelID,
             smallModelID: normalizedProfile.resolvedSmallModelID
         )
+        applyThinkingOptions(to: &loaded.document, profile: normalizedProfile)
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
         try await reloadConfiguration(loaded.document, client: openCodeClient, session: session, directory: nil)
 
@@ -411,6 +609,25 @@ final class OpenCodeProviderService: ObservableObject {
             client: openCodeClient,
             session: session,
             directory: nil
+        )
+    }
+
+    private func applyThinkingOptions(
+        to document: inout OpenCodeMCPConfigDocument,
+        profile: OpenCodeAIProviderProfile
+    ) {
+        guard let fullModelID = profile.resolvedModelID,
+              let promptModel = OpenCodePromptModel(fullID: fullModelID) else {
+            return
+        }
+        let options = OpenCodeThinkingSupport.modelOptions(
+            variant: profile.resolvedVariant ?? "",
+            providerID: profile.normalizedProviderID
+        )
+        document.setModelThinkingOptions(
+            providerID: promptModel.providerID,
+            modelID: promptModel.modelID,
+            options: options
         )
     }
 

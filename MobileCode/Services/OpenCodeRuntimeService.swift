@@ -93,6 +93,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     let client = client(for: project)
                     let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
                     let promptModel = await resolvePromptModel(for: project, sshSession: sshSession)
+                    let promptVariant = resolvePromptVariant(for: project)
                     var accumulator = OpenCodeChatEventAccumulator(sessionID: sessionID)
                     let eventPath = OpenCodeSessionPath.path("/event", directory: project.path)
                     let diagnostics = OpenCodeRuntimeDiagnostics(
@@ -115,7 +116,8 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         messageID: messageId?.uuidString,
                         composedPrompt: text,
                         projectPath: project.path,
-                        model: promptModel
+                        model: promptModel,
+                        variant: promptVariant
                     )
                     try await validatePromptReferences(prompt, sshSession: sshSession)
                     try await client.promptAsync(
@@ -404,6 +406,10 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         }
 
         return nil
+    }
+
+    private func resolvePromptVariant(for project: RemoteProject) -> String? {
+        OpenCodeAIProviderSettingsStore().effectiveProfile(for: project.serverId).resolvedVariant
     }
 
     private func modelConfigurationPaths(for project: RemoteProject, sshSession: SSHSession) async -> [String] {

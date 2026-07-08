@@ -33,7 +33,25 @@ struct OpenCodeModelPickerSheet: View {
 
                         Spacer()
 
-                        if choice.id == selectedModelID {
+                        if choice.supportsReasoning {
+                            Text("Thinking")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                                .foregroundStyle(.tint)
+                        }
+
+                        if choice.isDeprecated {
+                            Text("Deprecated")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.orange.opacity(0.15)))
+                                .foregroundStyle(.orange)
+                        }
+
+                        if choice.id.caseInsensitiveCompare(selectedModelID) == .orderedSame {
                             Image(systemName: "checkmark")
                                 .foregroundStyle(.tint)
                         }
@@ -62,9 +80,16 @@ struct OpenCodeModelPickerSheet: View {
     }
 
     private func modelSubtitle(for choice: OpenCodeModelChoice) -> String {
-        if choice.modelName.caseInsensitiveCompare(choice.modelID) == .orderedSame {
-            return choice.providerName
+        var parts: [String] = []
+        if choice.modelName.caseInsensitiveCompare(choice.modelID) != .orderedSame {
+            parts.append(choice.modelName)
         }
-        return "\(choice.modelName) · \(choice.providerName)"
+        parts.append(choice.providerName)
+        if choice.supportsReasoning, !choice.effortLevels.isEmpty {
+            parts.append("\(choice.effortLevels.count) thinking levels")
+        } else if choice.supportsReasoning {
+            parts.append("reasoning")
+        }
+        return parts.joined(separator: " · ")
     }
 }

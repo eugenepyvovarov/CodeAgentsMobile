@@ -153,7 +153,7 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertTrue(status.isAuthenticated(providerID: "openai"))
     }
 
-    func testProviderStatusSortsModelsByRawID() {
+    func testProviderStatusSortsModelsByDisplayNameThenID() {
         let provider = OpenCodeProvider(
             id: "openai",
             name: "OpenAI",
@@ -172,7 +172,8 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
             authMethods: [:]
         )
 
-        XCTAssertEqual(status.modelChoices(for: "openai").map(\.id), ["openai/a-model", "openai/z-model"])
+        // Prefer human-readable model name, then stable id.
+        XCTAssertEqual(status.modelChoices(for: "openai").map(\.id), ["openai/z-model", "openai/a-model"])
     }
 
     func testProviderConnectionDefaultsUseOpenCodeDefaultModels() {
@@ -513,5 +514,167 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
             error.displayMessage,
             "OpenCode does not have minimax-coding-plan/MiniMax-M2.7 loaded. Apply the provider config and reload OpenCode."
         )
+    }
+
+    func testProviderModelDecodesReasoningMetadataAndVariants() throws {
+        let json = """
+        {
+          "id": "gpt-5.5",
+          "name": "GPT-5.5",
+          "reasoning": true,
+          "reasoning_options": [
+            { "type": "effort", "values": ["none", "low", "medium", "high", "xhigh"] }
+          ],
+          "tool_call": true,
+          "status": "active",
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "high": {},
+            "xhigh": { "disabled": true },
+            "low": {}
+          }
+        }
+        """
+
+        let model = try JSONDecoder().decode(OpenCodeProviderModel.self, from: Data(json.utf8))
+
+        XCTAssertTrue(model.supportsReasoning)
+        XCTAssertEqual(model.reasoning, true)
+        XCTAssertEqual(model.toolCall, true)
+        XCTAssertFalse(model.isDeprecated)
+        XCTAssertTrue(model.isChatCapable)
+        XCTAssertEqual(model.effortLevels, ["none", "low", "medium", "high"])
+        XCTAssertFalse(model.effortLevels.contains("xhigh"))
+    }
+
+    func testProviderModelFiltersNonChatEmbeddings() {
+        let embeddings = OpenCodeProviderModel(
+            id: "text-embedding-3-small",
+            name: "Text Embedding 3 Small",
+            toolCall: false
+        )
+        let imageOnly = OpenCodeProviderModel(
+            id: "dall-e-3",
+            name: "DALL·E 3",
+            toolCall: false,
+            modalities: OpenCodeModelModalities(input: ["text"], output: ["image"])
+        )
+        let chat = OpenCodeProviderModel(
+            id: "gpt-5.5",
+            name: "GPT-5.5",
+            reasoning: true,
+            toolCall: true,
+            modalities: OpenCodeModelModalities(input: ["text"], output: ["text"])
+        )
+
+        XCTAssertFalse(embeddings.isChatCapable)
+        XCTAssertFalse(imageOnly.isChatCapable)
+        XCTAssertTrue(chat.isChatCapable)
+    }
+
+    func testModelChoicesPreferChatCapableAndSurfaceReasoning() {
+        let provider = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            models: [
+                "text-embedding-3-small": OpenCodeProviderModel(
+                    id: "text-embedding-3-small",
+                    name: "Embeddings",
+                    toolCall: false
+                ),
+                "gpt-5.5": OpenCodeProviderModel(
+                    id: "gpt-5.5",
+                    name: "GPT-5.5",
+                    reasoning: true,
+                    reasoningOptions: [
+                        OpenCodeReasoningOption(type: "effort", values: ["low", "high"])
+                    ],
+                    toolCall: true
+                ),
+                "legacy": OpenCodeProviderModel(
+                    id: "legacy",
+                    name: "Legacy",
+                    status: "deprecated",
+                    modalities: OpenCodeModelModalities(input: ["text"], output: ["text"])
+                )
+            ]
+        )
+        let status = OpenCodeProviderStatus(
+            providers: [provider],
+            defaultModels: [:],
+            connectedProviderIDs: [],
+            authMethods: [:]
+        )
+
+        let choices = status.modelChoices(for: "openai")
+        XCTAssertEqual(choices.map(\.modelID), ["gpt-5.5", "legacy"])
+        XCTAssertEqual(choices.first?.supportsReasoning, true)
+        XCTAssertEqual(choices.first?.effortLevels, ["low", "high"])
+        XCTAssertEqual(choices.last?.isDeprecated, true)
+    }
+
+    func testThinkingSupportBuildsChoicesAndModelOptions() {
+        let model = OpenCodeModelChoice(
+            providerID: "anthropic",
+            providerName: "Anthropic",
+            modelID: "claude-sonnet",
+            modelName: "Claude Sonnet",
+            supportsReasoning: true,
+            effortLevels: ["high", "max"]
+        )
+
+        let choices = OpenCodeThinkingSupport.choices(for: model, providerID: "anthropic")
+        XCTAssertEqual(choices.map(\.id), ["", "high", "max"])
+        XCTAssertEqual(choices[1].title, "High")
+
+        let anthropicOptions = OpenCodeThinkingSupport.modelOptions(variant: "high", providerID: "anthropic")
+        let thinking = anthropicOptions?["thinking"] as? [String: Any]
+        XCTAssertEqual(thinking?["type"] as? String, "enabled")
+        XCTAssertEqual(thinking?["budgetTokens"] as? Int, 16_000)
+
+        let openAIOptions = OpenCodeThinkingSupport.modelOptions(variant: "xhigh", providerID: "openai")
+        XCTAssertEqual(openAIOptions?["reasoningEffort"] as? String, "xhigh")
+
+        XCTAssertNil(OpenCodeThinkingSupport.modelOptions(variant: "", providerID: "openai"))
+    }
+
+    func testDocumentWritesModelThinkingOptions() throws {
+        var document = OpenCodeMCPConfigDocument()
+        document.setModelThinkingOptions(
+            providerID: "openai",
+            modelID: "gpt-5.5",
+            options: ["reasoningEffort": "high"]
+        )
+
+        let decoded = try OpenCodeMCPConfigDocument(jsonString: document.toJSONString())
+        let providers = try XCTUnwrap(decoded.root["provider"] as? [String: Any])
+        let openAI = try XCTUnwrap(providers["openai"] as? [String: Any])
+        let models = try XCTUnwrap(openAI["models"] as? [String: Any])
+        let model = try XCTUnwrap(models["gpt-5.5"] as? [String: Any])
+        let options = try XCTUnwrap(model["options"] as? [String: Any])
+        XCTAssertEqual(options["reasoningEffort"] as? String, "high")
+
+        document.setModelThinkingOptions(providerID: "openai", modelID: "gpt-5.5", options: nil)
+        let cleared = try OpenCodeMCPConfigDocument(jsonString: document.toJSONString())
+        let clearedProviders = try XCTUnwrap(cleared.root["provider"] as? [String: Any])
+        let clearedOpenAI = try XCTUnwrap(clearedProviders["openai"] as? [String: Any])
+        let clearedModels = try XCTUnwrap(clearedOpenAI["models"] as? [String: Any])
+        let clearedModel = try XCTUnwrap(clearedModels["gpt-5.5"] as? [String: Any])
+        XCTAssertNil(clearedModel["options"])
+    }
+
+    func testProfilePersistsVariant() throws {
+        var profile = OpenCodeAIProviderProfile.defaults()
+        profile.providerID = "openai"
+        profile.modelID = "openai/gpt-5.5"
+        profile.variant = " high "
+        let normalized = profile.normalizedForStorage()
+
+        XCTAssertEqual(normalized.resolvedVariant, "high")
+
+        let data = try JSONEncoder().encode(normalized)
+        let decoded = try JSONDecoder().decode(OpenCodeAIProviderProfile.self, from: data)
+        XCTAssertEqual(decoded.variant, "high")
+        XCTAssertEqual(decoded.resolvedVariant, "high")
     }
 }

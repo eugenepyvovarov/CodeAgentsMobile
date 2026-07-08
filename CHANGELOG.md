@@ -10,6 +10,9 @@
 ### Chat & settings UX
 - Use the active agent name in chat UI (no more “Claude” labels).
 - Settings and chat menus are **OpenCode-first**: runtime health, providers, and MCP without a Claude runtime picker or dual-mode segment.
+- **Full OpenCode provider/model catalog** from the server (not a hard-coded short list), with chat-capable filtering and reasoning badges.
+- **Thinking level** per model: maps to OpenCode model options + optional prompt `variant` (Default / Low / Medium / High / Max, provider-aware).
+- Chat overflow menu shows the active model and thinking level, with a quick path to change them.
 - Shorter chat overflow labels (OpenCode, Environment, Refresh, Stop).
 - When switching AI providers, existing chats now require a reset before you can continue (shows a banner with actions).
 - Render richer “embedded UI” blocks in chat messages (with more stable media loading).

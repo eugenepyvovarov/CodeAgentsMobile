@@ -190,11 +190,161 @@ struct OpenCodeProviderModel: Decodable, Equatable, Identifiable {
     let id: String
     let name: String
     let api: OpenCodeProviderModelAPI?
+    let reasoning: Bool?
+    let reasoningOptions: [OpenCodeReasoningOption]?
+    let toolCall: Bool?
+    let temperature: Bool?
+    let status: String?
+    let modalities: OpenCodeModelModalities?
+    let variants: [String: OpenCodeModelVariantConfig]?
 
-    init(id: String, name: String, api: OpenCodeProviderModelAPI? = nil) {
+    init(
+        id: String,
+        name: String,
+        api: OpenCodeProviderModelAPI? = nil,
+        reasoning: Bool? = nil,
+        reasoningOptions: [OpenCodeReasoningOption]? = nil,
+        toolCall: Bool? = nil,
+        temperature: Bool? = nil,
+        status: String? = nil,
+        modalities: OpenCodeModelModalities? = nil,
+        variants: [String: OpenCodeModelVariantConfig]? = nil
+    ) {
         self.id = id
         self.name = name
         self.api = api
+        self.reasoning = reasoning
+        self.reasoningOptions = reasoningOptions
+        self.toolCall = toolCall
+        self.temperature = temperature
+        self.status = status
+        self.modalities = modalities
+        self.variants = variants
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, api, reasoning, temperature, status, modalities, variants
+        case reasoningOptions = "reasoning_options"
+        case toolCall = "tool_call"
+    }
+
+    /// True when the model is suitable for agentic chat (tools + text). Unknown metadata keeps the model.
+    var isChatCapable: Bool {
+        if let toolCall, !toolCall {
+            // Explicitly non-tool models are usually embeddings / TTS / image-only.
+            if let outputs = modalities?.output, !outputs.isEmpty, !outputs.contains(where: { $0.caseInsensitiveCompare("text") == .orderedSame }) {
+                return false
+            }
+            if let inputs = modalities?.input, inputs.count == 1, inputs[0].caseInsensitiveCompare("text") == .orderedSame,
+               modalities?.output?.contains(where: { $0.caseInsensitiveCompare("text") == .orderedSame }) != true {
+                return false
+            }
+            // tool_call:false with text output can still be chat — keep unless clearly non-text.
+            if let outputs = modalities?.output, outputs.contains(where: { $0.caseInsensitiveCompare("text") == .orderedSame }) {
+                return true
+            }
+            // No modalities: treat pure non-tool as non-chat (embeddings etc.)
+            if modalities == nil {
+                let lowered = "\(id) \(name)".lowercased()
+                if lowered.contains("embed") || lowered.contains("tts") || lowered.contains("whisper") || lowered.contains("audio") {
+                    return false
+                }
+            }
+        }
+        if let outputs = modalities?.output, !outputs.isEmpty,
+           !outputs.contains(where: { $0.caseInsensitiveCompare("text") == .orderedSame }) {
+            return false
+        }
+        return true
+    }
+
+    var isDeprecated: Bool {
+        status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "deprecated"
+    }
+
+    var supportsReasoning: Bool {
+        if reasoning == true { return true }
+        if let options = reasoningOptions, !options.isEmpty { return true }
+        if let variants, !variants.isEmpty { return true }
+        return false
+    }
+
+    /// Effort / variant keys advertised for this model (excluding disabled variants).
+    var effortLevels: [String] {
+        var levels: [String] = []
+        var seen = Set<String>()
+        var disabled = Set<String>()
+
+        if let variants {
+            for (key, config) in variants where config.disabled == true {
+                let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if !normalized.isEmpty {
+                    disabled.insert(normalized)
+                }
+            }
+        }
+
+        func append(_ raw: String) {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return }
+            let key = value.lowercased()
+            guard !seen.contains(key), !disabled.contains(key) else { return }
+            seen.insert(key)
+            levels.append(value)
+        }
+
+        for option in reasoningOptions ?? [] {
+            let type = option.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if type == "effort" || type == "toggle" {
+                for value in option.values ?? [] {
+                    append(value)
+                }
+            }
+        }
+
+        if let variants {
+            for (key, config) in variants.sorted(by: { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }) {
+                if config.disabled == true { continue }
+                append(key)
+            }
+        }
+
+        return levels
+    }
+}
+
+struct OpenCodeReasoningOption: Decodable, Equatable {
+    let type: String
+    let values: [String]?
+    let min: Int?
+
+    init(type: String, values: [String]? = nil, min: Int? = nil) {
+        self.type = type
+        self.values = values
+        self.min = min
+    }
+}
+
+struct OpenCodeModelModalities: Decodable, Equatable {
+    let input: [String]?
+    let output: [String]?
+}
+
+struct OpenCodeModelVariantConfig: Decodable, Equatable {
+    let disabled: Bool?
+
+    init(disabled: Bool? = nil) {
+        self.disabled = disabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        disabled = try container.decodeIfPresent(Bool.self, forKey: .disabled)
+        // Accept arbitrary extra option fields without failing decode.
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case disabled
     }
 }
 

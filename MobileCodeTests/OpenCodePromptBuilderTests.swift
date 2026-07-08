@@ -108,4 +108,32 @@ final class OpenCodePromptBuilderTests: XCTestCase {
         XCTAssertEqual(result.payload.parts[0].text, "Use the attached file(s) for this request.")
     }
 
+    func testBuildIncludesThinkingVariantWhenProvided() throws {
+        let result = try OpenCodePromptBuilder.build(
+            messageID: "msg_fixture",
+            composedPrompt: "Think carefully",
+            projectPath: "/workspace/app",
+            model: OpenCodePromptModel(providerID: "openai", modelID: "gpt-5.5"),
+            variant: "high",
+            systemRules: "rules"
+        )
+
+        XCTAssertEqual(result.payload.variant, "high")
+        let body = try OpenCodeSessionJSON.encode(result.payload)
+        XCTAssertTrue(body.contains("\"variant\":\"high\""))
+    }
+
+    func testBuildOmitsEmptyThinkingVariant() throws {
+        let result = try OpenCodePromptBuilder.build(
+            messageID: nil,
+            composedPrompt: "Hello",
+            projectPath: "/workspace/app",
+            variant: "   ",
+            systemRules: "rules"
+        )
+
+        let body = try OpenCodeSessionJSON.encode(result.payload)
+        XCTAssertFalse(body.contains("variant"))
+    }
+
 }

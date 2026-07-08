@@ -233,6 +233,8 @@ struct OpenCodeSessionMessage: Decodable {
 struct OpenCodePromptPayload: Encodable {
     let messageID: String?
     let model: OpenCodePromptModel?
+    /// OpenCode thinking / reasoning variant (e.g. `high`, `max`). Omitted when nil.
+    let variant: String?
     let agent: String?
     let noReply: Bool?
     let system: String?
@@ -242,6 +244,7 @@ struct OpenCodePromptPayload: Encodable {
     init(
         messageID: String? = nil,
         model: OpenCodePromptModel? = nil,
+        variant: String? = nil,
         agent: String? = nil,
         noReply: Bool? = nil,
         system: String? = nil,
@@ -250,11 +253,31 @@ struct OpenCodePromptPayload: Encodable {
     ) {
         self.messageID = messageID
         self.model = model
+        self.variant = variant
         self.agent = agent
         self.noReply = noReply
         self.system = system
         self.tools = tools
         self.parts = parts
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(messageID, forKey: .messageID)
+        try container.encodeIfPresent(model, forKey: .model)
+        let trimmedVariant = variant?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedVariant, !trimmedVariant.isEmpty {
+            try container.encode(trimmedVariant, forKey: .variant)
+        }
+        try container.encodeIfPresent(agent, forKey: .agent)
+        try container.encodeIfPresent(noReply, forKey: .noReply)
+        try container.encodeIfPresent(system, forKey: .system)
+        try container.encodeIfPresent(tools, forKey: .tools)
+        try container.encode(parts, forKey: .parts)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case messageID, model, variant, agent, noReply, system, tools, parts
     }
 }
 

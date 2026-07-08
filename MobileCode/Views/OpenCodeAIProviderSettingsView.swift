@@ -21,6 +21,7 @@ struct OpenCodeAIProviderSettingsView: View {
     @State var customProviderEnabled = false
     @State var showProviderPicker = false
     @State var showModelPicker = false
+    @State var showThinkingPicker = false
     @State var showAdvancedModels = false
     @State var confirmApplyAll = false
     @State var confirmRemoveAuth = false
@@ -53,6 +54,7 @@ struct OpenCodeAIProviderSettingsView: View {
             scopeSection
             connectionSection
             modelSection
+            thinkingSection
             advancedSection
             applySection
             statusSection
@@ -75,6 +77,16 @@ struct OpenCodeAIProviderSettingsView: View {
                 selectProvider(choice)
                 showProviderPicker = false
             }
+        }
+        .sheet(isPresented: $showThinkingPicker) {
+            OpenCodeThinkingPickerSheet(
+                choices: thinkingChoices,
+                selectedThinkingID: profile.variant,
+                onSelect: { choice in
+                    selectThinking(choice)
+                    showThinkingPicker = false
+                }
+            )
         }
         .sheet(isPresented: $showModelPicker) {
             OpenCodeModelPickerSheet(
@@ -196,6 +208,50 @@ struct OpenCodeAIProviderSettingsView: View {
         return providerStatus?.modelChoices(for: profile.normalizedProviderID) ?? []
     }
 
+    var selectedModelChoice: OpenCodeModelChoice? {
+        guard let modelID = profile.resolvedModelID else { return nil }
+        return selectedProviderModelChoices.first {
+            $0.id.caseInsensitiveCompare(modelID) == .orderedSame
+        }
+    }
+
+    var thinkingChoices: [OpenCodeThinkingChoice] {
+        if let selectedModelChoice {
+            return OpenCodeThinkingSupport.choices(
+                for: selectedModelChoice,
+                providerID: profile.normalizedProviderID
+            )
+        }
+        return OpenCodeThinkingSupport.fallbackChoices(
+            providerID: profile.normalizedProviderID,
+            supportsReasoning: false
+        )
+    }
+
+    var showsThinkingSection: Bool {
+        !customProviderEnabled && (selectedModelChoice?.supportsReasoning == true || thinkingChoices.count > 1)
+    }
+
+    var selectedThinkingTitle: String {
+        let current = profile.variant.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = thinkingChoices.first(where: { $0.id.caseInsensitiveCompare(current) == .orderedSame }) {
+            return match.title
+        }
+        return OpenCodeThinkingChoice.automatic.title
+    }
+
+    var selectedThinkingSubtitle: String {
+        let current = profile.variant.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = thinkingChoices.first(where: { $0.id.caseInsensitiveCompare(current) == .orderedSame }),
+           let subtitle = match.subtitle {
+            return subtitle
+        }
+        if current.isEmpty {
+            return "\(thinkingChoices.count - 1) level\(thinkingChoices.count == 2 ? "" : "s") available"
+        }
+        return OpenCodeThinkingSupport.displayTitle(for: current)
+    }
+
     var selectedModelUnavailable: Bool {
         guard let modelID = profile.resolvedModelID?.trimmedOpenCodeValue,
               !modelID.isEmpty,
@@ -245,11 +301,18 @@ struct OpenCodeAIProviderSettingsView: View {
     var selectedModelSubtitle: String {
         let countText = "\(selectedProviderModelChoices.count) model\(selectedProviderModelChoices.count == 1 ? "" : "s")"
         guard let modelID = profile.resolvedModelID,
-              let choice = selectedProviderModelChoices.first(where: { $0.id.caseInsensitiveCompare(modelID) == .orderedSame }),
-              choice.modelName.caseInsensitiveCompare(choice.modelID) != .orderedSame else {
+              let choice = selectedProviderModelChoices.first(where: { $0.id.caseInsensitiveCompare(modelID) == .orderedSame }) else {
             return countText
         }
-        return "\(choice.modelName) · \(countText)"
+        var parts: [String] = []
+        if choice.modelName.caseInsensitiveCompare(choice.modelID) != .orderedSame {
+            parts.append(choice.modelName)
+        }
+        parts.append(countText)
+        if choice.supportsReasoning {
+            parts.append("supports thinking")
+        }
+        return parts.joined(separator: " · ")
     }
 
     var supportsChatGPTAuth: Bool {
@@ -433,6 +496,7 @@ struct OpenCodeAIProviderSettingsView: View {
             }
             profile.modelID = ""
             profile.smallModelID = ""
+            profile.variant = ""
         } else {
             customProviderEnabled = false
             profile.providerID = choice.id
@@ -446,6 +510,7 @@ struct OpenCodeAIProviderSettingsView: View {
             if didChangeProvider {
                 profile.modelID = ""
                 profile.smallModelID = ""
+                profile.variant = ""
             }
             if profile.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 profile.modelID = OpenCodeProviderConnectionDefaults.suggestedModelID(
@@ -455,6 +520,7 @@ struct OpenCodeAIProviderSettingsView: View {
             }
         }
         repairSelectedModelIfNeeded()
+        repairSelectedThinkingIfNeeded()
         apiKey = ""
     }
 
@@ -472,6 +538,47 @@ struct OpenCodeAIProviderSettingsView: View {
         profile.modelID = choice.id
         if shouldClearSmallModelOverride {
             profile.smallModelID = ""
+        }
+        if !choice.supportsReasoning {
+            profile.variant = ""
+        } else {
+            repairSelectedThinkingIfNeeded(for: choice)
+        }
+    }
+
+    func selectThinking(_ choice: OpenCodeThinkingChoice) {
+        profile.variant = choice.id
+    }
+
+    func repairSelectedThinkingIfNeeded(for model: OpenCodeModelChoice? = nil) {
+        if customProviderEnabled {
+            profile.variant = ""
+            return
+        }
+
+        let target = model ?? selectedModelChoice
+        guard let target else {
+            // Free-text model path or no selection yet — keep stored variant.
+            return
+        }
+
+        if !target.supportsReasoning {
+            profile.variant = ""
+            return
+        }
+
+        let current = profile.variant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !current.isEmpty else { return }
+
+        let validIDs = OpenCodeThinkingSupport.choices(
+            for: target,
+            providerID: profile.normalizedProviderID
+        )
+        let isValid = validIDs.contains {
+            $0.id.caseInsensitiveCompare(current) == .orderedSame
+        }
+        if !isValid {
+            profile.variant = ""
         }
     }
 
@@ -595,6 +702,7 @@ struct OpenCodeAIProviderSettingsView: View {
             providerStatus = try await providerService.status(for: targetServer)
             statusSourceName = targetServer.name
             repairSelectedModelIfNeeded()
+            repairSelectedThinkingIfNeeded()
             clearAutoFilledSmallModelOverrideIfNeeded()
             if profile.authMode != .openAIChatGPT || profile.normalizedProviderID != "openai" {
                 chatGPTOAuthCompletedServerID = nil
