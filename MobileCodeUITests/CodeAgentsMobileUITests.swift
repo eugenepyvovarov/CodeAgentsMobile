@@ -52,26 +52,46 @@ final class CodeAgentsMobileUITests: XCTestCase {
         try openSettingsFromAgentsScreen()
     }
 
-    func testAgentRuntimeSettingsShowsOpenCodeDefaultAndLegacyFallback() throws {
+    func testOpenCodeRuntimeSettingsShowsActiveHeroWithoutLegacyPicker() throws {
         try openSettingsFromAgentsScreen()
+
+        XCTAssertTrue(app.staticTexts["OpenCode"].waitForExistence(timeout: 5), "Settings should group OpenCode controls.")
 
         let runtimeLink = app.buttons["settings-agent-runtime-link"].firstMatch
         XCTAssertTrue(runtimeLink.waitForExistence(timeout: 5))
         runtimeLink.tap()
 
-        XCTAssertTrue(app.navigationBars["Agent Runtime"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["OpenCode"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["New agents use OpenCode by default. Existing legacy agents stay on Claude Proxy until you switch them here."].exists)
+        XCTAssertTrue(app.navigationBars["OpenCode"].waitForExistence(timeout: 5))
+        let hero = app.descendants(matching: .any)["agent-runtime-hero"].firstMatch
+        XCTAssertTrue(hero.waitForExistence(timeout: 5), "OpenCode runtime hero should be visible.")
+        XCTAssertTrue(app.staticTexts["Active"].waitForExistence(timeout: 5))
+
+        // OpenCode-only: no Claude runtime picker or legacy switch copy.
+        XCTAssertFalse(app.staticTexts["Claude Proxy (Legacy)"].exists)
+        XCTAssertFalse(app.staticTexts["New agents use OpenCode by default. Existing legacy agents stay on Claude Proxy until you switch them here."].exists)
+
         let runtimePicker = app.descendants(matching: .any)["agent-runtime-picker"].firstMatch
         XCTAssertTrue(runtimePicker.waitForExistence(timeout: 5))
-        XCTAssertTrue((runtimePicker.value as? String)?.contains("Claude Proxy (Legacy)") == true)
+        let pickerValue = (runtimePicker.value as? String) ?? ""
+        XCTAssertTrue(
+            pickerValue.localizedCaseInsensitiveContains("OpenCode"),
+            "Runtime marker should report OpenCode, got: \(pickerValue)"
+        )
+
+        let done = app.buttons["agent-runtime-done-button"].firstMatch
+        if done.waitForExistence(timeout: 2) {
+            done.tap()
+        } else {
+            app.navigationBars.buttons.firstMatch.tap()
+        }
     }
 
-    func testSettingsUseUnifiedAIProvidersEntryDefaultingToOpenCode() throws {
+    func testSettingsAIProvidersIsOpenCodeOnlyWithoutModePicker() throws {
         try openSettingsFromAgentsScreen()
 
         XCTAssertFalse(app.staticTexts["OpenCode AI Providers"].exists)
         XCTAssertFalse(app.staticTexts["Legacy Claude Provider"].exists)
+        XCTAssertFalse(app.staticTexts["Claude Code Proxy"].exists)
 
         let providersLink = app.buttons["settings-ai-providers-link"].firstMatch
         XCTAssertTrue(providersLink.waitForExistence(timeout: 5))
@@ -79,10 +99,14 @@ final class CodeAgentsMobileUITests: XCTestCase {
         providersLink.tap()
 
         XCTAssertTrue(app.navigationBars["AI Providers"].waitForExistence(timeout: 5))
-        let modePicker = app.descendants(matching: .any)["ai-provider-settings-mode-picker"].firstMatch
-        XCTAssertTrue(modePicker.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.segmentedControls.buttons["OpenCode"].isSelected)
-        XCTAssertTrue(app.segmentedControls.buttons["Claude Code Proxy"].exists)
+        // Dual-runtime segmented control is gone — OpenCode is the only chat path.
+        XCTAssertFalse(app.descendants(matching: .any)["ai-provider-settings-mode-picker"].exists)
+        XCTAssertFalse(app.segmentedControls.buttons["Claude Code Proxy"].exists)
+        XCTAssertFalse(app.segmentedControls.buttons["Legacy Claude (Tasks)"].exists)
+
+        let modeMarker = app.descendants(matching: .any)["ai-provider-settings-mode"].firstMatch
+        XCTAssertTrue(modeMarker.waitForExistence(timeout: 5))
+        XCTAssertEqual(modeMarker.value as? String, "openCode")
     }
 
     func testSettingsExposeMCPAndSkillsManagement() throws {
@@ -152,6 +176,39 @@ final class CodeAgentsMobileUITests: XCTestCase {
         XCTAssertTrue(
             passwordField.waitForExistence(timeout: 5) || passwordFieldByLabel.waitForExistence(timeout: 5)
         )
+    }
+
+    /// PR12: chat and settings must not surface retired Claude CLI install / token UX.
+    func testNoClaudeCLIInstallOrLegacyAuthSheetsOnLaunchSurfaces() throws {
+        // Agents / tabs root — never show Claude CLI not-installed copy.
+        XCTAssertFalse(app.staticTexts["Claude CLI Not Installed"].exists)
+        XCTAssertFalse(app.staticTexts["Claude Code is not installed"].exists)
+        XCTAssertFalse(app.staticTexts["Install Claude Code"].exists)
+
+        // Settings dead sheets (API Configuration / Token Configuration) have no entry points.
+        if detectRootUI() == .agents {
+            try openSettingsFromAgentsScreen()
+            XCTAssertFalse(app.staticTexts["Claude Code Authentication Token"].exists)
+            XCTAssertFalse(app.navigationBars["Token Configuration"].exists)
+            XCTAssertFalse(app.navigationBars["API Configuration"].exists)
+            XCTAssertFalse(app.staticTexts["claude setup-token"].exists)
+        }
+    }
+
+    func testRegularTasksTabDoesNotExposeClaudeCodeServiceChrome() throws {
+        guard detectRootUI() == .tabs else {
+            throw XCTSkip("Skipping tasks Claude-absence check: no active project tabs.")
+        }
+
+        let tasksTab = app.tabBars.buttons["Regular Tasks"]
+        XCTAssertTrue(tasksTab.waitForExistence(timeout: 5))
+        tasksTab.tap()
+
+        XCTAssertFalse(app.staticTexts["Claude Proxy (Legacy)"].exists)
+        XCTAssertFalse(app.staticTexts["Legacy Claude Provider"].exists)
+        XCTAssertFalse(app.staticTexts["Claude CLI Not Installed"].exists)
+        // Task Provider sheet is only via mismatch banner; default list should be clean.
+        XCTAssertFalse(app.navigationBars["Legacy Claude Provider"].exists)
     }
 
     private func openSettingsFromAgentsScreen() throws {

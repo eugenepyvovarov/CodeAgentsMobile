@@ -1,7 +1,9 @@
 # CodeAgents Mobile
 
-An mobile client to Claude Code for iOS.
-Allows you to run Claude code on any Linux ssh server.
+An mobile client for **OpenCode** on iOS.
+Connect to any Linux SSH server and chat with your coding agent on the go.
+
+Legacy Claude Code / Claude Proxy chat is retired: existing projects auto-migrate to OpenCode (runtime, MCP servers, optional rules/keys). The agent daemon (`:8787`) remains for background tasks and push.
 
 **TestFlight Beta**
 
@@ -82,14 +84,16 @@ expects App Store Connect credentials through `ASC_APP_ID`, `TESTFLIGHT_GROUP`,
 
 Debug builds emit lightweight chat recovery timing lines with the
 `[ChatRecoveryTiming]` prefix when chats are reopened or resumed. These logs are
-intended to separate local SwiftData load, OpenCode hydration, Claude proxy
-history sync, persistence saves, media prefetch, MCP fetch, and resume-streaming
+intended to separate local SwiftData load, Claude→OpenCode migration, OpenCode
+hydration, persistence saves, media prefetch, MCP fetch, and resume-streaming
 costs before making recovery behavior changes.
 
-OpenCode chat reopen is local-first: persisted SwiftData messages render before
-remote recovery. The initial OpenCode recovery fetch is bounded and diffed
-against the stored message/part hydration anchors; full-session refresh can run
-later in the background when more history may exist.
+Chat is **OpenCode-only**. Reopen is local-first: persisted SwiftData messages
+render before remote recovery. Legacy Claude Proxy projects are promoted by
+`ClaudeToOpenCodeMigrationService` (idempotent; does not block showing local
+messages). The initial OpenCode recovery fetch is bounded and diffed against
+stored message/part hydration anchors; full-session refresh can run later in the
+background when more history may exist.
 
 Chat open also defers unrelated remote startup work until after local messages
 and required active-session recovery are complete. MCP server refresh, managed
@@ -98,16 +102,8 @@ MCP/tool UI actions, just-in-time send/action paths, or the project-scoped
 post-ready background queue; project switches cancel that deferred work before
 it can update stale chat state.
 
-Claude proxy chat reopen is also local-first for the idle path: if there is no
-usable active streaming message, recovery clears transient UI state and returns
-without proxy history sync, proxy event fetch, or canonical conversation lookup.
-When an active streaming message exists, the app uses the stored
-`proxyConversationId`/`proxyLastEventId` first and only refreshes the canonical
-conversation after a missing, reset, unknown, or mismatch condition.
-
-The focused recovery tests cover both sides of that decision: idle reopen must
-produce a no-remote-work decision, while a usable active stream must keep the
-streaming message id so the proxy recovery path can resume it.
+Focused tests: `ClaudeToOpenCodeMigrationTests`, `ChatDeferredStartupTests`,
+OpenCode hydration/session suites under `MobileCodeTests/`.
 
 Timing metadata is limited to runtime names, project identifiers, operation
 labels, elapsed milliseconds, statuses, booleans, and counts. Do not add prompts,

@@ -113,6 +113,10 @@ import sys
 path = sys.argv[1]
 keys = [
     "MOBILECODE_E2E_PROVIDER",
+    "MOBILECODE_E2E_CLOUD_TOKEN",
+    "MOBILECODE_E2E_ALLOW_CLOUD_MUTATION",
+    "MOBILECODE_E2E_DELETE_CREATED_SERVERS",
+    "MOBILECODE_E2E_PROVIDER_NAME",
     "MOBILECODE_E2E_RUN_ID",
     "MOBILECODE_E2E_SERVER_NAME_PREFIX",
     "MOBILECODE_E2E_SERVER_NAME",
@@ -122,13 +126,14 @@ keys = [
     "MOBILECODE_E2E_SIZE",
     "MOBILECODE_E2E_PROVISIONING_TIMEOUT_SECONDS",
     "MOBILECODE_E2E_AI_PROVIDER_ID",
+    "MOBILECODE_E2E_AI_API_KEY",
     "MOBILECODE_E2E_AI_MODEL_ID",
     "MOBILECODE_E2E_AI_SMALL_MODEL_ID",
-	    "MOBILECODE_E2E_AUTOUSE_HOST_SSH_KEY",
-	    "MOBILECODE_E2E_SSH_PUBLIC_KEY",
-	    "MOBILECODE_E2E_SSH_PRIVATE_KEY_B64",
-	    "MOBILECODE_E2E_SSH_PRIVATE_KEY_PATH",
-	    "MOBILECODE_E2E_SSH_PUBLIC_KEY_PATH",
+    "MOBILECODE_E2E_AUTOUSE_HOST_SSH_KEY",
+    "MOBILECODE_E2E_SSH_PUBLIC_KEY",
+    "MOBILECODE_E2E_SSH_PRIVATE_KEY_B64",
+    "MOBILECODE_E2E_SSH_PRIVATE_KEY_PATH",
+    "MOBILECODE_E2E_SSH_PUBLIC_KEY_PATH",
     "MOBILECODE_E2E_PROVISIONING_DEBUG_LOG",
 ]
 
@@ -165,19 +170,29 @@ if len(prefix) < 8 or "e2e" not in prefix.lower():
     print(f"Refusing cleanup for unsafe prefix: {prefix!r}", file=sys.stderr)
     sys.exit(3)
 
-def request(method, url):
+def request(method, url, attempts=3):
     req = urllib.request.Request(url, method=method)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            body = response.read()
-            return response.status, body
-    except urllib.error.HTTPError as error:
-        if method == "DELETE" and error.code == 404:
-            return error.code, b""
-        body = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{method} {url} failed with HTTP {error.code}: {body}") from error
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                body = response.read()
+                return response.status, body
+        except urllib.error.HTTPError as error:
+            if method == "DELETE" and error.code == 404:
+                return error.code, b""
+            body = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{method} {url} failed with HTTP {error.code}: {body}") from error
+        except Exception as error:  # noqa: BLE001 - retry transient network failures
+            last_error = error
+            if attempt < attempts:
+                import time
+                time.sleep(2 * attempt)
+                continue
+            raise RuntimeError(f"{method} {url} failed after {attempts} attempts: {error}") from last_error
+    raise RuntimeError(f"{method} {url} failed: {last_error}")
 
 def digitalocean_servers():
     url = "https://api.digitalocean.com/v2/droplets?per_page=200"
@@ -238,19 +253,52 @@ elif provider == "hetzner":
 else:
     raise RuntimeError("MOBILECODE_E2E_PROVIDER must be digitalocean or hetzner")
 
-matches = [(server_id, name) for server_id, name in servers if name.startswith(prefix)]
-if not matches:
-    print(f"No cloud servers matched cleanup prefix {prefix!r}.")
+exact_server = (os.environ.get("MOBILECODE_E2E_SERVER_NAME") or "").strip()
+exact_key = (os.environ.get("MOBILECODE_E2E_SSH_KEY_NAME") or "").strip()
+
+def should_delete_name(name: str, exact: str) -> bool:
+    if name.startswith(prefix):
+        return True
+    return bool(exact) and name == exact
+
+matches = [
+    (server_id, name)
+    for server_id, name in servers
+    if should_delete_name(name, exact_server)
+]
+# de-dupe by id
+seen_ids = set()
+unique_matches = []
+for server_id, name in matches:
+    if server_id in seen_ids:
+        continue
+    seen_ids.add(server_id)
+    unique_matches.append((server_id, name))
+
+if not unique_matches:
+    print(f"No cloud servers matched cleanup prefix {prefix!r} or exact name {exact_server!r}.")
 else:
-    for server_id, name in matches:
+    for server_id, name in unique_matches:
         status, _ = request("DELETE", delete_url.format(id=urllib.parse.quote(server_id)))
         print(f"Deleted {provider} server {name} ({server_id}), HTTP {status}.")
 
-key_matches = [(key_id, name) for key_id, name in ssh_keys if name.startswith(prefix)]
-if not key_matches:
-    print(f"No cloud SSH keys matched cleanup prefix {prefix!r}.")
+key_matches = [
+    (key_id, name)
+    for key_id, name in ssh_keys
+    if should_delete_name(name, exact_key)
+]
+seen_keys = set()
+unique_keys = []
+for key_id, name in key_matches:
+    if key_id in seen_keys:
+        continue
+    seen_keys.add(key_id)
+    unique_keys.append((key_id, name))
+
+if not unique_keys:
+    print(f"No cloud SSH keys matched cleanup prefix {prefix!r} or exact name {exact_key!r}.")
 else:
-    for key_id, name in key_matches:
+    for key_id, name in unique_keys:
         status, _ = request("DELETE", key_delete_url.format(id=urllib.parse.quote(key_id)))
         print(f"Deleted {provider} SSH key {name} ({key_id}), HTTP {status}.")
 PY
@@ -295,8 +343,29 @@ PY
 
 run_cleanup() {
   local phase="$1"
-  echo "$phase cloud E2E resources with prefix '$MOBILECODE_E2E_SERVER_NAME_PREFIX'."
+  echo "$phase cloud E2E resources (prefix='$MOBILECODE_E2E_SERVER_NAME_PREFIX', server='${MOBILECODE_E2E_SERVER_NAME:-}', key='${MOBILECODE_E2E_SSH_KEY_NAME:-}')."
   cleanup_cloud_servers
+}
+
+# Always attempt API cleanup, including after failed tests. Retries once on failure.
+run_cleanup_best_effort() {
+  local phase="$1"
+  local attempt=1
+  local max_attempts=2
+  local status=0
+  while [[ $attempt -le $max_attempts ]]; do
+    set +e
+    run_cleanup "$phase (attempt $attempt/$max_attempts)"
+    status=$?
+    set -e
+    if [[ $status -eq 0 ]]; then
+      return 0
+    fi
+    echo "Cloud E2E cleanup attempt $attempt failed (exit $status)." >&2
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  return "$status"
 }
 
 reset_simulator_state() {
@@ -324,15 +393,36 @@ show_target_simulator() {
   fi
 }
 
+FINISH_RAN=0
+# Explicit status from the test command; EXIT trap must not rely on $? after other statements.
+TEST_EXIT_STATUS=0
 finish() {
-  local test_status=$?
+  # MUST read $? before any other command (including the FINISH_RAN guard).
+  local trap_status=$?
+  if [[ "$FINISH_RAN" -eq 1 ]]; then
+    return
+  fi
+  FINISH_RAN=1
+
+  local test_status=$TEST_EXIT_STATUS
+  # If the script died before the test runner saved status, fall back to trap $?.
+  if [[ $test_status -eq 0 && $trap_status -ne 0 ]]; then
+    test_status=$trap_status
+  fi
+
   set +e
-  run_cleanup "Post-cleaning"
+  echo "Post-run cleanup starting (test exit status=$test_status). Servers are removed even when tests fail."
+  run_cleanup_best_effort "Post-cleaning"
   local cleanup_status=$?
   if [[ -n "${MOBILECODE_E2E_SSH_PRIVATE_KEY_PATH:-}" ]]; then
     rm -f "$MOBILECODE_E2E_SSH_PRIVATE_KEY_PATH" "${MOBILECODE_E2E_SSH_PUBLIC_KEY_PATH:-}"
   fi
 
+  if [[ $cleanup_status -ne 0 ]]; then
+    echo "Cloud E2E post-clean finished with errors (exit $cleanup_status). Check provider console for leftover '${MOBILECODE_E2E_SERVER_NAME_PREFIX}' resources." >&2
+  fi
+
+  # Prefer reporting the test failure; only fail on cleanup alone if tests passed.
   if [[ $test_status -eq 0 && $cleanup_status -ne 0 ]]; then
     echo "Cloud E2E cleanup failed after tests succeeded." >&2
     exit "$cleanup_status"
@@ -342,10 +432,60 @@ finish() {
 }
 
 trap finish EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'echo "Interrupted - running cloud cleanup..."; exit 130' INT
+trap 'echo "Terminated - running cloud cleanup..."; exit 143' TERM
+
+preflight_cloud_token() {
+  echo "Preflight: validating cloud API token for ${MOBILECODE_E2E_PROVIDER}..."
+  python3 - <<'PY'
+import os
+import sys
+import urllib.error
+import urllib.request
+
+provider = (os.environ.get("MOBILECODE_E2E_PROVIDER") or "").strip().lower()
+token = (os.environ.get("MOBILECODE_E2E_CLOUD_TOKEN") or "").strip()
+if not token:
+    print("MOBILECODE_E2E_CLOUD_TOKEN is empty.", file=sys.stderr)
+    sys.exit(2)
+
+if provider == "digitalocean":
+    url = "https://api.digitalocean.com/v2/account"
+elif provider == "hetzner":
+    url = "https://api.hetzner.cloud/v1/servers?per_page=1"
+else:
+    print(f"Unknown provider {provider!r}; skip token preflight.", file=sys.stderr)
+    sys.exit(0)
+
+request = urllib.request.Request(
+    url,
+    headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "MobileCode-E2E-Preflight",
+    },
+)
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        status = response.getcode()
+except urllib.error.HTTPError as error:
+    body = error.read().decode("utf-8", errors="replace")[:300]
+    print(
+        f"Cloud token preflight failed for {provider}: HTTP {error.code}. "
+        f"Fix MOBILECODE_E2E_CLOUD_TOKEN before running UI tests. Body: {body}",
+        file=sys.stderr,
+    )
+    sys.exit(3)
+except Exception as error:  # noqa: BLE001 - surface any network failure clearly
+    print(f"Cloud token preflight failed for {provider}: {error}", file=sys.stderr)
+    sys.exit(3)
+
+print(f"Cloud token preflight OK for {provider} (HTTP {status}).")
+PY
+}
 
 cd "$ROOT_DIR"
+preflight_cloud_token
 run_cleanup "Pre-cleaning stale"
 reset_simulator_state
 
@@ -376,6 +516,7 @@ print(json.dumps(payload))
 PY
 }
 
+set +e
 if command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
   xcbmcp_require_min_version
   XCODEBUILDMCP_EXTRA_ARGS_JSON="$(build_xcodebuildmcp_extra_args_json)"
@@ -393,6 +534,7 @@ if command -v "${XCODEBUILDMCP_BIN}" >/dev/null 2>&1; then
       --use-latest-os \
       --json "$XCODEBUILDMCP_EXTRA_ARGS_JSON" >/dev/null
   fi
+  TEST_EXIT_STATUS=$?
 else
   xcodebuild test \
     -scheme CodeAgentsMobile \
@@ -400,4 +542,7 @@ else
     -parallel-testing-enabled NO \
     -maximum-concurrent-test-simulator-destinations 1 \
     -only-testing:CodeAgentsMobileUITests/OpenCodeCloudMutationE2ETests/testCloudServerCanBeCreatedThroughUIWhenMutationIsAllowed
+  TEST_EXIT_STATUS=$?
 fi
+set -e
+exit "$TEST_EXIT_STATUS"
