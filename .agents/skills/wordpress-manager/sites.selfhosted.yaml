@@ -1,0 +1,75 @@
+# wordpress-manager sites config (CodeAgents Mobile repo — selfhosted.ninja only)
+# Paths are relative to this repository root unless absolute.
+
+defaults:
+  ssh:
+    host: yoshi.maketry.xyz
+    user: root
+    port: 22
+    identity_file: ~/.ssh/eugene_rsa
+  wp_path: /var/www/vhosts/selfhosted.ninja/httpdocs
+  url: https://selfhosted.ninja
+  update:
+    maintenance_mode: true
+    pre_backup: true
+    dry_run: true
+  backups:
+    base_dir: .skills-data/wordpress-manager/backups
+    include_db: true
+    include_files: true
+    retention_days: 14
+    remote_tmp_dir: /tmp
+    files_subdir: wp-content
+  content:
+    default_author: 1
+    default_status: draft
+
+sites:
+  selfhosted-ninja-prod:
+    label: Selfhosted Ninja Prod
+    ssh:
+      host: yoshi.maketry.xyz
+      user: root
+      port: 22
+      identity_file: ~/.ssh/eugene_rsa
+    wp_path: /var/www/vhosts/selfhosted.ninja/httpdocs
+    url: https://selfhosted.ninja
+    update:
+      maintenance_mode: true
+      pre_backup: true
+      dry_run: true
+    backups:
+      base_dir: .skills-data/wordpress-manager/backups/selfhosted-ninja-prod
+      include_db: true
+      include_files: true
+      retention_days: 14
+      remote_tmp_dir: /tmp
+      files_subdir: wp-content
+    content:
+      default_author: 1
+      default_status: draft
+    # Project marketing pages on this site (core blocks only; product domains stay separate — no 302 into these pages)
+    project_pages:
+      codeagents_mobile:
+        page_id: 203
+        parent_page_id: 196
+        path: /projects/codeagents-mobile/
+        url: https://selfhosted.ninja/projects/codeagents-mobile/
+        blog_category: codeagents-mobile
+      mcp_bundler:
+        page_id: 224
+        parent_page_id: 196
+        path: /projects/mcp-bundler/
+        url: https://selfhosted.ninja/projects/mcp-bundler/
+        product_site: https://mcp-bundler.com/
+        blog_category: mcp-bundler
+    projects_index_url: https://selfhosted.ninja/projects/
+    blog_url: https://selfhosted.ninja/blog/
+    blog_page_id: 225
+    # Legacy single-key alias
+    project_page:
+      page_id: 203
+      parent_page_id: 196
+      path: /projects/codeagents-mobile/
+      url: https://selfhosted.ninja/projects/codeagents-mobile/
+      projects_index_url: https://selfhosted.ninja/projects/
