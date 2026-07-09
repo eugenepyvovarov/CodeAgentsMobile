@@ -68,13 +68,15 @@ final class OpenCodeSessionAPITests: XCTestCase {
             client: OpenCodeClient()
         )
         let project = RemoteProject(name: "MobileCode", serverId: UUID(), basePath: "/workspace")
-        project.openCodeSessionId = "ses_fixture"
+        // Must pass OpenCodeSessionID.sanitize (≥12-char alphanumeric token after ses_).
+        let sessionID = "ses_fixture00012"
+        project.openCodeSessionId = sessionID
 
         let result = try await runtime.hydrateMessages(for: project, mode: .initialBounded())
 
         XCTAssertEqual(result.mode.limit, OpenCodeHydrationPolicy.initialMessageLimit)
         XCTAssertTrue(sshSession.sentInput.contains(
-            "GET /session/ses_fixture/message?directory=/workspace/MobileCode&limit=\(OpenCodeHydrationPolicy.initialMessageLimit) HTTP/1.1"
+            "GET /session/\(sessionID)/message?directory=/workspace/MobileCode&limit=\(OpenCodeHydrationPolicy.initialMessageLimit) HTTP/1.1"
         ))
     }
 

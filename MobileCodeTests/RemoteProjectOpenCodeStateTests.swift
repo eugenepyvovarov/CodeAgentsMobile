@@ -86,13 +86,14 @@ final class RemoteProjectOpenCodeStateTests: XCTestCase {
     func testApplyingOpenCodePushSessionClearsHydrationAnchorsWhenSessionChanges() {
         let project = makeProject()
         project.selectedAgentRuntime = .openCode
-        project.openCodeSessionId = "ses_old"
+        // Session ids must pass OpenCodeSessionID.sanitize (≥12-char token).
+        project.openCodeSessionId = "ses_oldsession01"
         project.updateOpenCodeHydrationState(OpenCodeHydrationState(messageIDs: ["msg_old"], partIDs: ["prt_old"]))
 
-        let didChange = project.applyOpenCodeSessionFromPush(" ses_new ")
+        let didChange = project.applyOpenCodeSessionFromPush(" ses_newsession01 ")
 
         XCTAssertTrue(didChange)
-        XCTAssertEqual(project.openCodeSessionId, "ses_new")
+        XCTAssertEqual(project.openCodeSessionId, "ses_newsession01")
         XCTAssertTrue(project.openCodeLastMessageIds.isEmpty)
         XCTAssertTrue(project.openCodeLastPartIds.isEmpty)
     }
@@ -100,13 +101,13 @@ final class RemoteProjectOpenCodeStateTests: XCTestCase {
     func testApplyingSameOpenCodePushSessionLeavesHydrationAnchorsIntact() {
         let project = makeProject()
         project.selectedAgentRuntime = .openCode
-        project.openCodeSessionId = "ses_current"
+        project.openCodeSessionId = "ses_current00001"
         project.updateOpenCodeHydrationState(OpenCodeHydrationState(messageIDs: ["msg_current"], partIDs: ["prt_current"]))
 
-        let didChange = project.applyOpenCodeSessionFromPush("ses_current")
+        let didChange = project.applyOpenCodeSessionFromPush("ses_current00001")
 
         XCTAssertFalse(didChange)
-        XCTAssertEqual(project.openCodeSessionId, "ses_current")
+        XCTAssertEqual(project.openCodeSessionId, "ses_current00001")
         XCTAssertEqual(project.openCodeHydrationState, OpenCodeHydrationState(
             messageIDs: ["msg_current"],
             partIDs: ["prt_current"]

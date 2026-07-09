@@ -257,22 +257,26 @@ struct ChatMessageAdapter {
                 if BlockFormattingUtils.isBlockedToolName(toolUseBlock.name) {
                     continue
                 }
-                appendLine("Tool: \(toolUseBlock.name)")
-                if let summary = toolInputSummary(toolUseBlock.input) {
-                    appendLine(summary)
+                // Collapsed activity chip is a single quiet line.
+                let title = BlockFormattingUtils.friendlyToolTitle(for: toolUseBlock.name)
+                if let detail = BlockFormattingUtils.toolActivityDetail(
+                    name: toolUseBlock.name,
+                    input: toolUseBlock.input
+                ) {
+                    appendLine("\(title) · \(detail)")
+                } else {
+                    appendLine(title)
                 }
-                appendLine("") // pad to approximate ToolUseView height
 
             case .toolResult(let toolResultBlock):
                 if BlockFormattingUtils.isBlockedToolResultContent(toolResultBlock.content) {
                     continue
                 }
-                appendLine(toolResultBlock.isError ? "Tool Result (error)" : "Tool Result")
-                let trimmed = toolResultBlock.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    appendLine(truncate(firstLine(trimmed), maxLength: maxTextLength))
-                }
-                appendLine("") // pad to approximate ToolResultView height
+                let summary = BlockFormattingUtils.toolResultSummary(
+                    content: toolResultBlock.content,
+                    isError: toolResultBlock.isError
+                )
+                appendLine(toolResultBlock.isError ? "Failed · \(summary)" : "Finished · \(summary)")
 
             case .unknown:
                 continue

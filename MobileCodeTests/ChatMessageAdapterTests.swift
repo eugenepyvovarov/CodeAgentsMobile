@@ -23,8 +23,9 @@ final class ChatMessageAdapterTests: XCTestCase {
         let adapter = ChatMessageAdapter(messages: [message], streamingMessageId: nil)
         XCTAssertEqual(adapter.exyteMessages.count, 1)
         let firstMessage = try XCTUnwrap(adapter.exyteMessages.first, "Expected one adapter message")
-        XCTAssertTrue(firstMessage.text.contains("Tool:"))
-        XCTAssertTrue(firstMessage.text.contains("Glob"))
+        // Quiet activity chip text (friendly title + detail), not raw "Tool: Glob".
+        XCTAssertTrue(firstMessage.text.contains("Found files"), firstMessage.text)
+        XCTAssertTrue(firstMessage.text.contains("**/*.md") || firstMessage.text.contains("*.md"), firstMessage.text)
     }
 
     func testStreamingPlaceholderMessageUsesEllipsisText() throws {
