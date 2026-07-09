@@ -8,10 +8,32 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Preview card
+
 struct CodeAgentsUITableView: View {
     let table: CodeAgentsUITable
+
     @State private var showExpanded = false
     @State private var copyFeedback: String?
+
+    private var previewRows: [[String]] {
+        Array(table.rows.prefix(5))
+    }
+
+    private var hiddenRowCount: Int {
+        max(0, table.rows.count - previewRows.count)
+    }
+
+    private var title: String {
+        let trimmed = table.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Table" : trimmed
+    }
+
+    private var tableSummary: String {
+        let rowWord = table.rows.count == 1 ? "row" : "rows"
+        let columnWord = table.columns.count == 1 ? "col" : "cols"
+        return "\(table.rows.count) \(rowWord) · \(table.columns.count) \(columnWord)"
+    }
 
     var body: some View {
         let columnCount = table.columns.count
@@ -32,77 +54,55 @@ struct CodeAgentsUITableView: View {
                 )
 
                 if hiddenRowCount > 0 {
-                    Button {
-                        showExpanded = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.caption.weight(.semibold))
-                            Text("Open full table to view \(hiddenRowCount) more rows")
-                                .font(.caption.weight(.semibold))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(.accentColor)
-                    .background(Color(.systemGray6).opacity(0.55))
+                    moreRowsButton
                 }
             }
-            .background(Color(.systemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color(.systemGray4).opacity(0.7), lineWidth: 0.5)
-            )
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .modifier(CodeAgentsUITableSurfaceModifier())
             .sheet(isPresented: $showExpanded) {
                 CodeAgentsUITableDetailSheet(table: table)
             }
         }
     }
 
-    private var previewRows: [[String]] {
-        Array(table.rows.prefix(5))
-    }
-
-    private var hiddenRowCount: Int {
-        max(0, table.rows.count - previewRows.count)
-    }
-
-    private var title: String {
-        let trimmed = table.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "Table" : trimmed
-    }
+    // MARK: Header
 
     private var tableHeader: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                HStack(spacing: 8) {
-                    Text(tableSummary)
-                    if let copyFeedback {
-                        Text(copyFeedback)
-                            .foregroundColor(.accentColor)
-                    }
-                }
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "tablecells")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .frame(width: 14)
+
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text(tableSummary)
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+
+            if let copyFeedback {
+                Text(copyFeedback)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                    .transition(.opacity)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
 
             Button {
                 showExpanded = true
             } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 30, height: 30)
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundColor(.accentColor)
+            .foregroundStyle(.secondary)
             .accessibilityLabel("Open full table")
 
             Menu {
@@ -125,22 +125,38 @@ struct CodeAgentsUITableView: View {
                     Label("Export CSV", systemImage: "square.and.arrow.up")
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .frame(width: 30, height: 30)
+                Image(systemName: "ellipsis")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
-            .foregroundColor(.accentColor)
+            .foregroundStyle(.secondary)
             .accessibilityLabel("Table actions")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color(.systemBackground))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color(.secondarySystemFill).opacity(0.35))
     }
 
-    private var tableSummary: String {
-        let rowWord = table.rows.count == 1 ? "row" : "rows"
-        let columnWord = table.columns.count == 1 ? "column" : "columns"
-        return "\(table.rows.count) \(rowWord), \(table.columns.count) \(columnWord)"
+    private var moreRowsButton: some View {
+        Button {
+            showExpanded = true
+        } label: {
+            HStack(spacing: 4) {
+                Text("+\(hiddenRowCount) more")
+                    .font(.caption2.weight(.semibold))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Color(.secondarySystemFill).opacity(0.22))
+        .accessibilityLabel("Open full table, \(hiddenRowCount) more rows")
     }
 
     private func copy(_ value: String, feedback: String) {
@@ -149,25 +165,71 @@ struct CodeAgentsUITableView: View {
     }
 
     private func showFeedback(_ value: String) {
-        copyFeedback = value
+        withAnimation(.easeInOut(duration: 0.15)) {
+            copyFeedback = value
+        }
 
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             if copyFeedback == value {
-                copyFeedback = nil
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    copyFeedback = nil
+                }
             }
         }
     }
 }
 
+// MARK: - Detail sheet
+
 struct CodeAgentsUITableDetailSheet: View {
     let table: CodeAgentsUITable
+
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var sortColumn: Int?
     @State private var sortAscending = true
     @State private var zoom: CodeAgentsUITableZoom = .fit
     @State private var feedback: String?
+
+    private var title: String {
+        let trimmed = table.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Table" : trimmed
+    }
+
+    private var visibleSummary: String {
+        let rowWord = visibleRows.count == 1 ? "row" : "rows"
+        let columnWord = table.columns.count == 1 ? "col" : "cols"
+
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "\(table.rows.count) \(rowWord) · \(table.columns.count) \(columnWord)"
+        }
+
+        return "\(visibleRows.count) matching · \(table.columns.count) \(columnWord)"
+    }
+
+    private var visibleRows: [[String]] {
+        let filteredRows = filteredRows()
+
+        guard let sortColumn else {
+            return filteredRows
+        }
+
+        return Array(filteredRows.enumerated())
+            .sorted { left, right in
+                let result = compare(
+                    value(at: sortColumn, in: left.element),
+                    value(at: sortColumn, in: right.element)
+                )
+
+                if result == .orderedSame {
+                    return left.offset < right.offset
+                }
+
+                return sortAscending ? result == .orderedAscending : result == .orderedDescending
+            }
+            .map(\.element)
+    }
 
     var body: some View {
         NavigationStack {
@@ -235,67 +297,28 @@ struct CodeAgentsUITableDetailSheet: View {
         }
     }
 
-    private var title: String {
-        let trimmed = table.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "Table" : trimmed
-    }
-
     private var detailSummary: some View {
         HStack(spacing: 8) {
             Text(visibleSummary)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
 
             Spacer()
 
             if let feedback {
                 Text(feedback)
                     .font(.caption.weight(.semibold))
-                    .foregroundColor(.accentColor)
+                    .foregroundStyle(Color.accentColor)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color(.systemBackground))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color(.secondarySystemFill).opacity(0.28))
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color(.systemGray4).opacity(0.55))
+                .fill(Color(.separator).opacity(0.45))
                 .frame(height: 0.5)
         }
-    }
-
-    private var visibleSummary: String {
-        let rowWord = visibleRows.count == 1 ? "row" : "rows"
-        let columnWord = table.columns.count == 1 ? "column" : "columns"
-
-        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "\(table.rows.count) \(rowWord), \(table.columns.count) \(columnWord)"
-        }
-
-        return "\(visibleRows.count) matching \(rowWord), \(table.columns.count) \(columnWord)"
-    }
-
-    private var visibleRows: [[String]] {
-        let filteredRows = filteredRows()
-
-        guard let sortColumn else {
-            return filteredRows
-        }
-
-        return Array(filteredRows.enumerated())
-            .sorted { left, right in
-                let result = compare(
-                    value(at: sortColumn, in: left.element),
-                    value(at: sortColumn, in: right.element)
-                )
-
-                if result == .orderedSame {
-                    return left.offset < right.offset
-                }
-
-                return sortAscending ? result == .orderedAscending : result == .orderedDescending
-            }
-            .map(\.element)
     }
 
     private func filteredRows() -> [[String]] {
@@ -355,64 +378,56 @@ struct CodeAgentsUITableDetailSheet: View {
     }
 }
 
+// MARK: - Grid metrics
+
 enum CodeAgentsUITableGridMode {
     case preview
     case detail
 
     var headerFontSize: CGFloat {
         switch self {
-        case .preview:
-            return 13
-        case .detail:
-            return 15
+        case .preview: return 11
+        case .detail: return 13
         }
     }
 
     var bodyFontSize: CGFloat {
         switch self {
-        case .preview:
-            return 14
-        case .detail:
-            return 15
+        case .preview: return 12
+        case .detail: return 14
         }
     }
 
     var horizontalPadding: CGFloat {
         switch self {
-        case .preview:
-            return 10
-        case .detail:
-            return 12
+        case .preview: return 8
+        case .detail: return 10
         }
     }
 
     var verticalPadding: CGFloat {
         switch self {
-        case .preview:
-            return 8
-        case .detail:
-            return 10
+        case .preview: return 5
+        case .detail: return 7
         }
     }
 
     var minRowHeight: CGFloat {
         switch self {
-        case .preview:
-            return 42
-        case .detail:
-            return 48
+        case .preview: return 30
+        case .detail: return 38
         }
     }
 
     var lineLimit: Int? {
         switch self {
-        case .preview:
-            return 3
-        case .detail:
-            return 8
+        case .preview: return 2
+        case .detail: return 6
         }
     }
 }
+
+// MARK: - Grid
 
 struct CodeAgentsUITableGrid: View {
     let table: CodeAgentsUITable
@@ -427,21 +442,34 @@ struct CodeAgentsUITableGrid: View {
         table.columns.count
     }
 
+    private var scrollAxes: Axis.Set {
+        mode == .preview ? .horizontal : [.horizontal, .vertical]
+    }
+
+    private var hairline: Color {
+        Color(.separator).opacity(0.35)
+    }
+
     var body: some View {
         let widths = CodeAgentsUITableLayout.columnWidths(
             columns: table.columns,
             rows: rows,
             mode: mode
         )
+        let alignments = CodeAgentsUITableLayout.columnAlignments(
+            columns: table.columns,
+            rows: rows
+        )
 
-        ScrollView(scrollAxes, showsIndicators: true) {
+        ScrollView(scrollAxes, showsIndicators: mode == .detail) {
             Grid(horizontalSpacing: 0, verticalSpacing: 0) {
                 GridRow {
                     ForEach(0..<columnCount, id: \.self) { index in
                         headerCell(
                             text: table.columns[index],
                             columnIndex: index,
-                            width: widths[index]
+                            width: widths[index],
+                            alignment: alignments[index]
                         )
                     }
                 }
@@ -452,7 +480,10 @@ struct CodeAgentsUITableGrid: View {
                             bodyCell(
                                 text: value(at: columnIndex, in: row),
                                 rowIndex: rowIndex,
-                                width: widths[columnIndex]
+                                columnIndex: columnIndex,
+                                width: widths[columnIndex],
+                                alignment: alignments[columnIndex],
+                                isLastRow: rowIndex == rows.count - 1
                             )
                         }
                     }
@@ -460,43 +491,58 @@ struct CodeAgentsUITableGrid: View {
             }
             .fixedSize(horizontal: true, vertical: false)
         }
-        .background(Color(.systemBackground))
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color(.systemGray4).opacity(0.55))
-                .frame(height: 0.5)
-        }
-    }
-
-    private var scrollAxes: Axis.Set {
-        mode == .preview ? .horizontal : [.horizontal, .vertical]
+        .background(Color(.systemBackground).opacity(mode == .preview ? 0.55 : 1))
     }
 
     @ViewBuilder
-    private func headerCell(text: String, columnIndex: Int, width: CGFloat) -> some View {
+    private func headerCell(
+        text: String,
+        columnIndex: Int,
+        width: CGFloat,
+        alignment: TextAlignment
+    ) -> some View {
         let displayText = cleanedDisplayText(text)
         let cellWidth = textWidth(for: width)
         let cellHeight = mode.minRowHeight * zoom
 
-        let content = HStack(spacing: 5) {
+        let content = HStack(spacing: 3) {
+            if alignment == .trailing {
+                Spacer(minLength: 0)
+            }
+
             Text(displayText)
                 .font(.system(size: mode.headerFontSize * zoom, weight: .semibold))
-                .foregroundColor(.primary)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .minimumScaleFactor(0.92)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .multilineTextAlignment(alignment)
 
             if sortColumn == columnIndex {
                 Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.tertiary)
             }
 
-            Spacer(minLength: 0)
+            if alignment != .trailing {
+                Spacer(minLength: 0)
+            }
         }
         .frame(minWidth: cellWidth, maxWidth: cellWidth, minHeight: cellHeight, alignment: .leading)
         .padding(.horizontal, mode.horizontalPadding)
         .padding(.vertical, mode.verticalPadding)
+        .background(Color(.secondarySystemFill).opacity(0.45))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(hairline)
+                .frame(height: 0.5)
+        }
+        .overlay(alignment: .trailing) {
+            if columnIndex < columnCount - 1 {
+                Rectangle()
+                    .fill(hairline.opacity(0.7))
+                    .frame(width: 0.5)
+            }
+        }
 
         if let onHeaderTap {
             Button {
@@ -505,40 +551,59 @@ struct CodeAgentsUITableGrid: View {
                 content
             }
             .buttonStyle(.plain)
-            .background(Color(.systemGray5).opacity(0.75))
-            .overlay(Rectangle().stroke(borderColor, lineWidth: 0.5))
         } else {
             content
-                .background(Color(.systemGray5).opacity(0.75))
-                .overlay(Rectangle().stroke(borderColor, lineWidth: 0.5))
         }
     }
 
-    private func bodyCell(text: String, rowIndex: Int, width: CGFloat) -> some View {
+    private func bodyCell(
+        text: String,
+        rowIndex: Int,
+        columnIndex: Int,
+        width: CGFloat,
+        alignment: TextAlignment,
+        isLastRow: Bool
+    ) -> some View {
         let displayText = cleanedDisplayText(text)
         let cellWidth = textWidth(for: width)
         let cellHeight = mode.minRowHeight * zoom
-        let background = rowIndex.isMultiple(of: 2) ? Color(.systemBackground) : Color(.systemGray6).opacity(0.5)
+        let zebra = rowIndex.isMultiple(of: 2)
+            ? Color.clear
+            : Color(.secondarySystemFill).opacity(0.28)
 
         return Text(displayText)
             .font(.system(size: mode.bodyFontSize * zoom))
-            .foregroundColor(.primary)
+            .foregroundStyle(.primary.opacity(0.92))
             .lineLimit(mode.lineLimit)
-            .multilineTextAlignment(.leading)
-            .minimumScaleFactor(0.9)
-            .frame(minWidth: cellWidth, maxWidth: cellWidth, minHeight: cellHeight, alignment: .topLeading)
+            .multilineTextAlignment(alignment)
+            .minimumScaleFactor(0.88)
+            .frame(
+                minWidth: cellWidth,
+                maxWidth: cellWidth,
+                minHeight: cellHeight,
+                alignment: alignment == .trailing ? .topTrailing : .topLeading
+            )
             .padding(.horizontal, mode.horizontalPadding)
             .padding(.vertical, mode.verticalPadding)
-            .background(background)
-            .overlay(Rectangle().stroke(borderColor, lineWidth: 0.5))
-    }
-
-    private var borderColor: Color {
-        Color(.systemGray4).opacity(0.55)
+            .background(zebra)
+            .overlay(alignment: .bottom) {
+                if !isLastRow {
+                    Rectangle()
+                        .fill(hairline.opacity(0.65))
+                        .frame(height: 0.5)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if columnIndex < columnCount - 1 {
+                    Rectangle()
+                        .fill(hairline.opacity(0.45))
+                        .frame(width: 0.5)
+                }
+            }
     }
 
     private func textWidth(for width: CGFloat) -> CGFloat {
-        max(44, width * zoom - (mode.horizontalPadding * 2))
+        max(40, width * zoom - (mode.horizontalPadding * 2))
     }
 
     private func value(at index: Int, in row: [String]) -> String {
@@ -556,6 +621,29 @@ struct CodeAgentsUITableGrid: View {
     }
 }
 
+// MARK: - Surface (Liquid Glass + fallback)
+
+private struct CodeAgentsUITableSurfaceModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular, in: .rect(cornerRadius: 12))
+        } else {
+            content
+                .background(
+                    Color(.secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                )
+        }
+    }
+}
+
+// MARK: - Layout
+
 enum CodeAgentsUITableLayout {
     static func columnWidths(
         columns: [String],
@@ -564,6 +652,15 @@ enum CodeAgentsUITableLayout {
     ) -> [CGFloat] {
         columns.enumerated().map { index, column in
             widthForColumn(index: index, title: column, rows: rows, mode: mode)
+        }
+    }
+
+    static func columnAlignments(
+        columns: [String],
+        rows: [[String]]
+    ) -> [TextAlignment] {
+        columns.indices.map { index in
+            rowsHaveNumericValues(rows: rows, columnIndex: index) ? .trailing : .leading
         }
     }
 
@@ -584,27 +681,27 @@ enum CodeAgentsUITableLayout {
         let isNumeric = rowsHaveNumericValues(rows: rows, columnIndex: index)
 
         if isNumeric || titleLowercased == "id" || titleLowercased.contains("http") {
-            return clamp(CGFloat(max(maxCharacters, title.count)) * 7.5 + 40, min: 76, max: 112)
+            return clamp(CGFloat(max(maxCharacters, title.count)) * 7.0 + 32, min: 64, max: 100)
         }
 
         if titleLowercased.contains("date")
             || titleLowercased.contains("expiry")
             || titleLowercased.contains("expires") {
-            return mode == .preview ? 132 : 150
+            return mode == .preview ? 112 : 132
         }
 
         if titleLowercased.contains("feature")
             || titleLowercased.contains("description")
             || titleLowercased.contains("notes")
             || hasLongText {
-            return mode == .preview ? 240 : 320
+            return mode == .preview ? 200 : 280
         }
 
         if index == 0 {
-            return clamp(CGFloat(maxCharacters) * 7.4 + 52, min: 150, max: mode == .preview ? 220 : 280)
+            return clamp(CGFloat(maxCharacters) * 6.8 + 40, min: 120, max: mode == .preview ? 180 : 240)
         }
 
-        return clamp(CGFloat(maxCharacters) * 7.4 + 48, min: 118, max: mode == .preview ? 190 : 240)
+        return clamp(CGFloat(maxCharacters) * 6.8 + 36, min: 96, max: mode == .preview ? 160 : 210)
     }
 
     private static func rowsHaveNumericValues(rows: [[String]], columnIndex: Int) -> Bool {
@@ -634,6 +731,8 @@ enum CodeAgentsUITableLayout {
     }
 }
 
+// MARK: - Zoom / export
+
 enum CodeAgentsUITableZoom: String, CaseIterable, Identifiable {
     case fit
     case normal
@@ -644,25 +743,18 @@ enum CodeAgentsUITableZoom: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .fit:
-            return "Fit"
-        case .normal:
-            return "100%"
-        case .large:
-            return "125%"
-        case .extraLarge:
-            return "150%"
+        case .fit: return "Fit"
+        case .normal: return "100%"
+        case .large: return "125%"
+        case .extraLarge: return "150%"
         }
     }
 
     var scale: CGFloat {
         switch self {
-        case .fit, .normal:
-            return 1
-        case .large:
-            return 1.25
-        case .extraLarge:
-            return 1.5
+        case .fit, .normal: return 1
+        case .large: return 1.25
+        case .extraLarge: return 1.5
         }
     }
 }
