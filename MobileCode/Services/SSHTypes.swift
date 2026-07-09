@@ -10,13 +10,16 @@
 
 import Foundation
 
-/// Connection key for SSH connection pooling
+/// Connection key for SSH connection pooling.
+///
+/// Pooled by **server + purpose** (not project) so multiple projects on the same host
+/// reuse one multiplexed SSH session instead of opening a new TCP login each time.
 struct ConnectionKey: Hashable, CustomStringConvertible {
-    let projectId: UUID
+    let serverId: UUID
     let purpose: ConnectionPurpose
-    
+
     var description: String {
-        "\(projectId)_\(purpose.rawValue)"
+        "\(serverId)_\(purpose.rawValue)"
     }
 }
 
@@ -85,8 +88,16 @@ protocol SSHSession {
     /// List files in a directory
     func listDirectory(_ path: String) async throws -> [RemoteFile]
     
-    /// Close the session
+    /// Close the session (must tear down the TCP connection, not only local flags)
     func disconnect()
+
+    /// Whether the underlying transport is still usable for new channels.
+    var isAlive: Bool { get }
+}
+
+extension SSHSession {
+    /// Default for fakes / legacy mocks that do not track transport state.
+    var isAlive: Bool { true }
 }
 
 /// Handle for a running process

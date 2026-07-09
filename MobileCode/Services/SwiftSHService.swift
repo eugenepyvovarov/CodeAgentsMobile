@@ -209,11 +209,27 @@ class SwiftSHSession: SSHSession, @unchecked Sendable {
         return parseDirectoryListing(output: output, basePath: path)
     }
     
+    /// True when the parent SSH channel is still active (pool reuse / prune checks).
+    var isAlive: Bool {
+        guard isConnected, let channel else { return false }
+        return channel.isActive
+    }
+
     func disconnect() {
         isConnected = false
-        // Clean up channels when SwiftNIO SSH is integrated
-        childChannel = nil
+        let parent = channel
+        let child = childChannel
         channel = nil
+        childChannel = nil
+
+        // Must close the NIO channels or the remote sshd session stays open forever.
+        // That was the main cause of dozens of zombie logins on 1GB droplets.
+        if let child, child.isActive {
+            child.close(promise: nil)
+        }
+        if let parent, parent.isActive {
+            parent.close(promise: nil)
+        }
     }
     
     /// Explicit cleanup method for graceful shutdown

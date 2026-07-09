@@ -29,9 +29,13 @@ enum CodeAgentsDaemonUpdateOutcome: Equatable {
 /// App-driven daemon auto-upgrade.
 ///
 /// Customers never need a manual `git pull` on each droplet: whenever the app
-/// talks to a server (OpenCode health / task ensure), it compares
-/// `GET /healthz` → `version` with GitHub HEAD and reinstalls via the same
-/// `install.sh` path used for first-time setup when the daemon is behind or down.
+/// talks to a server (Agents list soft check / OpenCode health / task ensure),
+/// it compares `GET /healthz` → `version` with GitHub HEAD and reinstalls via
+/// the same `install.sh` path used for first-time setup when the daemon is
+/// behind or down.
+///
+/// Independent of push notifications: push only wakes the app for chat
+/// delivery; upgrade still runs from the Agents list even when push is off.
 @MainActor
 final class CodeAgentsDaemonUpdateService {
     static let shared = CodeAgentsDaemonUpdateService()
@@ -46,6 +50,61 @@ final class CodeAgentsDaemonUpdateService {
     private var inFlightServers: Set<UUID> = []
 
     private init() {}
+
+    /// Best-effort background check for servers that own agents in the list.
+    /// Does not block UI, does not require push, and respects per-server cooldowns
+    /// so opening Agents repeatedly is cheap.
+    func softEnsureUpToDate(servers: [Server]) async {
+        var seen = Set<UUID>()
+        for server in servers {
+            guard seen.insert(server.id).inserted else { continue }
+
+            // Skip SSH entirely when this server was checked recently.
+            if let last = lastSuccessfulCheckAt[server.id],
+               Date().timeIntervalSince(last) < checkCooldown {
+                continue
+            }
+            if inFlightServers.contains(server.id) {
+                continue
+            }
+
+            do {
+                let session = try await SSHService.shared.connect(to: server, purpose: .fileOperations)
+                defer { session.disconnect() }
+
+                let outcome = await ensureUpToDate(
+                    session: session,
+                    serverID: server.id,
+                    force: false,
+                    allowInstall: true
+                )
+                switch outcome {
+                case .upgraded(let from, let to):
+                    SSHLogger.log(
+                        "Agents-list soft upgrade \(server.name): \(from ?? "unknown") → \(to)",
+                        level: .info
+                    )
+                case .repaired(let version):
+                    SSHLogger.log(
+                        "Agents-list soft repair \(server.name) (version=\(version ?? "unknown"))",
+                        level: .info
+                    )
+                case .failed(let reason):
+                    SSHLogger.log(
+                        "Agents-list soft daemon check failed \(server.name): \(reason)",
+                        level: .warning
+                    )
+                case .alreadyCurrent, .skipped:
+                    break
+                }
+            } catch {
+                SSHLogger.log(
+                    "Agents-list soft daemon check SSH failed \(server.name): \(error.localizedDescription)",
+                    level: .warning
+                )
+            }
+        }
+    }
 
     /// Ensure the daemon is healthy and not behind GitHub HEAD.
     /// - Parameters:

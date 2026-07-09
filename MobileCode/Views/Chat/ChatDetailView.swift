@@ -14,6 +14,8 @@ import UniformTypeIdentifiers
 struct ChatDetailView: View {
     @Bindable var viewModel: ChatViewModel
     let assistantLabel: String
+    /// Soft OpenCode connect pill (e.g. "Connecting 1/5") — orange, non-blocking.
+    var openCodeConnectingLine: String? = nil
     let userLabel: String = "You"
     @StateObject private var projectContext = ProjectContext.shared
     @AppStorage(ClaudeProviderConfigurationStore.configurationKey) private var claudeProviderConfigurationData = Data()
@@ -318,6 +320,7 @@ struct ChatDetailView: View {
                 ChatTopOverlayModifier(
                     providerMismatch: viewModel.providerMismatch,
                     statusLines: statusPillLines,
+                    statusTint: statusPillTint,
                     showStatusPill: shouldShowStatusPill,
                     onClearChat: { viewModel.clearChat() },
                     onChangeProvider: { showingProviderSettings = true }
@@ -446,6 +449,9 @@ struct ChatDetailView: View {
 
     private var statusPillLines: [String] {
         var lines: [String] = []
+        if let openCodeConnectingLine, !openCodeConnectingLine.isEmpty {
+            lines.append(openCodeConnectingLine)
+        }
         if isUploadingAttachments {
             lines.append("Uploading attachments...")
         }
@@ -466,6 +472,13 @@ struct ChatDetailView: View {
             lines.append("\(agentDisplayName) \(status)")
         }
         return lines
+    }
+
+    private var statusPillTint: Color {
+        if openCodeConnectingLine != nil {
+            return .orange
+        }
+        return .accentColor
     }
 
     private var shouldShowStatusPill: Bool {
@@ -766,33 +779,37 @@ private struct ChatComposerChip: View {
 
 private struct ChatStatusPillView: View {
     let lines: [String]
+    var tint: Color = .accentColor
 
     var body: some View {
         let content = HStack(alignment: .center, spacing: 8) {
             ProgressView()
                 .progressViewStyle(CircularProgressViewStyle())
                 .scaleEffect(0.85)
+                .tint(tint)
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(lines.indices, id: \.self) { index in
                     Text(lines[index])
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(.caption.weight(index == 0 ? .semibold : .regular))
+                        .foregroundColor(index == 0 ? tint : .secondary)
                 }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .accessibilityIdentifier("chat-status-pill")
+        .accessibilityLabel(lines.joined(separator: ", "))
 
         Group {
             if #available(iOS 26.0, *) {
                 content
-                    .glassEffect(.regular.tint(Color.accentColor.opacity(0.15)), in: .capsule)
+                    .glassEffect(.regular.tint(tint.opacity(0.16)), in: .capsule)
             } else {
                 content
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay(
                         Capsule()
-                            .stroke(Color(.separator).opacity(0.4), lineWidth: 0.5)
+                            .stroke(tint.opacity(0.3), lineWidth: 0.6)
                     )
             }
         }
@@ -802,6 +819,7 @@ private struct ChatStatusPillView: View {
 private struct ChatTopOverlayModifier: ViewModifier {
     let providerMismatch: ClaudeProviderMismatch?
     let statusLines: [String]
+    var statusTint: Color = .accentColor
     let showStatusPill: Bool
     let onClearChat: () -> Void
     let onChangeProvider: () -> Void
@@ -843,7 +861,7 @@ private struct ChatTopOverlayModifier: ViewModifier {
                     )
                 }
                 if showStatusPill {
-                    ChatStatusPillView(lines: statusLines)
+                    ChatStatusPillView(lines: statusLines, tint: statusTint)
                 }
             }
             .padding(.horizontal, 12)
@@ -863,7 +881,7 @@ private struct ChatTopOverlayModifier: ViewModifier {
                     )
                 }
                 if showStatusPill {
-                    ChatStatusPillView(lines: statusLines)
+                    ChatStatusPillView(lines: statusLines, tint: statusTint)
                 }
             }
             .padding(.horizontal, 12)

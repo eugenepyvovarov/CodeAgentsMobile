@@ -33,6 +33,12 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         XCTAssertTrue(cloudInit.contains("INSTALL_CLAUDE_CLI=0"))
         XCTAssertTrue(cloudInit.contains("http://127.0.0.1:8787/healthz"))
         XCTAssertTrue(cloudInit.contains("foreground OpenCode chat is still available"))
+        XCTAssertTrue(cloudInit.contains("Ensuring 2G swapfile for OpenCode headroom..."))
+        XCTAssertTrue(cloudInit.contains("/swapfile none swap sw 0 0"))
+        XCTAssertTrue(cloudInit.contains("vm.swappiness=10"))
+        XCTAssertTrue(cloudInit.contains("99-codeagents-keepalive.conf"))
+        XCTAssertTrue(cloudInit.contains("ClientAliveInterval 30"))
+        XCTAssertTrue(cloudInit.contains("ClientAliveCountMax 10"))
         XCTAssertFalse(cloudInit.contains("@anthropic-ai/claude-code"))
         XCTAssertFalse(cloudInit.contains("{{"))
     }
@@ -67,6 +73,11 @@ final class OpenCodeCloudInitProvisioningTests: XCTestCase {
         XCTAssertTrue(script.contains("INSTALL_CLAUDE_CLI=0"))
         XCTAssertTrue(script.contains("http://127.0.0.1:8787/healthz"))
         XCTAssertTrue(script.contains("foreground OpenCode chat is still available"))
+        XCTAssertTrue(script.contains("Ensuring 2G swapfile for OpenCode headroom..."))
+        XCTAssertTrue(script.contains("/swapfile none swap sw 0 0"))
+        XCTAssertTrue(script.contains("99-codeagents-keepalive.conf"))
+        XCTAssertTrue(script.contains("ClientAliveInterval 30"))
+        XCTAssertTrue(script.contains("ClientAliveCountMax 10"))
     }
 
     func testCloudInitStatusCommandCapturesErrorsWithoutFailingSSHCommand() {

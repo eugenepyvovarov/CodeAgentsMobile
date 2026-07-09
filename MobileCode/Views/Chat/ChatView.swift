@@ -7,7 +7,38 @@
 
 import SwiftUI
 
+/// OpenCode readiness gate for chat: keep conversation visible while soft-connecting,
+/// only full-screen block after all auto-retries fail.
+private enum OpenCodeChatConnectionPhase: Equatable {
+    case idle
+    case connecting(attempt: Int, maxAttempts: Int)
+    case ready
+    case failed(OpenCodeRuntimeSetupStatus)
+
+    var blocksChat: Bool {
+        if case .failed(let status) = self {
+            return status.blocksForegroundChat
+        }
+        return false
+    }
+
+    var connectingPillLine: String? {
+        guard case .connecting(let attempt, let maxAttempts) = self else { return nil }
+        return "Connecting \(attempt)/\(maxAttempts)"
+    }
+
+    var failedStatus: OpenCodeRuntimeSetupStatus? {
+        if case .failed(let status) = self { return status }
+        return nil
+    }
+}
+
 struct ChatView: View {
+    /// Soft connect attempts before full-screen OpenCode unavailable.
+    private static let openCodeConnectMaxAttempts = 5
+    /// Delay between failed connect attempts (keeps chat usable during brief outages).
+    private static let openCodeConnectRetryDelayNanoseconds: UInt64 = 2_500_000_000
+
     @State private var viewModel = ChatViewModel()
     @StateObject private var projectContext = ProjectContext.shared
     @Environment(\.modelContext) private var modelContext
@@ -20,22 +51,23 @@ struct ChatView: View {
     @State private var showingModelChange = false
     /// Bumps when the model sheet closes so the overflow menu summary reloads from the store.
     @State private var modelSummaryEpoch = 0
-    @State private var openCodeRuntimeStatus: OpenCodeRuntimeSetupStatus?
+    @State private var openCodeConnectionPhase: OpenCodeChatConnectionPhase = .idle
     @State private var isCheckingOpenCodeRuntime = false
-    
+    @State private var openCodeConnectGeneration = 0
+
     var body: some View {
         NavigationStack {
             Group {
                 if let server = projectContext.activeServer,
-                   let openCodeRuntimeStatus,
-                   openCodeRuntimeStatus.blocksForegroundChat {
+                   openCodeConnectionPhase.blocksChat,
+                   let failedStatus = openCodeConnectionPhase.failedStatus {
                     OpenCodeUnavailableView(
                         server: server,
-                        status: openCodeRuntimeStatus,
+                        status: failedStatus,
                         isChecking: isCheckingOpenCodeRuntime,
                         onCheckAgain: {
                             Task {
-                                await refreshOpenCodeRuntimeStatus(force: true)
+                                await startOpenCodeConnectLoop(force: true)
                             }
                         },
                         onOpenServerSettings: {
@@ -43,8 +75,12 @@ struct ChatView: View {
                         }
                     )
                 } else {
-                    // Normal chat UI (OpenCode-only)
-                    ChatDetailView(viewModel: viewModel, assistantLabel: assistantLabel)
+                    // Keep chat visible during soft connect retries (pill overlays top).
+                    ChatDetailView(
+                        viewModel: viewModel,
+                        assistantLabel: assistantLabel,
+                        openCodeConnectingLine: openCodeConnectionPhase.connectingPillLine
+                    )
                 }
             }
             .navigationTitle(chatTitle)
@@ -133,9 +169,12 @@ struct ChatView: View {
             }
         }
         .task(id: projectContext.activeProject?.id) {
-            guard let project = projectContext.activeProject else { return }
+            guard let project = projectContext.activeProject else {
+                openCodeConnectionPhase = .idle
+                return
+            }
             viewModel.configure(modelContext: modelContext, projectId: project.id)
-            await refreshOpenCodeRuntimeStatus()
+            await startOpenCodeConnectLoop(force: false)
         }
         .onAppear {
             // Proxy chat polling retired; method is a no-op kept for call-site compatibility.
@@ -153,6 +192,7 @@ struct ChatView: View {
         }
         .onDisappear {
             viewModel.cleanup()
+            openCodeConnectGeneration += 1
         }
         .onChange(of: projectContext.activeProject) { oldValue, newValue in
             if let project = newValue {
@@ -209,7 +249,14 @@ struct ChatView: View {
                 OpenCodeChatModelChangeSheet(server: server)
             }
         }
-        .sheet(isPresented: $showingServerSettings) {
+        .sheet(isPresented: $showingServerSettings, onDismiss: {
+            // Auth / install changes in Edit Server — soft-connect again instead of staying failed.
+            if openCodeConnectionPhase.blocksChat || openCodeConnectionPhase.connectingPillLine != nil {
+                Task {
+                    await startOpenCodeConnectLoop(force: true)
+                }
+            }
+        }) {
             if let server = projectContext.activeServer {
                 EditServerSheet(server: server)
             }
@@ -255,21 +302,64 @@ struct ChatView: View {
 
     private var activeRuntimeKind: CodingAgentRuntimeKind { .openCode }
 
+    /// Soft-connect OpenCode with a top pill for each attempt; full-screen only after all retries fail.
     @MainActor
-    private func refreshOpenCodeRuntimeStatus(force: Bool = false) async {
+    private func startOpenCodeConnectLoop(force: Bool) async {
         guard let server = projectContext.activeServer else {
-            openCodeRuntimeStatus = nil
+            openCodeConnectionPhase = .idle
+            isCheckingOpenCodeRuntime = false
             return
         }
-        guard !isCheckingOpenCodeRuntime else { return }
+
+        openCodeConnectGeneration += 1
+        let generation = openCodeConnectGeneration
+        let maxAttempts = Self.openCodeConnectMaxAttempts
 
         isCheckingOpenCodeRuntime = true
         defer {
-            isCheckingOpenCodeRuntime = false
+            if generation == openCodeConnectGeneration {
+                isCheckingOpenCodeRuntime = false
+            }
         }
 
-        let status = await OpenCodeInstallerService.shared.checkRuntimeStatus(on: server, force: force)
-        openCodeRuntimeStatus = status.blocksForegroundChat ? status : nil
+        var lastBlockingStatus: OpenCodeRuntimeSetupStatus?
+
+        for attempt in 1...maxAttempts {
+            guard generation == openCodeConnectGeneration else { return }
+            guard projectContext.activeServer?.id == server.id else { return }
+
+            openCodeConnectionPhase = .connecting(attempt: attempt, maxAttempts: maxAttempts)
+
+            // First attempt may use cache; later attempts always force a fresh probe.
+            let status = await OpenCodeInstallerService.shared.checkRuntimeStatus(
+                on: server,
+                force: force || attempt > 1
+            )
+
+            guard generation == openCodeConnectGeneration else { return }
+
+            if !status.blocksForegroundChat {
+                openCodeConnectionPhase = .ready
+                return
+            }
+
+            lastBlockingStatus = status
+
+            if attempt < maxAttempts {
+                SSHLogger.log(
+                    "OpenCode chat connect attempt \(attempt)/\(maxAttempts) blocked (\(status.state)); retrying",
+                    level: .warning
+                )
+                try? await Task.sleep(nanoseconds: Self.openCodeConnectRetryDelayNanoseconds)
+            }
+        }
+
+        guard generation == openCodeConnectGeneration else { return }
+        if let lastBlockingStatus {
+            openCodeConnectionPhase = .failed(lastBlockingStatus)
+        } else {
+            openCodeConnectionPhase = .failed(.unknown("OpenCode is not reachable."))
+        }
     }
 }
 

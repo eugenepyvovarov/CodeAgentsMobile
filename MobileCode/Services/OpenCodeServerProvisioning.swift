@@ -53,10 +53,51 @@ enum OpenCodeServerProvisioning {
         return lines.joined(separator: "\n")
     }
 
+    /// Shared shell fragment: 2G swapfile + mild swappiness (OpenCode needs headroom on 1GB droplets).
+    static var ensureSwapScript: String {
+        """
+        echo "Ensuring 2G swapfile for OpenCode headroom..."
+        if ! swapon --show 2>/dev/null | grep -q .; then
+          if [ ! -f /swapfile ]; then
+            if command -v fallocate >/dev/null 2>&1; then
+              fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+            else
+              dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+            fi
+            chmod 600 /swapfile
+            mkswap /swapfile
+          fi
+          swapon /swapfile || true
+          grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        fi
+        if ! grep -q '^vm.swappiness=' /etc/sysctl.conf 2>/dev/null; then
+          echo 'vm.swappiness=10' >> /etc/sysctl.conf
+        fi
+        sysctl -w vm.swappiness=10 >/dev/null 2>&1 || true
+        """
+    }
+
+    /// Shared shell fragment: drop idle SSH clients so leaked mobile sessions do not pile up.
+    /// Uses printf (not a heredoc) so cloud-init YAML indentation cannot break the terminator.
+    static var ensureSSHClientAliveScript: String {
+        """
+        echo "Configuring sshd ClientAlive to prune dead mobile sessions..."
+        mkdir -p /etc/ssh/sshd_config.d
+        printf '%s\\n' 'ClientAliveInterval 30' 'ClientAliveCountMax 10' > /etc/ssh/sshd_config.d/99-codeagents-keepalive.conf
+        if systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null; then
+          echo "sshd reloaded with ClientAlive settings."
+        else
+          echo "WARNING: could not reload sshd; ClientAlive will apply on next sshd restart."
+        fi
+        """
+    }
+
     static func runcmdScript(host: String = Self.host, port: Int = Self.port) -> String {
         """
         set -eu
         export DEBIAN_FRONTEND=noninteractive
+        \(ensureSwapScript)
+        \(ensureSSHClientAliveScript)
         echo "Refreshing apt package metadata..."
         if ! timeout --kill-after=10 180 apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2 update; then
           echo "WARNING: apt-get update did not complete; continuing with existing package indexes."
@@ -121,6 +162,8 @@ enum OpenCodeServerProvisioning {
     ) -> String {
         """
         set -euo pipefail
+        \(ensureSwapScript)
+        \(ensureSSHClientAliveScript)
         echo "Ensuring codeagent user..."
         if ! id -u codeagent >/dev/null 2>&1; then
           useradd -m -s /bin/bash codeagent

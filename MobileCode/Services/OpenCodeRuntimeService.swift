@@ -93,7 +93,10 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                 level: .warning
             )
             if let concrete = sshService as? SSHService {
+                // Drop dead pooled logins, then force a fresh session for this purpose on the server.
+                concrete.pruneDeadConnections()
                 concrete.closeConnections(projectId: project.id, purpose: .opencode)
+                concrete.closeConnections(serverId: project.serverId, purpose: .opencode)
             }
             try? await Task.sleep(nanoseconds: 400_000_000)
             return try await probeHealth(for: project, allowRetry: false)

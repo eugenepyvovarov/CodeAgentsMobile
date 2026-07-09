@@ -24,6 +24,8 @@ struct ProjectsView: View {
     
     @Query(sort: \RemoteProject.lastModified, order: .reverse) 
     private var projects: [RemoteProject]
+
+    @Environment(\.scenePhase) private var scenePhase
     
     private var isEditing: Bool {
         editMode.isEditing
@@ -152,7 +154,69 @@ struct ProjectsView: View {
                     }
                 )
             }
+            // Soft background sync (independent of push):
+            // 1) pull new OpenCode messages + unread badges for listed agents
+            // 2) keep CodeAgents daemons current
+            // Re-poll while Agents stays visible so scheduled replies still surface
+            // when the server has push disabled.
+            .task(id: softSyncKey) {
+                await softSyncListedAgents()
+                while !Task.isCancelled {
+                    let interval = AgentsListSoftSyncService.shared.messageCheckCooldown
+                    let nanos = UInt64(max(15, interval) * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: nanos)
+                    guard !Task.isCancelled else { break }
+                    guard scenePhase == .active else { continue }
+                    await softSyncListedAgents()
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    Task { await softSyncListedAgents() }
+                }
+            }
         }
+    }
+
+    /// Stable key for listed agents / servers so soft sync re-runs when the set changes.
+    private var softSyncKey: String {
+        projects
+            .map { "\($0.id.uuidString):\($0.serverId.uuidString)" }
+            .sorted()
+            .joined(separator: ",")
+    }
+
+    /// Best-effort daemon upgrade + message hydrate while Agents is visible.
+    private func softSyncListedAgents() async {
+        guard !projects.isEmpty else { return }
+
+        // Message hydrate first so badges update even if daemon upgrade is slow.
+        await AgentsListSoftSyncService.shared.softSyncMessages(
+            projects: Array(projects),
+            modelContext: modelContext
+        )
+
+        var seen = Set<UUID>()
+        var targets: [Server] = []
+        for project in projects {
+            guard seen.insert(project.serverId).inserted else { continue }
+            if let server = serverManager.server(withId: project.serverId) {
+                targets.append(server)
+                continue
+            }
+            let serverId = project.serverId
+            let descriptor = FetchDescriptor<Server>(
+                predicate: #Predicate { server in
+                    server.id == serverId
+                }
+            )
+            if let server = try? modelContext.fetch(descriptor).first {
+                targets.append(server)
+            }
+        }
+
+        guard !targets.isEmpty else { return }
+        await CodeAgentsDaemonUpdateService.shared.softEnsureUpToDate(servers: targets)
     }
     
     // MARK: - Delete Methods

@@ -25,42 +25,46 @@ protocol SSHConnectionProviding: AnyObject {
 class SSHService: SSHConnectionProviding {
     // MARK: - Singleton
     static let shared = SSHService()
-    
+
     // MARK: - Properties
-    
-    /// Active SSH sessions keyed by ConnectionKey
+
+    /// Active SSH sessions keyed by server + purpose (shared across projects on that host).
     private var connectionPool: [ConnectionKey: SSHSession] = [:]
+
+    /// Projects that currently retain each pooled connection.
+    /// Session is closed only when the last retainer releases it (or it is dead/pruned).
+    private var connectionRetainers: [ConnectionKey: Set<UUID>] = [:]
 
     /// In-flight SSH connection attempts keyed by ConnectionKey.
     ///
     /// Multiple view lifecycle tasks can ask for the same connection at the same time. Without coalescing, each
     /// caller passes the pool check before the first connection finishes, creating duplicate SSH sessions.
     private var connectionTasks: [ConnectionKey: Task<SSHSession, Error>] = [:]
-    
+
     /// Map to track which server each project belongs to
     private var projectServerMap: [UUID: UUID] = [:]
-    
+
     // MARK: - Initialization
     private init() {}
-    
+
     // MARK: - Public Methods
-    
+
     /// Connect directly to a server (for operations that don't require a project)
     /// - Parameters:
-    ///   - server: Server to connect to  
+    ///   - server: Server to connect to
     ///   - purpose: Purpose of the connection (defaults to fileOperations)
-    /// - Returns: Active SSH session (not pooled)
+    /// - Returns: Active SSH session (not pooled — caller must `disconnect()`)
     func connect(to server: Server, purpose: ConnectionPurpose = .fileOperations) async throws -> SSHSession {
         SSHLogger.log("Creating direct connection to server: \(server.name) for \(purpose)", level: .info)
         return try await createSession(for: server)
     }
-    
+
     /// Authentication method for SSH connections
     enum AuthMethod {
         case password(String)
         case key(String) // Private key content
     }
-    
+
     /// Connect to a server with explicit parameters (for cloud-init checking)
     /// - Parameters:
     ///   - host: Server hostname or IP
@@ -71,10 +75,10 @@ class SSHService: SSHConnectionProviding {
     /// - Returns: Active SSH session (not pooled)
     func connectToServer(host: String, port: Int, username: String, authMethod: AuthMethod, purpose: ConnectionPurpose) async throws -> SSHSession {
         SSHLogger.log("Creating direct connection to \(host):\(port) for \(purpose)", level: .info)
-        
+
         // Create a temporary server object for the connection
         let tempServer = Server(name: "temp-\(host)", host: host, port: port, username: username, authMethodType: "password")
-        
+
         // Set up defer block to ensure cleanup happens
         defer {
             // Clean up temporary credentials
@@ -87,7 +91,7 @@ class SSHService: SSHConnectionProviding {
                 }
             }
         }
-        
+
         // Handle authentication based on method
         switch authMethod {
         case .password(let password):
@@ -102,40 +106,39 @@ class SSHService: SSHConnectionProviding {
             // Store the private key temporarily in keychain
             try KeychainManager.shared.storeSSHKey(Data(privateKey.utf8), for: tempKeyId)
         }
-        
+
         let session = try await createSession(for: tempServer)
-        
+
         return session
     }
-    
-    /// Get or create a connection for a specific project and purpose
-    /// - Parameters:
-    ///   - project: The project requiring the connection
-    ///   - purpose: The purpose of the connection (agent runtime, daemon, terminal, files)
-    /// - Returns: Active SSH session
+
+    /// Get or create a connection for a specific project and purpose.
+    /// Sessions are pooled per **server + purpose** so multiple agents on the same host share one login.
     func getConnection(for project: RemoteProject, purpose: ConnectionPurpose) async throws -> SSHSession {
-        let key = ConnectionKey(projectId: project.id, purpose: purpose)
-        
-        // Check if connection exists and is active
-        if let existingSession = connectionPool[key] {
-            // Validate connection is still alive
-            // For now, we assume it's valid - in production, add a health check
-            SSHLogger.log("Reusing existing connection for \(key)", level: .debug)
+        let serverId = project.serverId
+        guard let server = ServerManager.shared.servers.first(where: { $0.id == serverId }) else {
+            throw SSHError.notConnected
+        }
+
+        let key = ConnectionKey(serverId: serverId, purpose: purpose)
+        projectServerMap[project.id] = serverId
+
+        // Drop dead pooled sessions before reuse (stale after OOM / network blip).
+        pruneDeadConnection(for: key)
+
+        if let existingSession = connectionPool[key], existingSession.isAlive {
+            retain(projectId: project.id, key: key)
+            SSHLogger.log("Reusing existing connection for \(key) (retainers=\(connectionRetainers[key]?.count ?? 0))", level: .debug)
             return existingSession
         }
 
         if let connectionTask = connectionTasks[key] {
             SSHLogger.log("Awaiting existing connection attempt for \(key)", level: .debug)
-            return try await connectionTask.value
+            let session = try await connectionTask.value
+            retain(projectId: project.id, key: key)
+            return session
         }
-        
-        // Get server for this project
-        let serverId = project.serverId
-        guard let server = ServerManager.shared.servers.first(where: { $0.id == serverId }) else {
-            throw SSHError.notConnected
-        }
-        
-        // Create new connection
+
         SSHLogger.log("Creating new connection for \(key)", level: .info)
         let connectionTask = Task { @MainActor in
             try await createSession(for: server)
@@ -145,7 +148,7 @@ class SSHService: SSHConnectionProviding {
         do {
             let session = try await connectionTask.value
             connectionPool[key] = session
-            projectServerMap[project.id] = serverId
+            retain(projectId: project.id, key: key)
             connectionTasks.removeValue(forKey: key)
             return session
         } catch {
@@ -153,65 +156,73 @@ class SSHService: SSHConnectionProviding {
             throw error
         }
     }
-    
-    
+
     /// Check if a connection is active for a project and purpose
-    /// - Parameters:
-    ///   - projectId: Project ID to check
-    ///   - purpose: Connection purpose
-    /// - Returns: True if connection exists and is active
     func isConnectionActive(projectId: UUID, purpose: ConnectionPurpose) -> Bool {
-        let key = ConnectionKey(projectId: projectId, purpose: purpose)
-        return connectionPool[key] != nil
+        guard let serverId = projectServerMap[projectId] else { return false }
+        let key = ConnectionKey(serverId: serverId, purpose: purpose)
+        guard let session = connectionPool[key], session.isAlive else { return false }
+        return connectionRetainers[key]?.contains(projectId) == true
     }
-    
+
     /// Get all active connection purposes for a project
-    /// - Parameter projectId: Project ID to check
-    /// - Returns: Array of active connection purposes
     func getActiveConnections(for projectId: UUID) -> [ConnectionPurpose] {
-        var activePurposes: [ConnectionPurpose] = []
-        
-        for purpose in ConnectionPurpose.allCases {
-            if isConnectionActive(projectId: projectId, purpose: purpose) {
-                activePurposes.append(purpose)
-            }
-        }
-        
-        return activePurposes
+        ConnectionPurpose.allCases.filter { isConnectionActive(projectId: projectId, purpose: $0) }
     }
-    
-    /// Close connections for a project
+
+    /// Close connections for a project.
     /// - Parameters:
     ///   - projectId: Project ID
-    ///   - purpose: Optional specific purpose to close, nil closes all
+    ///   - purpose: Optional specific purpose to close; nil closes all purposes for the project
+    ///
+    /// Only tears down the underlying SSH session when no other project still retains it.
     func closeConnections(projectId: UUID, purpose: ConnectionPurpose? = nil) {
+        guard let serverId = projectServerMap[projectId] else {
+            return
+        }
+
+        let purposes: [ConnectionPurpose]
         if let specificPurpose = purpose {
-            // Close specific connection
-            let key = ConnectionKey(projectId: projectId, purpose: specificPurpose)
-            if let session = connectionPool[key] {
-                SSHLogger.log("Closing connection for \(key)", level: .info)
-                session.disconnect()
-                connectionPool.removeValue(forKey: key)
-            }
-            connectionTasks[key]?.cancel()
-            connectionTasks.removeValue(forKey: key)
+            purposes = [specificPurpose]
         } else {
-            // Close all connections for this project
-            for connectionPurpose in ConnectionPurpose.allCases {
-                let key = ConnectionKey(projectId: projectId, purpose: connectionPurpose)
-                if let session = connectionPool[key] {
-                    SSHLogger.log("Closing connection for \(key)", level: .info)
-                    session.disconnect()
-                    connectionPool.removeValue(forKey: key)
-                }
-                connectionTasks[key]?.cancel()
-                connectionTasks.removeValue(forKey: key)
-            }
-            // Clean up project mapping
+            purposes = ConnectionPurpose.allCases
+        }
+
+        for connectionPurpose in purposes {
+            let key = ConnectionKey(serverId: serverId, purpose: connectionPurpose)
+            release(projectId: projectId, key: key)
+        }
+
+        if purpose == nil {
             projectServerMap.removeValue(forKey: projectId)
         }
     }
-    
+
+    /// Force-close every pooled session for a server (all purposes), ignoring retain counts.
+    /// Use after auth changes or when the host is known to be unhealthy.
+    func closeConnections(serverId: UUID, purpose: ConnectionPurpose? = nil) {
+        let purposes: [ConnectionPurpose] = purpose.map { [$0] } ?? ConnectionPurpose.allCases
+        for connectionPurpose in purposes {
+            let key = ConnectionKey(serverId: serverId, purpose: connectionPurpose)
+            forceClose(key: key, reason: "server-scope close")
+        }
+    }
+
+    /// Drop any pooled sessions whose transport is no longer alive.
+    @discardableResult
+    func pruneDeadConnections() -> Int {
+        var removed = 0
+        for key in Array(connectionPool.keys) {
+            if pruneDeadConnection(for: key) {
+                removed += 1
+            }
+        }
+        if removed > 0 {
+            SSHLogger.log("Pruned \(removed) dead SSH connection(s)", level: .info)
+        }
+        return removed
+    }
+
     /// Close all connections
     func closeAllConnections() {
         SSHLogger.log("Closing all \(connectionPool.count) connections", level: .info)
@@ -224,26 +235,70 @@ class SSHService: SSHConnectionProviding {
         }
         connectionPool.removeAll()
         connectionTasks.removeAll()
+        connectionRetainers.removeAll()
         projectServerMap.removeAll()
     }
-    
+
     /// Disconnect a specific server connection (for non-project connections)
-    /// - Parameter serverId: Server ID to disconnect
     func disconnect(from serverId: UUID) async {
-        // Since direct connections aren't pooled, this is mainly for API consistency
-        SSHLogger.log("Disconnect called for server \(serverId) - no action needed for direct connections", level: .debug)
+        closeConnections(serverId: serverId)
     }
-    
+
     // MARK: - Private Methods
-    
-    /// Create a new SSH session
-    /// - Parameter server: Server configuration
-    /// - Returns: New SSH session
+
+    private func retain(projectId: UUID, key: ConnectionKey) {
+        var retainers = connectionRetainers[key] ?? []
+        retainers.insert(projectId)
+        connectionRetainers[key] = retainers
+    }
+
+    private func release(projectId: UUID, key: ConnectionKey) {
+        guard var retainers = connectionRetainers[key] else {
+            // No retainers tracked — if a session exists only for this key, close it.
+            if connectionPool[key] != nil {
+                forceClose(key: key, reason: "release without retainers")
+            }
+            return
+        }
+        retainers.remove(projectId)
+        if retainers.isEmpty {
+            connectionRetainers.removeValue(forKey: key)
+            forceClose(key: key, reason: "last retainer released")
+        } else {
+            connectionRetainers[key] = retainers
+            SSHLogger.log(
+                "Released \(key) for project \(projectId); \(retainers.count) retainer(s) remain",
+                level: .debug
+            )
+        }
+    }
+
+    private func forceClose(key: ConnectionKey, reason: String) {
+        if let session = connectionPool.removeValue(forKey: key) {
+            SSHLogger.log("Closing connection for \(key) (\(reason))", level: .info)
+            session.disconnect()
+        }
+        connectionTasks[key]?.cancel()
+        connectionTasks.removeValue(forKey: key)
+        connectionRetainers.removeValue(forKey: key)
+    }
+
+    @discardableResult
+    private func pruneDeadConnection(for key: ConnectionKey) -> Bool {
+        guard let session = connectionPool[key] else { return false }
+        if session.isAlive { return false }
+        SSHLogger.log("Pruning dead connection for \(key)", level: .warning)
+        forceClose(key: key, reason: "dead transport")
+        return true
+    }
+
     private func createSession(for server: Server) async throws -> SSHSession {
         SSHLogger.log("Creating SSH session for server: \(server.name)", level: .info)
+        // Opportunistically drop any other dead pooled sessions before opening a new login.
+        _ = pruneDeadConnections()
         return try await SwiftSHSession.connect(to: server)
     }
-    
+
     /// Get connection statistics
     var connectionStats: (total: Int, byPurpose: [ConnectionPurpose: Int]) {
         var purposeCount: [ConnectionPurpose: Int] = [:]
