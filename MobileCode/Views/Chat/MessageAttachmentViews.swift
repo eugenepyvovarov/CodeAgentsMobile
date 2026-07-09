@@ -33,6 +33,9 @@ private struct MessageAttachmentCard: View {
     let attachment: ChatMessageAttachment
     let isUser: Bool
 
+    @State private var previewPayload: CodeAgentsUIMediaPreviewPayload?
+    @State private var fullscreenPayload: FullscreenImagePayload?
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             preview
@@ -42,12 +45,26 @@ private struct MessageAttachmentCard: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(borderColor, lineWidth: 0.5)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .onTapGesture {
+                    openPreview()
+                }
 
-            MessageAttachmentStatusBadge(status: attachment.uploadStatus)
-                .padding(6)
+            if showsStatusBadge {
+                MessageAttachmentStatusBadge(status: attachment.uploadStatus)
+                    .padding(6)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(canPreview ? "Shows full size" : "")
+        .sheet(item: $previewPayload) { payload in
+            CodeAgentsUIMediaPreviewController(urls: payload.urls, startIndex: payload.startIndex)
+        }
+        .fullScreenCover(item: $fullscreenPayload) { payload in
+            MessageAttachmentFullscreenImageView(image: payload.image)
+        }
     }
 
     @ViewBuilder
@@ -82,61 +99,151 @@ private struct MessageAttachmentCard: View {
         return UIImage(contentsOfFile: path)
     }
 
+    private var localFileURL: URL? {
+        guard let path = attachment.localPath, !path.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private var canPreview: Bool {
+        localFileURL != nil || loadedImage != nil
+    }
+
+    /// Only surface in-progress / failure — success is silent.
+    private var showsStatusBadge: Bool {
+        switch attachment.uploadStatus {
+        case .uploading, .failed:
+            return true
+        case .pending, .uploaded:
+            return false
+        }
+    }
+
     private var placeholderBackground: Color {
         isUser ? Color.white.opacity(0.16) : Color(.secondarySystemFill)
     }
 
     private var borderColor: Color {
-        isUser ? Color.white.opacity(0.22) : Color(.separator).opacity(0.35)
+        if attachment.uploadStatus == .failed {
+            return Color.orange.opacity(0.55)
+        }
+        return isUser ? Color.white.opacity(0.22) : Color(.separator).opacity(0.35)
     }
 
     private var accessibilityLabel: String {
-        let status: String
         switch attachment.uploadStatus {
-        case .pending: status = "pending"
-        case .uploading: status = "uploading"
-        case .uploaded: status = "uploaded"
-        case .failed: status = "failed"
+        case .uploading:
+            return "\(attachment.displayName), uploading"
+        case .failed:
+            return "\(attachment.displayName), upload failed"
+        case .pending, .uploaded:
+            return attachment.displayName
         }
-        return "\(attachment.displayName), \(status)"
+    }
+
+    private func openPreview() {
+        if attachment.isImage, let image = loadedImage {
+            fullscreenPayload = FullscreenImagePayload(image: image)
+            return
+        }
+        if let url = localFileURL {
+            previewPayload = CodeAgentsUIMediaPreviewPayload(urls: [url], startIndex: 0)
+        }
     }
 }
 
-// MARK: - Light status badge (checkbox / color dot)
+// MARK: - Fullscreen image
 
-/// Very light status chip — small colored glyph, not a loud banner.
+private struct FullscreenImagePayload: Identifiable {
+    let id = UUID()
+    let image: UIImage
+
+    init(image: UIImage) {
+        self.image = image
+    }
+}
+
+private struct MessageAttachmentFullscreenImageView: View {
+    let image: UIImage
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(scale)
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            scale = max(1, min(lastScale * value, 4))
+                        }
+                        .onEnded { _ in
+                            lastScale = scale
+                            if scale < 1.05 {
+                                withAnimation(.easeOut(duration: 0.15)) {
+                                    scale = 1
+                                    lastScale = 1
+                                }
+                            }
+                        }
+                )
+                .onTapGesture(count: 2) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        if scale > 1.1 {
+                            scale = 1
+                            lastScale = 1
+                        } else {
+                            scale = 2.2
+                            lastScale = 2.2
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(16)
+            .accessibilityLabel("Close")
+        }
+    }
+}
+
+// MARK: - Light status badge
+
+/// Only used for in-progress / failure — success is intentionally silent.
 struct MessageAttachmentStatusBadge: View {
     let status: ChatMessageAttachmentUploadStatus
 
     var body: some View {
         Group {
             switch status {
-            case .pending:
-                Image(systemName: "circle")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
             case .uploading:
                 ProgressView()
                     .controlSize(.mini)
                     .tint(.white)
-            case .uploaded:
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.green.opacity(0.92))
-                    .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
-            case .failed:
-                Image(systemName: "exclamationmark.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.red.opacity(0.9))
-                    .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
-            }
-        }
-        .frame(width: 18, height: 18)
-        .background {
-            if status == .pending || status == .uploading {
-                Circle()
-                    .fill(Color.black.opacity(0.35))
                     .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.black.opacity(0.4)))
+            case .failed:
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.orange)
+                    .shadow(color: .black.opacity(0.3), radius: 1, y: 0.5)
+            case .pending, .uploaded:
+                EmptyView()
             }
         }
         .accessibilityHidden(true)
