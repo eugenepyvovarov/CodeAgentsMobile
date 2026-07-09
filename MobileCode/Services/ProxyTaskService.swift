@@ -113,10 +113,10 @@ final class ProxyTaskService {
     }
 
     /// Canonical agent id for daemon task APIs and managed scheduler MCP headers.
-    /// Prefer stored identity; fall back to lowercased project UUID (matches MCP provisioning).
+    /// Always lowercased so active-session pins match MCP-created tasks (iOS UUID strings are uppercase).
     static func resolvedAgentId(for project: RemoteProject) -> String {
         if let raw = project.proxyAgentId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-            return raw
+            return raw.lowercased()
         }
         return project.id.uuidString.lowercased()
     }

@@ -9,6 +9,15 @@ final class ProxyTaskFetchMatchingTests: XCTestCase {
         XCTAssertEqual(ProxyTaskService.resolvedAgentId(for: project), "agent-demo")
     }
 
+    func testResolvedAgentIdLowercasesProxyAgentId() {
+        let project = RemoteProject(name: "demo", serverId: UUID(), basePath: "/home/codeagent/projects")
+        project.proxyAgentId = "A027C2D3-79AA-416D-8349-7DDFEE4E9A46"
+        XCTAssertEqual(
+            ProxyTaskService.resolvedAgentId(for: project),
+            "a027c2d3-79aa-416d-8349-7ddfee4e9a46"
+        )
+    }
+
     func testResolvedAgentIdFallsBackToLowercasedProjectUUID() {
         let project = RemoteProject(name: "demo", serverId: UUID(), basePath: "/home/codeagent/projects")
         project.proxyAgentId = nil
