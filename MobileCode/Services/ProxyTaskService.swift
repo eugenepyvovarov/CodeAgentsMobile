@@ -44,15 +44,24 @@ enum ProxyTaskError: LocalizedError {
         case .invalidResponse(let message):
             return "Agent scheduler response invalid: \(message)"
         case .httpError(let status, let body):
+            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
             if status == 404 {
+                if trimmed.contains("task_not_found") {
+                    return "This task is no longer on the agent. Save it again to re-create, then Run Now."
+                }
                 return "Agent scheduler not available (404). Update the CodeAgents daemon to enable tasks."
             }
-            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 return "Agent daemon HTTP \(status)"
             }
             return "Agent daemon HTTP \(status): \(trimmed)"
         }
+    }
+
+    /// True when the daemon reports the remote task id is gone (stale local remoteId).
+    var isTaskNotFound: Bool {
+        guard case .httpError(let status, let body) = self else { return false }
+        return status == 404 && body.contains("task_not_found")
     }
 }
 
@@ -191,9 +200,14 @@ final class ProxyTaskService {
 
     func upsertTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
         do {
-            if let remoteId = task.remoteId, !remoteId.isEmpty {
-                return try await updateTask(task, remoteId: remoteId, project: project)
-            }
+            return try await upsertTaskOnce(task, project: project)
+        } catch let error as ProxyTaskError where error.isTaskNotFound {
+            // Stale remoteId after daemon delete — re-create and rebind.
+            SSHLogger.log(
+                "Agent daemon task missing (remoteId=\(task.remoteId ?? "nil")); creating a new remote task",
+                level: .warning
+            )
+            task.remoteId = nil
             return try await createTask(task, project: project)
         } catch {
             // One automatic retry on a fresh daemon SSH session after timeout / transport failure.
@@ -202,28 +216,65 @@ final class ProxyTaskService {
                 level: .warning
             )
             sshService.closeConnections(projectId: project.id, purpose: .agentDaemon)
-            if let remoteId = task.remoteId, !remoteId.isEmpty {
-                return try await updateTask(task, remoteId: remoteId, project: project)
+            do {
+                return try await upsertTaskOnce(task, project: project)
+            } catch let error as ProxyTaskError where error.isTaskNotFound {
+                task.remoteId = nil
+                return try await createTask(task, project: project)
             }
-            return try await createTask(task, project: project)
         }
+    }
+
+    private func upsertTaskOnce(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
+        if let remoteId = task.remoteId, !remoteId.isEmpty {
+            return try await updateTask(task, remoteId: remoteId, project: project)
+        }
+        return try await createTask(task, project: project)
     }
 
     func deleteTask(_ task: AgentScheduledTask, project: RemoteProject) async throws {
         guard let remoteId = task.remoteId, !remoteId.isEmpty else { return }
-        try await withDaemonOperation(project: project, forceRefresh: true) { session in
-            let path = "/v1/agent/tasks/\(remoteId)"
-            _ = try await self.client.request(session: session, method: "DELETE", path: path, body: nil)
+        do {
+            try await withDaemonOperation(project: project, forceRefresh: true) { session in
+                let path = "/v1/agent/tasks/\(remoteId)"
+                _ = try await self.client.request(session: session, method: "DELETE", path: path, body: nil)
+            }
+        } catch let error as ProxyTaskError where error.isTaskNotFound {
+            // Already gone on daemon — local delete still succeeds.
+            return
+        } catch let error as ProxyTaskError {
+            // Older daemons may return a bare 404 without task_not_found body.
+            if case .httpError(let status, _) = error, status == 404 {
+                return
+            }
+            throw error
         }
     }
 
     /// Trigger an immediate manual run on the daemon (does not advance cron next_run).
     @discardableResult
     func runTaskNow(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
-        guard let remoteId = task.remoteId, !remoteId.isEmpty else {
-            throw ProxyTaskError.invalidResponse("Task is not synced to the agent daemon yet. Save it first.")
+        if task.remoteId == nil || task.remoteId?.isEmpty == true {
+            let created = try await upsertTask(task, project: project)
+            task.remoteId = created.id
         }
-        return try await withDaemonOperation(project: project, forceRefresh: true) { session in
+
+        do {
+            return try await postRunNow(remoteId: task.remoteId!, project: project)
+        } catch let error as ProxyTaskError where error.isTaskNotFound {
+            SSHLogger.log(
+                "Agent daemon run target missing (remoteId=\(task.remoteId ?? "nil")); re-creating then re-running",
+                level: .warning
+            )
+            task.remoteId = nil
+            let created = try await upsertTask(task, project: project)
+            task.remoteId = created.id
+            return try await postRunNow(remoteId: created.id, project: project)
+        }
+    }
+
+    private func postRunNow(remoteId: String, project: RemoteProject) async throws -> ProxyTaskRecord {
+        try await withDaemonOperation(project: project, forceRefresh: true) { session in
             let path = "/v1/agent/tasks/\(remoteId)/run"
             let response = try await self.client.request(
                 session: session,
