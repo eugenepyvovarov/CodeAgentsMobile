@@ -248,6 +248,7 @@ final class AgentsListSoftSyncService {
             }
             modelContext.insert(message)
             runtimeIDs.insert(hydrated.runtimeMessageID)
+            project.noteLastMessage(at: message.timestamp)
             if hydrated.role == .user {
                 let trimmed = hydrated.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
@@ -273,9 +274,8 @@ final class AgentsListSoftSyncService {
             project.unreadConversationId = cursors.unreadConversationId
         }
 
-        if inserted > 0 || updated > 0 || newAssistants > 0 {
-            project.updateLastModified()
-        }
+        // Unread/metadata updates must not reorder the Agents list.
+        // Only real chat messages advance `lastMessageAt` (above).
 
         return AgentsListMessageSyncResult(
             projectID: project.id,

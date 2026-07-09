@@ -31,9 +31,6 @@ struct EditServerSheet: View {
     @State private var errorMessage = ""
     @State private var showingImportKey = false
     @State private var hasPasswordChanged = false
-    @State private var isPushEnabled: Bool
-    @State private var isConfiguringPush = false
-    @State private var pushStatusMessage: String?
 
     enum AuthMethod: String, CaseIterable {
         case password = "Password"
@@ -76,20 +73,6 @@ struct EditServerSheet: View {
         OpenCodeAIProviderSettingsStore().effectiveProfile(for: server.id).normalizedProviderID
     }
 
-    private var pushToggleBinding: Binding<Bool> {
-        Binding(
-            get: { isPushEnabled },
-            set: { newValue in
-                guard newValue != isPushEnabled, !isConfiguringPush else { return }
-                if newValue {
-                    Task { await configurePushNotifications() }
-                } else {
-                    disablePushNotifications()
-                }
-            }
-        )
-    }
-
     init(server: Server) {
         self.server = server
         self._serverName = State(initialValue: server.name)
@@ -98,7 +81,6 @@ struct EditServerSheet: View {
         self._username = State(initialValue: server.username)
         self._authMethod = State(initialValue: server.authMethodType == "key" ? .key : .password)
         self._selectedKeyId = State(initialValue: server.sshKeyId)
-        self._isPushEnabled = State(initialValue: KeychainManager.shared.hasPushSecret(for: server.id))
     }
 
     var body: some View {
@@ -112,7 +94,6 @@ struct EditServerSheet: View {
                 authenticationSection
                 OpenCodeServerSetupSection(server: server)
                 aiProviderSection
-                pushNotificationsSection
                 connectionTestSection
             }
             .navigationTitle("Edit Server")
@@ -270,37 +251,6 @@ struct EditServerSheet: View {
         }
     }
 
-    private var pushNotificationsSection: some View {
-        Section {
-            Toggle(isOn: pushToggleBinding) {
-                Label("Push Notifications", systemImage: isPushEnabled ? "bell.badge.fill" : "bell.badge")
-            }
-            .disabled(isConfiguringPush)
-            .accessibilityIdentifier("server-push-notifications-toggle")
-
-            if isConfiguringPush {
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Configuring…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let pushStatusMessage {
-                Text(pushStatusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } header: {
-            Text("Notifications")
-        } footer: {
-            Text("Foreground OpenCode chat connects over SSH. Push is for CodeAgents daemon background completions (scheduled tasks). Active agents are subscribed automatically.")
-        }
-    }
-
     private var connectionTestSection: some View {
         Section {
             Button {
@@ -444,57 +394,6 @@ struct EditServerSheet: View {
         }
     }
 
-    @MainActor
-    private func configurePushNotifications() async {
-        isConfiguringPush = true
-        pushStatusMessage = nil
-        defer { isConfiguringPush = false }
-
-        do {
-            let granted = try await PushNotificationsManager.shared.requestNotificationAuthorization()
-            guard granted else {
-                pushStatusMessage = "Notifications permission is disabled in Settings."
-                isPushEnabled = false
-                return
-            }
-
-            PushNotificationsManager.shared.registerForRemoteNotifications()
-            pushStatusMessage = "Configuring server…"
-
-            let secret = try await ProxyInstallerService.shared.enablePushNotifications(on: server)
-            try KeychainManager.shared.storePushSecret(secret, for: server.id)
-
-            isPushEnabled = true
-            if let activeProject = ProjectContext.shared.activeProject,
-               activeProject.serverId == server.id {
-                let agentDisplayName = "\(activeProject.displayTitle)@\(server.name)"
-                await PushNotificationsManager.shared.recordChatOpened(
-                    project: activeProject,
-                    server: server,
-                    agentDisplayName: agentDisplayName
-                )
-                pushStatusMessage = "Enabled. Subscribed for \(agentDisplayName)."
-            } else {
-                pushStatusMessage = "Enabled. Select an agent to subscribe this device."
-            }
-        } catch {
-            isPushEnabled = false
-            errorMessage = error.localizedDescription
-            showError = true
-            pushStatusMessage = nil
-        }
-    }
-
-    private func disablePushNotifications() {
-        do {
-            try KeychainManager.shared.deletePushSecret(for: server.id)
-            isPushEnabled = false
-            pushStatusMessage = "Disabled on this device."
-        } catch {
-            errorMessage = error.localizedDescription
-            showError = true
-        }
-    }
 }
 
 #Preview {

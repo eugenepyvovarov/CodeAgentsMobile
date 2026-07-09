@@ -22,10 +22,19 @@ struct ProjectsView: View {
     @StateObject private var projectContext = ProjectContext.shared
     @Environment(\.modelContext) private var modelContext
     
-    @Query(sort: \RemoteProject.lastModified, order: .reverse) 
-    private var projects: [RemoteProject]
+    @Query private var projectsUnsorted: [RemoteProject]
 
     @Environment(\.scenePhase) private var scenePhase
+
+    /// Agents ordered by last chat message (not metadata/hydration bumps).
+    private var projects: [RemoteProject] {
+        projectsUnsorted.sorted { lhs, rhs in
+            if lhs.agentsListSortDate != rhs.agentsListSortDate {
+                return lhs.agentsListSortDate > rhs.agentsListSortDate
+            }
+            return lhs.createdAt > rhs.createdAt
+        }
+    }
     
     private var isEditing: Bool {
         editMode.isEditing
@@ -159,6 +168,9 @@ struct ProjectsView: View {
             // 2) keep CodeAgents daemons current
             // Re-poll while Agents stays visible so scheduled replies still surface
             // when the server has push disabled.
+            .task {
+                backfillLastMessageDatesIfNeeded()
+            }
             .task(id: softSyncKey) {
                 await softSyncListedAgents()
                 while !Task.isCancelled {
@@ -184,6 +196,31 @@ struct ProjectsView: View {
             .map { "\($0.id.uuidString):\($0.serverId.uuidString)" }
             .sorted()
             .joined(separator: ",")
+    }
+
+    /// One-shot: seed `lastMessageAt` from local SwiftData messages for existing agents.
+    private func backfillLastMessageDatesIfNeeded() {
+        guard !projectsUnsorted.isEmpty else { return }
+        var didChange = false
+        for project in projectsUnsorted {
+            let projectId = project.id
+            var descriptor = FetchDescriptor<Message>(
+                predicate: #Predicate { message in
+                    message.projectId == projectId
+                },
+                sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+            )
+            descriptor.fetchLimit = 1
+            guard let latest = try? modelContext.fetch(descriptor).first else { continue }
+            let before = project.lastMessageAt
+            project.noteLastMessage(at: latest.timestamp)
+            if project.lastMessageAt != before {
+                didChange = true
+            }
+        }
+        if didChange {
+            try? modelContext.save()
+        }
     }
 
     /// Best-effort daemon upgrade + message hydrate while Agents is visible.
@@ -302,9 +339,15 @@ struct ProjectRow: View {
                     .fontDesign(.monospaced)
             }
             
-            Text("Modified \(project.lastModified, style: .relative) ago")
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            if let lastMessageAt = project.lastMessageAt {
+                Text("Last message \(lastMessageAt, style: .relative) ago")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("Created \(project.createdAt, style: .relative) ago")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
     }
     

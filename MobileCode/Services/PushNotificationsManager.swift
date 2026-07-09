@@ -34,6 +34,9 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     private var pendingPayload: PushPayload?
 
     private let subscriptionsStorageKey = "push_subscriptions_v1"
+    /// Avoid re-running full server SSH push provisioning on every foreground.
+    private var lastAppDefaultPushAt: Date?
+    private let appDefaultPushCooldown: TimeInterval = 5 * 60
 
     private override init() {
         super.init()
@@ -71,6 +74,61 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
     func recordChatOpened(project: RemoteProject, server: Server, agentDisplayName: String) async {
         await registerProjectSubscription(project: project, server: server, agentDisplayName: agentDisplayName)
+    }
+
+    /// App-default push: request OS permission once, provision each server secret, and
+    /// subscribe every agent. Opt-out is system Settings → Notifications → CodeAgents.
+    func ensureAppDefaultPush(modelContext: ModelContext) async {
+        if let last = lastAppDefaultPushAt,
+           Date().timeIntervalSince(last) < appDefaultPushCooldown {
+            await refreshSubscriptions()
+            return
+        }
+
+        let granted: Bool
+        do {
+            granted = try await requestNotificationAuthorization()
+        } catch {
+            SSHLogger.log("Push permission request failed: \(error.localizedDescription)", level: .warning)
+            return
+        }
+        guard granted else {
+            #if DEBUG
+            SSHLogger.log("Push skipped: notifications disabled in system Settings", level: .info)
+            #endif
+            return
+        }
+
+        registerForRemoteNotifications()
+
+        let projects = (try? modelContext.fetch(FetchDescriptor<RemoteProject>())) ?? []
+        let servers = (try? modelContext.fetch(FetchDescriptor<Server>())) ?? []
+        guard !projects.isEmpty, !servers.isEmpty else { return }
+
+        let serverById = Dictionary(uniqueKeysWithValues: servers.map { ($0.id, $0) })
+        var syncedServerIDs = Set<UUID>()
+
+        for project in projects {
+            guard let server = serverById[project.serverId] else { continue }
+            let agentDisplayName = "\(project.displayTitle)@\(server.name)"
+            upsertStoredSubscription(
+                .init(serverId: server.id, cwd: project.path, agentDisplayName: agentDisplayName)
+            )
+
+            // One SSH push-config pass per server per ensure cycle.
+            if syncedServerIDs.insert(server.id).inserted {
+                await syncServerPushConfigurationIfPossible(server: server)
+            }
+
+            await registerStoredSubscriptionIfPossible(
+                serverId: server.id,
+                cwd: project.path,
+                agentDisplayName: agentDisplayName,
+                syncServer: false
+            )
+        }
+
+        lastAppDefaultPushAt = Date()
     }
 
     func registerProjectSubscription(project: RemoteProject, server: Server, agentDisplayName: String) async {

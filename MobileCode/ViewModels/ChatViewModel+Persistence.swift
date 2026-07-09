@@ -153,6 +153,11 @@ extension ChatViewModel {
         
         // Save the message
         saveMessage(message)
+
+        if let project = ProjectContext.shared.activeProject,
+           project.id == projectId {
+            project.noteLastMessage(at: message.timestamp)
+        }
         
         // Add to messages array in the correct position
         let insertIndex = insertionIndex(for: message)
