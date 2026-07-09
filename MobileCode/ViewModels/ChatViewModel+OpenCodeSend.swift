@@ -71,6 +71,9 @@ extension ChatViewModel {
 
         var records = attachments.map(ChatMessageAttachment.fromComposer)
 
+        // Promote staged files into Application Support so preview + retry survive temp purges.
+        records = promoteLocalAttachmentsToDurableStore(records)
+
         // Insert the user bubble immediately (thumbnail + status), before any network work.
         let userMessage = createMessage(content: displayText, role: .user)
         if !records.isEmpty {
@@ -79,83 +82,18 @@ extension ChatViewModel {
             messagesRevision += 1
         }
 
-        let needsUpload = records.contains { $0.remoteReference == nil }
-        var fileReferences: [String] = records.compactMap(\.remoteReference)
-
-        if needsUpload {
-            records = records.map { record in
-                var updated = record
-                if updated.remoteReference == nil {
-                    updated.uploadStatus = .uploading
-                    updated.errorMessage = nil
-                }
-                return updated
-            }
-            updateMessageAttachments(userMessage, records)
-
-            do {
-                let resolved = try await ChatAttachmentUploadService.shared.resolveFileReferences(
-                    for: attachments,
-                    in: project
-                )
-                // resolveFileReferences walks attachments in order (project + local).
-                if resolved.count == records.count {
-                    records = zip(records, resolved).map { record, reference in
-                        var updated = record
-                        updated.remoteReference = reference
-                        updated.uploadStatus = .uploaded
-                        updated.errorMessage = nil
-                        return updated
-                    }
-                } else {
-                    // Fallback: fill missing refs from remaining resolved paths.
-                    var queue = resolved
-                    records = records.map { record in
-                        var updated = record
-                        if let existing = updated.remoteReference, !existing.isEmpty {
-                            updated.uploadStatus = .uploaded
-                            queue.removeAll { $0 == existing }
-                            return updated
-                        }
-                        if let next = queue.first {
-                            queue.removeFirst()
-                            updated.remoteReference = next
-                            updated.uploadStatus = .uploaded
-                            updated.errorMessage = nil
-                        } else {
-                            updated.uploadStatus = .failed
-                            updated.errorMessage = "Upload incomplete"
-                        }
-                        return updated
-                    }
-                }
-                fileReferences = records.compactMap(\.remoteReference)
-                updateMessageAttachments(userMessage, records)
-
-                if fileReferences.isEmpty {
-                    addErrorMessage("Attachment upload failed: no files reached the server.")
-                    return
-                }
-            } catch {
-                records = records.map { record in
-                    var updated = record
-                    if updated.uploadStatus == .uploading || updated.remoteReference == nil {
-                        updated.uploadStatus = .failed
-                        updated.errorMessage = error.localizedDescription
-                    }
-                    return updated
-                }
-                updateMessageAttachments(userMessage, records)
-                addErrorMessage("Attachment upload failed: \(error.localizedDescription)")
-                return
-            }
-        }
+        let uploadOutcome = await uploadPendingAttachments(
+            on: userMessage,
+            records: records,
+            project: project
+        )
+        guard uploadOutcome.shouldContinue else { return }
 
         let wirePrompt = ChatSkillPromptBuilder.build(
             message: displayText,
             skillName: skillName,
             skillSlug: skillSlug,
-            fileReferences: fileReferences
+            fileReferences: uploadOutcome.fileReferences
         )
 
         // Nothing to send (empty text and no files).
@@ -166,11 +104,157 @@ extension ChatViewModel {
         await sendOpenCodeMessage(wirePrompt, project: project, createUserMessage: false)
     }
 
+    /// Re-upload failed attachments from the on-device cache, then continue the OpenCode send.
+    func retryFailedAttachments(on message: Message) async {
+        guard let project = ProjectContext.shared.activeProject else {
+            addErrorMessage("No active agent. Please select an agent first.")
+            return
+        }
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+
+        var records = promoteLocalAttachmentsToDurableStore(messages[index].chatAttachments)
+        let hasRetryable = records.contains {
+            $0.uploadStatus == .failed && $0.remoteReference == nil && ChatAttachmentLocalStore.resolveExistingFile(at: $0.localPath) != nil
+        }
+        guard hasRetryable else {
+            addErrorMessage("Cached file is no longer available. Attach the photo again.")
+            return
+        }
+
+        // Mark only failed rows as uploading so the spinner replaces Retry?.
+        records = records.map { record in
+            var updated = record
+            if updated.uploadStatus == .failed, updated.remoteReference == nil {
+                updated.uploadStatus = .uploading
+                updated.errorMessage = nil
+            }
+            return updated
+        }
+        updateMessageAttachments(messages[index], records)
+
+        let uploadOutcome = await uploadPendingAttachments(
+            on: messages[index],
+            records: records,
+            project: project,
+            announceFailure: true
+        )
+        guard uploadOutcome.shouldContinue else { return }
+
+        let displayText = messages[index].content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wirePrompt = ChatSkillPromptBuilder.build(
+            message: displayText,
+            skillName: nil,
+            skillSlug: nil,
+            fileReferences: uploadOutcome.fileReferences
+        )
+        guard !wirePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        await sendOpenCodeMessage(wirePrompt, project: project, createUserMessage: false)
+    }
+
     func updateMessageAttachments(_ message: Message, _ attachments: [ChatMessageAttachment]) {
         guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
         messages[index].chatAttachments = attachments
         saveChanges()
         messagesRevision += 1
+    }
+
+    // MARK: - Attachment upload helpers
+
+    private struct AttachmentUploadOutcome {
+        let fileReferences: [String]
+        let shouldContinue: Bool
+    }
+
+    private func promoteLocalAttachmentsToDurableStore(
+        _ records: [ChatMessageAttachment]
+    ) -> [ChatMessageAttachment] {
+        records.map { record in
+            guard let path = record.localPath, !path.isEmpty else { return record }
+            do {
+                let durable = try ChatAttachmentLocalStore.ensureDurableCopy(
+                    at: path,
+                    displayName: record.displayName
+                )
+                var updated = record
+                updated.localPath = durable.path
+                return updated
+            } catch {
+                return record
+            }
+        }
+    }
+
+    private func uploadPendingAttachments(
+        on message: Message,
+        records: [ChatMessageAttachment],
+        project: RemoteProject,
+        announceFailure: Bool = true
+    ) async -> AttachmentUploadOutcome {
+        var records = records
+        let needsUpload = records.contains { $0.remoteReference == nil }
+        if !needsUpload {
+            return AttachmentUploadOutcome(
+                fileReferences: records.compactMap(\.remoteReference),
+                shouldContinue: true
+            )
+        }
+
+        records = records.map { record in
+            var updated = record
+            if updated.remoteReference == nil {
+                updated.uploadStatus = .uploading
+                updated.errorMessage = nil
+            }
+            return updated
+        }
+        updateMessageAttachments(message, records)
+
+        var lastError: Error?
+        for index in records.indices {
+            if let existing = records[index].remoteReference, !existing.isEmpty {
+                records[index].uploadStatus = .uploaded
+                records[index].errorMessage = nil
+                continue
+            }
+
+            let displayName = records[index].displayName
+            guard let localURL = ChatAttachmentLocalStore.resolveExistingFile(at: records[index].localPath) else {
+                records[index].uploadStatus = .failed
+                records[index].errorMessage = ChatAttachmentError.missingLocalFile(displayName).localizedDescription
+                lastError = ChatAttachmentError.missingLocalFile(displayName)
+                continue
+            }
+            records[index].localPath = localURL.path
+
+            do {
+                let reference = try await ChatAttachmentUploadService.shared.uploadLocalFile(
+                    localURL: localURL,
+                    displayName: displayName,
+                    in: project
+                )
+                records[index].remoteReference = reference
+                records[index].uploadStatus = .uploaded
+                records[index].errorMessage = nil
+            } catch {
+                records[index].uploadStatus = .failed
+                records[index].errorMessage = error.localizedDescription
+                lastError = error
+            }
+            updateMessageAttachments(message, records)
+        }
+
+        let fileReferences = records.compactMap(\.remoteReference)
+        let anyFailed = records.contains { $0.uploadStatus == .failed || $0.remoteReference == nil }
+        if anyFailed {
+            if announceFailure {
+                let detail = lastError?.localizedDescription ?? "Upload incomplete"
+                addErrorMessage("Attachment upload failed: \(detail)")
+            }
+            return AttachmentUploadOutcome(fileReferences: fileReferences, shouldContinue: false)
+        }
+
+        return AttachmentUploadOutcome(fileReferences: fileReferences, shouldContinue: true)
     }
 
     func sendOpenCodeMessage(_ text: String, project: RemoteProject, createUserMessage: Bool = true) async {

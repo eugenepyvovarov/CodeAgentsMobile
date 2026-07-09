@@ -125,7 +125,11 @@ struct ImageAttachmentStager {
 
     private static func makeDestinationURL(directoryName: String, filename: String) throws -> URL {
         let fileManager = FileManager.default
-        let stagingDir = fileManager.temporaryDirectory.appendingPathComponent(directoryName, isDirectory: true)
+        // Prefer Application Support so staged images survive for chat preview + upload retry.
+        // Chat uses `ChatAttachmentLocalStore`; other callers (tasks) keep a named subfolder there too.
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        let stagingDir = base.appendingPathComponent(directoryName, isDirectory: true)
         try fileManager.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         let destination = stagingDir.appendingPathComponent("\(UUID().uuidString)-\(filename)")
         if fileManager.fileExists(atPath: destination.path) {

@@ -293,9 +293,12 @@ extension ChatViewModel {
     }
 
     
-    /// Add an error message to the chat
+    /// Add an app error notice (orange banner UI — not an assistant reply).
     func addErrorMessage(_ text: String) {
-        _ = createMessage(content: text, role: .assistant)
+        let message = createMessage(content: text, role: .assistant)
+        message.isLocalError = true
+        saveChanges()
+        messagesRevision += 1
     }
 
 

@@ -9,6 +9,7 @@ import SwiftUI
 
 struct PlainMessageBubble: View {
     let message: Message
+    var onRetryAttachmentUpload: (() -> Void)? = nil
     @State private var showActionButtons = false
 
     private var chatAttachments: [ChatMessageAttachment] {
@@ -49,7 +50,11 @@ struct PlainMessageBubble: View {
                 
                 VStack(alignment: message.role == MessageRole.user ? .trailing : .leading, spacing: 8) {
                     if hasAttachments {
-                        MessageAttachmentsStrip(attachments: chatAttachments, isUser: isUser)
+                        MessageAttachmentsStrip(
+                            attachments: chatAttachments,
+                            isUser: isUser,
+                            onRetryUpload: onRetryAttachmentUpload
+                        )
                             .frame(maxWidth: bubbleMaxWidth, alignment: isUser ? .trailing : .leading)
                     }
 

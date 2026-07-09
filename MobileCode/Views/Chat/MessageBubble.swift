@@ -13,6 +13,7 @@ struct MessageBubble: View {
     let userLabel: String
     let isStreaming: Bool
     let streamingBlocks: [ContentBlock]
+    var onRetryAttachmentUpload: (() -> Void)? = nil
     
     var body: some View {
         // Check if message has visible content
@@ -24,43 +25,58 @@ struct MessageBubble: View {
                               isStreaming
         let isUser = message.role == MessageRole.user
         let senderLabel = isUser ? userLabel : assistantLabel
+        let isLocalError = message.presentsAsLocalError
         
         if hasVisibleContent {
-            VStack(spacing: 4) {
-                HStack(spacing: 6) {
-                    if isUser {
-                        Spacer()
-                    }
-                    Text(senderLabel)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(.secondary)
-                    if !isUser {
-                        Spacer()
-                    }
-                }
-                // Message content
-                messageContent
-                
-                // Timestamp
-                HStack {
-                    if message.role == MessageRole.user {
-                        Spacer()
-                    }
-                    
+            if isLocalError {
+                // Centered orange error banner — not an assistant chat bubble.
+                VStack(spacing: 4) {
+                    ChatErrorBannerView(text: message.content)
                     Text(DateFormatter.smartFormat(message.timestamp))
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, 8)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .accessibilityIdentifier("chat-message-error-\(message.id.uuidString)")
+            } else {
+                VStack(spacing: 4) {
+                    HStack(spacing: 6) {
+                        if isUser {
+                            Spacer()
+                        }
+                        Text(senderLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.secondary)
+                        if !isUser {
+                            Spacer()
+                        }
+                    }
+                    // Message content
+                    messageContent
                     
-                    if message.role == MessageRole.assistant {
-                        Spacer()
+                    // Timestamp
+                    HStack {
+                        if message.role == MessageRole.user {
+                            Spacer()
+                        }
+                        
+                        Text(DateFormatter.smartFormat(message.timestamp))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 8)
+                        
+                        if message.role == MessageRole.assistant {
+                            Spacer()
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: message.role == MessageRole.user ? .trailing : .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 2)
+                .accessibilityIdentifier("chat-message-\(message.role == MessageRole.user ? "user" : "assistant")-\(message.id.uuidString)")
             }
-            .frame(maxWidth: .infinity, alignment: message.role == MessageRole.user ? .trailing : .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 2)
-            .accessibilityIdentifier("chat-message-\(message.role == MessageRole.user ? "user" : "assistant")-\(message.id.uuidString)")
         }
     }
     
@@ -73,7 +89,7 @@ struct MessageBubble: View {
                     streamingBlocksView
                 }
             } else if !message.content.isEmpty {
-                PlainMessageBubble(message: message)
+                PlainMessageBubble(message: message, onRetryAttachmentUpload: onRetryAttachmentUpload)
             } else {
                 StreamingPlaceholderBubble(isUser: message.role == MessageRole.user)
             }
@@ -84,7 +100,7 @@ struct MessageBubble: View {
         } else if !fallbackBlocks.isEmpty {
             structuredMessageStack([])
         } else {
-            PlainMessageBubble(message: message)
+            PlainMessageBubble(message: message, onRetryAttachmentUpload: onRetryAttachmentUpload)
         }
     }
 

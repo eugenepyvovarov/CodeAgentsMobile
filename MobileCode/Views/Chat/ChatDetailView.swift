@@ -67,12 +67,19 @@ struct ChatDetailView: View {
                     }
                     return existing
                 }()
+                let messageId = sourceMessage.id
                 let bubble = MessageBubble(
                     message: sourceMessage,
                     assistantLabel: assistantLabel,
                     userLabel: userLabel,
                     isStreaming: viewModel.streamingMessage?.id == sourceMessage.id,
-                    streamingBlocks: viewModel.streamingMessage?.id == sourceMessage.id ? viewModel.streamingBlocks : []
+                    streamingBlocks: viewModel.streamingMessage?.id == sourceMessage.id ? viewModel.streamingBlocks : [],
+                    onRetryAttachmentUpload: {
+                        Task {
+                            guard let live = viewModel.messages.first(where: { $0.id == messageId }) else { return }
+                            await viewModel.retryFailedAttachments(on: live)
+                        }
+                    }
                 )
 
                 if message.id == lastRenderedMessageId {
@@ -532,23 +539,7 @@ struct ChatDetailView: View {
     }
 
     private func stageLocalFile(_ url: URL) throws -> URL {
-        let didAccess = url.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let fileManager = FileManager.default
-        let stagingDir = fileManager.temporaryDirectory.appendingPathComponent("chat-attachments", isDirectory: true)
-        try fileManager.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-
-        let destination = stagingDir.appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.copyItem(at: url, to: destination)
-        return destination
+        try ChatAttachmentLocalStore.stageCopy(from: url)
     }
 
     private var chatLocalization: ChatLocalization {

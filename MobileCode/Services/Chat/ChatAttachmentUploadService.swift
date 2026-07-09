@@ -48,16 +48,13 @@ final class ChatAttachmentUploadService {
                 }
 
             case .localFile(_, let displayName, let localURL):
-                guard fileManager.fileExists(atPath: localURL.path) else {
-                    throw ChatAttachmentError.missingLocalFile(displayName)
-                }
-
-                let safeName = sanitizeFilename(displayName)
-                let remoteFileName = "\(UUID().uuidString.prefix(8))-\(safeName)"
-                let remotePath = "\(remoteAttachmentsDir)/\(remoteFileName)"
-
-                try await uploadFileChunked(localURL: localURL, remotePath: remotePath, session: session)
-                references.append(AgentProjectFileLayout.attachmentReference(fileName: remoteFileName))
+                let reference = try await uploadLocalFile(
+                    localURL: localURL,
+                    displayName: displayName,
+                    remoteAttachmentsDir: remoteAttachmentsDir,
+                    session: session
+                )
+                references.append(reference)
             }
         }
 
@@ -67,6 +64,44 @@ final class ChatAttachmentUploadService {
             unique.append(reference)
         }
         return unique
+    }
+
+    /// Upload a single local file (used by initial send and failed-attachment retry).
+    func uploadLocalFile(
+        localURL: URL,
+        displayName: String,
+        in project: RemoteProject
+    ) async throws -> String {
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        let remoteAttachmentsDir = AgentProjectFileLayout.remotePath(
+            projectPath: project.path,
+            relativePath: AgentProjectFileLayout.attachmentsRelativePath
+        )
+        try await ensureRemoteDirectory(remoteAttachmentsDir, session: session)
+        return try await uploadLocalFile(
+            localURL: localURL,
+            displayName: displayName,
+            remoteAttachmentsDir: remoteAttachmentsDir,
+            session: session
+        )
+    }
+
+    private func uploadLocalFile(
+        localURL: URL,
+        displayName: String,
+        remoteAttachmentsDir: String,
+        session: SSHSession
+    ) async throws -> String {
+        guard fileManager.fileExists(atPath: localURL.path) else {
+            throw ChatAttachmentError.missingLocalFile(displayName)
+        }
+
+        let safeName = sanitizeFilename(displayName)
+        let remoteFileName = "\(UUID().uuidString.prefix(8))-\(safeName)"
+        let remotePath = "\(remoteAttachmentsDir)/\(remoteFileName)"
+
+        try await uploadFileChunked(localURL: localURL, remotePath: remotePath, session: session)
+        return AgentProjectFileLayout.attachmentReference(fileName: remoteFileName)
     }
 
     // MARK: - Private

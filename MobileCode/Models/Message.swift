@@ -30,6 +30,9 @@ final class Message {
 
     /// JSON-encoded `[ChatMessageAttachment]` for local previews and upload status.
     var attachmentsJSON: Data?
+
+    /// App-generated error notice (upload failure, etc.) — rendered as an error banner, not an assistant reply.
+    var isLocalError: Bool = false
     
     init(content: String = "", role: MessageRole = .user, projectId: UUID? = nil, originalJSON: Data? = nil, isComplete: Bool = true, isStreaming: Bool = false) {
         self.id = UUID()
@@ -40,6 +43,21 @@ final class Message {
         self.originalJSON = originalJSON
         self.isComplete = isComplete
         self.isStreaming = isStreaming
+        self.isLocalError = false
+    }
+
+    /// Whether this message should use the dedicated error banner UI.
+    var presentsAsLocalError: Bool {
+        if isLocalError { return true }
+        // Legacy rows created before `isLocalError` existed.
+        guard role == .assistant,
+              !hasChatAttachments,
+              structuredMessages == nil,
+              structuredContent == nil,
+              !isStreaming else {
+            return false
+        }
+        return ChatErrorPresentation.looksLikeLegacyLocalError(content)
     }
 
     var chatAttachments: [ChatMessageAttachment] {

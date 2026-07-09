@@ -13,6 +13,7 @@ import UIKit
 struct MessageAttachmentsStrip: View {
     let attachments: [ChatMessageAttachment]
     let isUser: Bool
+    var onRetryUpload: (() -> Void)? = nil
 
     var body: some View {
         if attachments.isEmpty {
@@ -20,10 +21,19 @@ struct MessageAttachmentsStrip: View {
         } else {
             VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
                 ForEach(attachments) { attachment in
-                    MessageAttachmentCard(attachment: attachment, isUser: isUser)
+                    MessageAttachmentCard(
+                        attachment: attachment,
+                        isUser: isUser,
+                        onRetryUpload: canRetry(attachment) ? onRetryUpload : nil
+                    )
                 }
             }
         }
+    }
+
+    private func canRetry(_ attachment: ChatMessageAttachment) -> Bool {
+        guard attachment.uploadStatus == .failed, attachment.remoteReference == nil else { return false }
+        return ChatAttachmentLocalStore.resolveExistingFile(at: attachment.localPath) != nil
     }
 }
 
@@ -32,6 +42,7 @@ struct MessageAttachmentsStrip: View {
 private struct MessageAttachmentCard: View {
     let attachment: ChatMessageAttachment
     let isUser: Bool
+    var onRetryUpload: (() -> Void)? = nil
 
     @State private var previewPayload: CodeAgentsUIMediaPreviewPayload?
     @State private var fullscreenPayload: FullscreenImagePayload?
@@ -50,20 +61,34 @@ private struct MessageAttachmentCard: View {
                     openPreview()
                 }
 
-            if showsStatusBadge {
-                MessageAttachmentStatusBadge(status: attachment.uploadStatus)
-                    .padding(6)
-            }
+            statusOverlay
+                .padding(6)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint(canPreview ? "Shows full size" : "")
+        .accessibilityHint(accessibilityHint)
         .sheet(item: $previewPayload) { payload in
             CodeAgentsUIMediaPreviewController(urls: payload.urls, startIndex: payload.startIndex)
         }
         .fullScreenCover(item: $fullscreenPayload) { payload in
             MessageAttachmentFullscreenImageView(image: payload.image)
+        }
+    }
+
+    @ViewBuilder
+    private var statusOverlay: some View {
+        switch attachment.uploadStatus {
+        case .uploading:
+            MessageAttachmentStatusBadge(status: .uploading)
+        case .failed:
+            if let onRetryUpload {
+                MessageAttachmentRetryChirp(action: onRetryUpload)
+            } else {
+                MessageAttachmentStatusBadge(status: .failed)
+            }
+        case .pending, .uploaded:
+            EmptyView()
         }
     }
 
@@ -95,28 +120,16 @@ private struct MessageAttachmentCard: View {
     }
 
     private var loadedImage: UIImage? {
-        guard let path = attachment.localPath, !path.isEmpty else { return nil }
-        return UIImage(contentsOfFile: path)
+        guard let url = resolvedLocalURL else { return nil }
+        return UIImage(contentsOfFile: url.path)
     }
 
-    private var localFileURL: URL? {
-        guard let path = attachment.localPath, !path.isEmpty else { return nil }
-        let url = URL(fileURLWithPath: path)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    private var resolvedLocalURL: URL? {
+        ChatAttachmentLocalStore.resolveExistingFile(at: attachment.localPath)
     }
 
     private var canPreview: Bool {
-        localFileURL != nil || loadedImage != nil
-    }
-
-    /// Only surface in-progress / failure — success is silent.
-    private var showsStatusBadge: Bool {
-        switch attachment.uploadStatus {
-        case .uploading, .failed:
-            return true
-        case .pending, .uploaded:
-            return false
-        }
+        resolvedLocalURL != nil || loadedImage != nil
     }
 
     private var placeholderBackground: Color {
@@ -135,10 +148,20 @@ private struct MessageAttachmentCard: View {
         case .uploading:
             return "\(attachment.displayName), uploading"
         case .failed:
+            if onRetryUpload != nil {
+                return "\(attachment.displayName), upload failed, retry available"
+            }
             return "\(attachment.displayName), upload failed"
         case .pending, .uploaded:
             return attachment.displayName
         }
+    }
+
+    private var accessibilityHint: String {
+        if attachment.uploadStatus == .failed, onRetryUpload != nil {
+            return "Retries upload"
+        }
+        return canPreview ? "Shows full size" : ""
     }
 
     private func openPreview() {
@@ -146,7 +169,7 @@ private struct MessageAttachmentCard: View {
             fullscreenPayload = FullscreenImagePayload(image: image)
             return
         }
-        if let url = localFileURL {
+        if let url = resolvedLocalURL {
             previewPayload = CodeAgentsUIMediaPreviewPayload(urls: [url], startIndex: 0)
         }
     }
@@ -222,7 +245,7 @@ private struct MessageAttachmentFullscreenImageView: View {
     }
 }
 
-// MARK: - Light status badge
+// MARK: - Light status badge / retry chirp
 
 /// Only used for in-progress / failure — success is intentionally silent.
 struct MessageAttachmentStatusBadge: View {
@@ -247,5 +270,27 @@ struct MessageAttachmentStatusBadge: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// Small tappable chirp when a cached local file can be re-uploaded.
+struct MessageAttachmentRetryChirp: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text("Retry?")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.orange.opacity(0.92))
+                        .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Retry upload")
     }
 }
