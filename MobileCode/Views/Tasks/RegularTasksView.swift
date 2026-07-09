@@ -103,6 +103,10 @@ struct RegularTasksView: View {
         )
         .onAppear {
             refreshProviderMismatch()
+            Task { await refreshTasks() }
+        }
+        .refreshable {
+            await refreshTasks()
         }
         .sheet(isPresented: $showingNewTask) {
             RegularTaskEditorView(syncReporter: syncReporter)
@@ -197,6 +201,15 @@ struct RegularTasksView: View {
                     level: .warning
                 )
             }
+            // Keep managed MCP headers on the same agent_id Regular Tasks uses for listing.
+            do {
+                try await CodingAgentMCPService.shared.ensureManagedSchedulerServerIfNeeded(for: project)
+            } catch {
+                SSHLogger.log(
+                    "Failed to re-provision scheduler MCP after identity ensure: \(error.localizedDescription)",
+                    level: .warning
+                )
+            }
             let remoteTasks = try await AgentTaskService.shared.fetchTasks(for: project)
             applyRemoteTasks(remoteTasks, project: project)
             syncReporter.markSuccess()
@@ -213,30 +226,52 @@ struct RegularTasksView: View {
             }
         }
 
+        var didMutate = false
         for remote in remoteTasks {
             if let local = localByRemoteId[remote.id] {
                 updateLocalTask(local, from: remote)
-            } else if let schedule = remote.schedule, let prompt = remote.prompt {
-                let newTask = AgentScheduledTask(
-                    projectId: project.id,
-                    title: remote.title ?? "",
-                    prompt: prompt,
-                    isEnabled: remote.isEnabled ?? true,
-                    timeZoneId: remote.timeZoneId ?? TimeZone.current.identifier,
-                    frequency: schedule.frequency,
-                    interval: schedule.interval,
-                    weekdayMask: schedule.weekdayMask,
-                    monthlyMode: schedule.monthlyMode,
-                    dayOfMonth: schedule.dayOfMonth,
-                    ordinalWeek: schedule.ordinalWeek,
-                    ordinalWeekday: schedule.ordinalWeekday,
-                    monthOfYear: schedule.monthOfYear,
-                    timeOfDayMinutes: schedule.timeOfDayMinutes,
-                    nextRunAt: remote.nextRunAt,
-                    lastRunAt: remote.lastRunAt,
-                    remoteId: remote.id
+                didMutate = true
+                continue
+            }
+
+            // MCP / older daemon payloads may omit a parseable schedule; still import the task.
+            guard let prompt = remote.prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty else {
+                SSHLogger.log(
+                    "Skipping remote task \(remote.id): missing prompt (title=\(remote.title ?? ""))",
+                    level: .warning
                 )
-                modelContext.insert(newTask)
+                continue
+            }
+
+            let schedule = remote.schedule
+            let newTask = AgentScheduledTask(
+                projectId: project.id,
+                title: remote.title ?? "",
+                prompt: prompt,
+                isEnabled: remote.isEnabled ?? true,
+                timeZoneId: remote.timeZoneId ?? TimeZone.current.identifier,
+                frequency: schedule?.frequency ?? .daily,
+                interval: schedule?.interval ?? 1,
+                weekdayMask: schedule?.weekdayMask ?? 0,
+                monthlyMode: schedule?.monthlyMode ?? .dayOfMonth,
+                dayOfMonth: schedule?.dayOfMonth ?? 1,
+                ordinalWeek: schedule?.ordinalWeek ?? .first,
+                ordinalWeekday: schedule?.ordinalWeekday ?? Weekday.current(in: Calendar.current),
+                monthOfYear: schedule?.monthOfYear ?? 1,
+                timeOfDayMinutes: schedule?.timeOfDayMinutes ?? AgentScheduledTask.defaultTimeOfDayMinutes(),
+                nextRunAt: remote.nextRunAt,
+                lastRunAt: remote.lastRunAt,
+                remoteId: remote.id
+            )
+            modelContext.insert(newTask)
+            didMutate = true
+        }
+
+        if didMutate {
+            do {
+                try modelContext.save()
+            } catch {
+                SSHLogger.log("Failed to save synced scheduled tasks: \(error.localizedDescription)", level: .error)
             }
         }
     }

@@ -28,6 +28,10 @@ struct ProxyTaskRecord {
     let schedule: ProxyTaskSchedule?
     let nextRunAt: Date?
     let lastRunAt: Date?
+    /// Present on daemon payloads; used to recover tasks after agent_id drift.
+    let agentId: String?
+    /// Project path the task was created against (daemon `cwd`).
+    let cwd: String?
 }
 
 enum ProxyTaskError: LocalizedError {
@@ -74,14 +78,114 @@ final class ProxyTaskService {
     func fetchTasks(for project: RemoteProject) async throws -> [ProxyTaskRecord] {
         try await withDaemonOperation(project: project, forceRefresh: false) { session in
             _ = try await self.resolveCanonicalConversationId(for: project, session: session)
-            let agentId = project.proxyAgentId ?? project.id.uuidString
-            let query = self.buildQuery([
-                "agent_id": agentId
-            ])
-            let path = "/v1/agent/tasks\(query)"
-            let response = try await self.client.request(session: session, method: "GET", path: path, body: nil)
-            return try self.parseTaskList(from: response.body)
+            let agentId = Self.resolvedAgentId(for: project)
+
+            let primary = try await self.requestTaskList(session: session, agentId: agentId)
+            // MCP create can store tasks under a drifted agent_id (case / pre-identity UUID).
+            // Always merge project-scoped tasks from the unfiltered list so sync never drops them.
+            let all = try await self.requestTaskList(session: session, agentId: nil)
+            let recovered = Self.tasksMatching(project: project, preferredAgentId: agentId, from: all)
+
+            var byId: [String: ProxyTaskRecord] = [:]
+            for task in primary {
+                byId[task.id] = task
+            }
+            for task in recovered {
+                byId[task.id] = task
+            }
+
+            if primary.isEmpty, !recovered.isEmpty {
+                SSHLogger.log(
+                    "Task fetch agent_id=\(agentId) empty; recovered \(recovered.count) via cwd/agent alias for \(project.path)",
+                    level: .warning
+                )
+            } else if recovered.count > primary.count {
+                SSHLogger.log(
+                    "Task fetch merged \(recovered.count - primary.count) drifted task(s) for agent_id=\(agentId)",
+                    level: .info
+                )
+            }
+
+            return Array(byId.values).sorted { lhs, rhs in
+                (lhs.nextRunAt ?? .distantFuture) < (rhs.nextRunAt ?? .distantFuture)
+            }
         }
+    }
+
+    /// Canonical agent id for daemon task APIs and managed scheduler MCP headers.
+    /// Prefer stored identity; fall back to lowercased project UUID (matches MCP provisioning).
+    static func resolvedAgentId(for project: RemoteProject) -> String {
+        if let raw = project.proxyAgentId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            return raw
+        }
+        return project.id.uuidString.lowercased()
+    }
+
+    /// Tasks that belong to this project despite agent_id casing/identity drift.
+    static func tasksMatching(
+        project: RemoteProject,
+        preferredAgentId: String,
+        from tasks: [ProxyTaskRecord]
+    ) -> [ProxyTaskRecord] {
+        let agentAliases = agentIdAliases(for: project, preferred: preferredAgentId)
+        let projectPath = normalizedCWD(project.path)
+        let projectKey = projectScopeKey(projectPath)
+
+        return tasks.filter { task in
+            if let agentId = task.agentId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !agentId.isEmpty,
+               agentAliases.contains(agentId.lowercased()) {
+                return true
+            }
+
+            guard let cwd = task.cwd else { return false }
+            let normalized = normalizedCWD(cwd)
+            if !projectPath.isEmpty, normalized == projectPath {
+                return true
+            }
+            let key = projectScopeKey(normalized)
+            return !projectKey.isEmpty && key == projectKey
+        }
+    }
+
+    private static func agentIdAliases(for project: RemoteProject, preferred: String) -> Set<String> {
+        var aliases: Set<String> = [preferred.lowercased()]
+        aliases.insert(project.id.uuidString.lowercased())
+        aliases.insert(project.id.uuidString.uppercased())
+        if let stored = project.proxyAgentId?.trimmingCharacters(in: .whitespacesAndNewlines), !stored.isEmpty {
+            aliases.insert(stored.lowercased())
+        }
+        return aliases
+    }
+
+    private static func normalizedCWD(_ value: String) -> String {
+        var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        while normalized.count > 1, normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized.isEmpty ? "/" : normalized
+    }
+
+    private static func projectScopeKey(_ cwd: String) -> String {
+        let normalized = normalizedCWD(cwd)
+        if normalized == "/" { return "" }
+        let marker = "/projects/"
+        if let range = normalized.range(of: marker) {
+            return String(normalized[range.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        return (normalized as NSString).lastPathComponent
+    }
+
+    private func requestTaskList(session: SSHSession, agentId: String?) async throws -> [ProxyTaskRecord] {
+        let query: String
+        if let agentId, !agentId.isEmpty {
+            query = buildQuery(["agent_id": agentId])
+        } else {
+            query = ""
+        }
+        let path = "/v1/agent/tasks\(query)"
+        let response = try await client.request(session: session, method: "GET", path: path, body: nil)
+        return try parseTaskList(from: response.body)
     }
 
     func upsertTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
@@ -244,7 +348,7 @@ final class ProxyTaskService {
         project: RemoteProject,
         conversationId: String
     ) throws -> String {
-        let agentId = project.proxyAgentId ?? project.id.uuidString
+        let agentId = Self.resolvedAgentId(for: project)
         var payload: [String: Any] = [
             "agent_id": agentId,
             "conversation_id": conversationId,
@@ -270,7 +374,7 @@ final class ProxyTaskService {
 
     private func activeOpenCodeSessionPayload(project: RemoteProject, sessionId: String?) throws -> String {
         var payload: [String: Any] = [
-            "agent_id": project.proxyAgentId ?? project.id.uuidString,
+            "agent_id": Self.resolvedAgentId(for: project),
             "cwd": project.path
         ]
         if let group = project.proxyConversationGroupId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -431,7 +535,9 @@ final class ProxyTaskService {
             timeZoneId: stringValue(dict["time_zone"] ?? dict["timezone"] ?? dict["timeZone"]),
             schedule: schedule,
             nextRunAt: nextRun,
-            lastRunAt: lastRun
+            lastRunAt: lastRun,
+            agentId: stringValue(dict["agent_id"] ?? dict["agentId"]),
+            cwd: stringValue(dict["cwd"] ?? dict["project_path"] ?? dict["projectPath"])
         )
     }
 

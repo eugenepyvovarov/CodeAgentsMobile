@@ -37,7 +37,8 @@ final class ProxyAgentIdentityService {
             session: session
         )
 
-        let fallbackAgentId = project.proxyAgentId ?? project.id.uuidString
+        // Match ProxyTaskService / MCP scheduler headers (lowercased UUID fallback).
+        let fallbackAgentId = ProxyTaskService.resolvedAgentId(for: project)
         let serverAgentId = parseAgentId(from: identity.rawJSON)
 
         let resolvedAgentId: String

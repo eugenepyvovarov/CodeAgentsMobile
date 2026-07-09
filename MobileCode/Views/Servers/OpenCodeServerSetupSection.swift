@@ -19,99 +19,34 @@ struct OpenCodeServerSetupSection: View {
     @State private var outputLines: [String] = []
     @State private var showError = false
     @State private var errorMessage = ""
+    @State private var showInstallLog = false
+
+    private var isBusy: Bool {
+        isChecking || isInstalling
+    }
 
     var body: some View {
         Section {
-            HStack {
-                Label("Status", systemImage: statusIconName)
-                    .foregroundStyle(statusColor)
-                Spacer()
-                Text(statusLabel)
-                    .foregroundColor(.secondary)
-            }
+            statusRow
 
-            TextField("Server Username", text: $username)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("opencode-server-username-field")
-
-            SecureField(hasStoredCredentials ? "New Server Password" : "Server Password", text: $password)
-                .accessibilityIdentifier("opencode-server-password-field")
-
-            HStack {
-                Button {
-                    saveCredentials()
-                } label: {
-                    Label("Save Auth", systemImage: "key")
-                }
-                .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("opencode-server-save-auth-button")
-
-                Spacer()
-
-                Button(role: .destructive) {
-                    clearCredentials()
-                } label: {
-                    Label("Clear", systemImage: "xmark.circle")
-                }
-                .disabled(!hasStoredCredentials && password.isEmpty)
-                .accessibilityIdentifier("opencode-server-clear-auth-button")
-            }
-
-            Button {
-                Task {
-                    await checkStatus()
-                }
-            } label: {
-                HStack {
-                    if isChecking {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                    }
-                    Label(isChecking ? "Checking..." : "Check OpenCode", systemImage: "stethoscope")
-                }
-            }
-            .disabled(isChecking || isInstalling)
-            .accessibilityIdentifier("opencode-server-check-button")
-
-            Button {
-                Task {
-                    await installOrRepair()
-                }
-            } label: {
-                HStack {
-                    if isInstalling {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                    }
-                    Label(isInstalling ? "Installing..." : "Install or Repair OpenCode", systemImage: "arrow.down.circle")
-                }
-            }
-            .disabled(isChecking || isInstalling)
-            .accessibilityIdentifier("opencode-server-install-button")
-
-            if let status {
+            if let status, !status.message.isEmpty {
                 Text(status.message)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
+            authFields
+            authActions
+            installButton
+
             if !outputLines.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(outputLines.suffix(5), id: \.self) { line in
-                        Text(line)
-                            .font(.caption2.monospaced())
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-                .padding(.vertical, 4)
+                installLog
             }
         } header: {
-            Text("OpenCode Runtime")
+            Text("OpenCode")
         } footer: {
-            Text("OpenCode runs at 127.0.0.1:4096. The CodeAgents daemon runs at 127.0.0.1:8787 for scheduled tasks and push. Install/repair uses sudo and configures password auth when credentials are available.")
-                .font(.caption)
+            Text("OpenCode runs at 127.0.0.1:4096. Install/repair uses sudo and configures password auth when credentials are available.")
         }
         .task {
             loadStoredCredentials()
@@ -122,6 +57,150 @@ struct OpenCodeServerSetupSection: View {
             Text(errorMessage)
         }
     }
+
+    // MARK: - Status
+
+    private var statusRow: some View {
+        HStack(spacing: 12) {
+            statusChip
+
+            Spacer(minLength: 0)
+
+            Button {
+                Task { await checkStatus() }
+            } label: {
+                if isChecking {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label("Check", systemImage: "stethoscope")
+                        .labelStyle(.titleAndIcon)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isBusy)
+            .accessibilityIdentifier("opencode-server-check-button")
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var statusChip: some View {
+        let content = HStack(spacing: 6) {
+            Image(systemName: statusIconName)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(statusColor)
+                .imageScale(.small)
+
+            Text(statusLabel)
+                .fontWeight(.semibold)
+        }
+        .font(.caption)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+
+        if #available(iOS 26, *) {
+            content
+                .glassEffect(.regular.tint(statusColor.opacity(0.18)), in: .capsule)
+        } else {
+            content
+                .background(statusColor.opacity(0.14), in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(statusColor.opacity(0.28), lineWidth: 1)
+                }
+        }
+    }
+
+    // MARK: - Auth
+
+    private var authFields: some View {
+        Group {
+            TextField("Username", text: $username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.username)
+                .accessibilityIdentifier("opencode-server-username-field")
+
+            SecureField(
+                hasStoredCredentials ? "New Password (optional)" : "Password",
+                text: $password
+            )
+            .textContentType(.password)
+            .accessibilityIdentifier("opencode-server-password-field")
+
+            if hasStoredCredentials && password.isEmpty {
+                Label("Password stored on this device", systemImage: "checkmark.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var authActions: some View {
+        HStack(spacing: 12) {
+            Button {
+                saveCredentials()
+            } label: {
+                Label("Save Auth", systemImage: "key.fill")
+            }
+            .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isBusy)
+            .accessibilityIdentifier("opencode-server-save-auth-button")
+
+            Spacer(minLength: 0)
+
+            Button(role: .destructive) {
+                clearCredentials()
+            } label: {
+                Label("Clear", systemImage: "trash")
+            }
+            .disabled((!hasStoredCredentials && password.isEmpty) || isBusy)
+            .accessibilityIdentifier("opencode-server-clear-auth-button")
+        }
+    }
+
+    // MARK: - Install
+
+    private var installButton: some View {
+        Button {
+            Task { await installOrRepair() }
+        } label: {
+            HStack {
+                if isInstalling {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Installing…")
+                } else {
+                    Label("Install or Repair", systemImage: "arrow.down.circle")
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .disabled(isBusy)
+        .accessibilityIdentifier("opencode-server-install-button")
+    }
+
+    private var installLog: some View {
+        DisclosureGroup(isExpanded: $showInstallLog) {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(outputLines.suffix(8), id: \.self) { line in
+                    Text(line)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.vertical, 4)
+        } label: {
+            Label("Install log", systemImage: "doc.text")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Status helpers
 
     private var statusLabel: String {
         guard let status else {
@@ -153,17 +232,17 @@ struct OpenCodeServerSetupSection: View {
         case .available:
             return "checkmark.circle.fill"
         case .authRequired:
-            return "lock.circle"
+            return "lock.circle.fill"
         case .notInstalled:
-            return "arrow.down.circle"
+            return "arrow.down.circle.fill"
         case .notRunning:
-            return "pause.circle"
+            return "pause.circle.fill"
         case .daemonUnavailable:
             return "antenna.radiowaves.left.and.right.slash"
         case .unreachable, .sshUnavailable:
-            return "xmark.circle"
+            return "xmark.circle.fill"
         case .unknown, nil:
-            return "questionmark.circle"
+            return "questionmark.circle.fill"
         }
     }
 
@@ -179,6 +258,8 @@ struct OpenCodeServerSetupSection: View {
             return .secondary
         }
     }
+
+    // MARK: - Actions
 
     private func loadStoredCredentials() {
         username = (try? KeychainManager.shared.retrieveOpenCodeServerUsername(for: server.id))
@@ -221,10 +302,7 @@ struct OpenCodeServerSetupSection: View {
     @MainActor
     private func checkStatus() async {
         isChecking = true
-        defer {
-            isChecking = false
-        }
-
+        defer { isChecking = false }
         status = await OpenCodeInstallerService.shared.checkRuntimeStatus(on: server)
     }
 
@@ -232,9 +310,8 @@ struct OpenCodeServerSetupSection: View {
     private func installOrRepair() async {
         isInstalling = true
         outputLines = []
-        defer {
-            isInstalling = false
-        }
+        showInstallLog = true
+        defer { isInstalling = false }
 
         do {
             let installUsername = sanitizedUsername()

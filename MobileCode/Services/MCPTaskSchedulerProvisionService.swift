@@ -72,7 +72,8 @@ final class MCPTaskSchedulerProvisionService {
     }
 
     private func resolvedAgentId(for project: RemoteProject) -> String {
-        if let candidate = sanitizeProxyId(project.proxyAgentId) {
+        // Keep in lockstep with ProxyTaskService so MCP-created tasks list under Regular Tasks.
+        if let candidate = sanitizeProxyId(ProxyTaskService.resolvedAgentId(for: project)) {
             return candidate
         }
         return project.id.uuidString.lowercased()
