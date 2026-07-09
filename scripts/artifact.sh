@@ -136,11 +136,42 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
 
   VERSION_ARG=(--version "${RELEASE_VERSION_RESOLVED}")
   BUILD_ARG=(--build-number "${RELEASE_BUILD_RESOLVED}")
+
+  # Stable DerivedData for TestFlight archives. Xcode/SPM can fail on a clean machine with
+  # "The folder artifacts doesn't exist" unless SourcePackages/artifacts is created before resolve.
+  TF_DERIVED_DATA_PATH="${CODEAGENTS_TESTFLIGHT_DERIVED_DATA_PATH:-${DERIVED_DATA_PATH}}"
+  TF_PACKAGE_CACHE_PATH="${CODEAGENTS_PACKAGE_CACHE_PATH:-${ROOT_DIR}/.build/opencode-artifact/PackageCache}"
+  mkdir -p \
+    "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts" \
+    "${TF_DERIVED_DATA_PATH}/SourcePackages/checkouts" \
+    "${TF_DERIVED_DATA_PATH}/SourcePackages/repositories" \
+    "${TF_PACKAGE_CACHE_PATH}"
+
+  # Seed artifacts from a prior warm resolve when present (runner host cache).
+  if [[ -d "${HOME}/Library/Caches/org.swift.swiftpm/artifacts" ]]; then
+    # Best-effort; ignore permission/copy races.
+    cp -R "${HOME}/Library/Caches/org.swift.swiftpm/artifacts/." \
+      "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts/" 2>/dev/null || true
+  fi
+
+  # Pre-resolve with the same DerivedData so binary targets populate artifacts before archive.
+  echo "Resolving Swift packages for TestFlight (derived data: ${TF_DERIVED_DATA_PATH})..." >&2
+  xcodebuild -resolvePackageDependencies \
+    -project "${PROJECT_PATH}" \
+    -scheme "${SCHEME}" \
+    -derivedDataPath "${TF_DERIVED_DATA_PATH}" \
+    -packageCachePath "${TF_PACKAGE_CACHE_PATH}"
+  mkdir -p "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts"
+
   XCODEBUILD_AUTH_FLAGS=(
     -allowProvisioningUpdates
     -authenticationKeyPath "${PRIVATE_KEY_FILE}"
     -authenticationKeyID "${ASC_KEY_ID}"
     -authenticationKeyIssuerID "${ASC_ISSUER_ID}"
+    -derivedDataPath
+    "${TF_DERIVED_DATA_PATH}"
+    -packageCachePath
+    "${TF_PACKAGE_CACHE_PATH}"
   )
   ASC_ARCHIVE_FLAGS=()
   ASC_EXPORT_FLAGS=()
