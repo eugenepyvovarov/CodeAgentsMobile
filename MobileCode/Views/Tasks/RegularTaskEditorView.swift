@@ -47,6 +47,7 @@ struct RegularTaskEditorView: View {
     @State private var isUploadingAttachments = false
 
     @State private var isSaving = false
+    @State private var isRunningNow = false
     @State private var showDeleteAlert = false
     @State private var showError = false
     @State private var errorMessage = ""
@@ -227,6 +228,25 @@ struct RegularTaskEditorView: View {
                 }
 
                 if task != nil {
+                    Section {
+                        Button {
+                            runTaskNow()
+                        } label: {
+                            if isRunningNow {
+                                HStack {
+                                    ProgressView()
+                                    Text("Starting…")
+                                }
+                            } else {
+                                Label("Run Now", systemImage: "play.fill")
+                            }
+                        }
+                        .disabled(isRunningNow || isSaving || providerMismatch != nil)
+                        .accessibilityIdentifier("regular-task-run-now-button")
+                    } footer: {
+                        Text("Runs the prompt immediately without changing the next scheduled time.")
+                    }
+
                     Section {
                         Button("Delete Task", role: .destructive) {
                             showDeleteAlert = true
@@ -549,9 +569,61 @@ struct RegularTaskEditorView: View {
         }
     }
 
+    private func runTaskNow() {
+        guard !isRunningNow else { return }
+        Task {
+            await performRunNow()
+        }
+    }
+
     private func deleteTask() {
         Task {
             await performDelete()
+        }
+    }
+
+    @MainActor
+    private func performRunNow() async {
+        if providerMismatch != nil {
+            errorMessage = "Provider changed. Clear chat to continue, or switch back to the previous provider."
+            showError = true
+            return
+        }
+
+        guard let task else { return }
+        guard let project = projectContext.activeProject else {
+            errorMessage = "No active agent selected."
+            showError = true
+            return
+        }
+
+        isRunningNow = true
+        defer { isRunningNow = false }
+
+        syncReporter?.markSyncing()
+
+        do {
+            do {
+                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure agent id for run-now (projectId=\(project.id)): \(error)", level: .warning)
+            }
+
+            // Unsaved local-only tasks must hit the daemon first.
+            if task.remoteId == nil || task.remoteId?.isEmpty == true {
+                let record = try await AgentTaskService.shared.upsertTask(task, project: project)
+                applySyncRecord(record, to: task)
+            }
+
+            let record = try await AgentTaskService.shared.runTaskNow(task, project: project)
+            applySyncRecord(record, to: task)
+            try? modelContext.save()
+            syncReporter?.markSuccess()
+            SSHLogger.log("Manual task run started remoteId=\(task.remoteId ?? "nil")", level: .info)
+        } catch {
+            syncReporter?.markError(error.localizedDescription)
+            errorMessage = error.localizedDescription
+            showError = true
         }
     }
 

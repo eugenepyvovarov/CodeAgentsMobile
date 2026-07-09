@@ -28,6 +28,7 @@ struct ProxyTaskRecord {
     let schedule: ProxyTaskSchedule?
     let nextRunAt: Date?
     let lastRunAt: Date?
+    let lastError: String?
     /// Present on daemon payloads; used to recover tasks after agent_id drift.
     let agentId: String?
     /// Project path the task was created against (daemon `cwd`).
@@ -213,6 +214,28 @@ final class ProxyTaskService {
         try await withDaemonOperation(project: project, forceRefresh: true) { session in
             let path = "/v1/agent/tasks/\(remoteId)"
             _ = try await self.client.request(session: session, method: "DELETE", path: path, body: nil)
+        }
+    }
+
+    /// Trigger an immediate manual run on the daemon (does not advance cron next_run).
+    @discardableResult
+    func runTaskNow(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
+        guard let remoteId = task.remoteId, !remoteId.isEmpty else {
+            throw ProxyTaskError.invalidResponse("Task is not synced to the agent daemon yet. Save it first.")
+        }
+        return try await withDaemonOperation(project: project, forceRefresh: true) { session in
+            let path = "/v1/agent/tasks/\(remoteId)/run"
+            let response = try await self.client.request(
+                session: session,
+                method: "POST",
+                path: path,
+                body: nil
+            )
+            // 202 Accepted is success for fire-and-forget runs.
+            if response.statusCode != 200 && response.statusCode != 202 {
+                throw ProxyTaskError.httpError(status: response.statusCode, body: response.body)
+            }
+            return try self.parseTask(from: response.body)
         }
     }
 
@@ -535,6 +558,7 @@ final class ProxyTaskService {
 
         let nextRun = parseDate(dict["next_run_at"] ?? dict["nextRunAt"])
         let lastRun = parseDate(dict["last_run_at"] ?? dict["lastRunAt"])
+        let lastError = stringValue(dict["last_error"] ?? dict["lastError"])
 
         return ProxyTaskRecord(
             id: id,
@@ -545,6 +569,7 @@ final class ProxyTaskService {
             schedule: schedule,
             nextRunAt: nextRun,
             lastRunAt: lastRun,
+            lastError: lastError,
             agentId: stringValue(dict["agent_id"] ?? dict["agentId"]),
             cwd: stringValue(dict["cwd"] ?? dict["project_path"] ?? dict["projectPath"])
         )

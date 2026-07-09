@@ -35,7 +35,7 @@ struct ChatView: View {
                         isChecking: isCheckingOpenCodeRuntime,
                         onCheckAgain: {
                             Task {
-                                await refreshOpenCodeRuntimeStatus()
+                                await refreshOpenCodeRuntimeStatus(force: true)
                             }
                         },
                         onOpenServerSettings: {
@@ -256,7 +256,7 @@ struct ChatView: View {
     private var activeRuntimeKind: CodingAgentRuntimeKind { .openCode }
 
     @MainActor
-    private func refreshOpenCodeRuntimeStatus() async {
+    private func refreshOpenCodeRuntimeStatus(force: Bool = false) async {
         guard let server = projectContext.activeServer else {
             openCodeRuntimeStatus = nil
             return
@@ -268,7 +268,7 @@ struct ChatView: View {
             isCheckingOpenCodeRuntime = false
         }
 
-        let status = await OpenCodeInstallerService.shared.checkRuntimeStatus(on: server)
+        let status = await OpenCodeInstallerService.shared.checkRuntimeStatus(on: server, force: force)
         openCodeRuntimeStatus = status.blocksForegroundChat ? status : nil
     }
 }

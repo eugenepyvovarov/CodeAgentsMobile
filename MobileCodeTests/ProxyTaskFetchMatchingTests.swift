@@ -51,6 +51,7 @@ final class ProxyTaskFetchMatchingTests: XCTestCase {
             ),
             nextRunAt: nil,
             lastRunAt: nil,
+            lastError: nil,
             agentId: "agent-demo",
             cwd: "/other/path"
         )
@@ -77,6 +78,7 @@ final class ProxyTaskFetchMatchingTests: XCTestCase {
             schedule: nil,
             nextRunAt: nil,
             lastRunAt: nil,
+            lastError: nil,
             agentId: "stale-pre-identity-uuid",
             cwd: "/root/projects/demo/"
         )
@@ -103,6 +105,7 @@ final class ProxyTaskFetchMatchingTests: XCTestCase {
             schedule: nil,
             nextRunAt: nil,
             lastRunAt: nil,
+            lastError: nil,
             agentId: "other-agent",
             cwd: "/home/codeagent/projects/other"
         )

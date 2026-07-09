@@ -102,69 +102,77 @@ struct OpenCodeRuntimeSetupStatus: Equatable {
     }
 }
 
+/// Shared OpenCode runtime health probe used by Chat and Edit Server.
+///
+/// Caches results per server so concurrent tabs don't thrash SSH tunnels, and
+/// soft-retries transient NIOSSH / direct-TCP blips before reporting Unreachable.
+@MainActor
 final class OpenCodeInstallerService {
     static let shared = OpenCodeInstallerService()
 
+    /// How long a healthy / non-blocking result can be reused across views.
+    var healthyCacheTTL: TimeInterval = 30
+    /// Keep blocking failures short-lived so recovery is quick after a blip.
+    var failureCacheTTL: TimeInterval = 5
+    /// Extra health attempts after the first failure (total = 1 + this).
+    var healthRetryCount: Int = 1
+    /// Brief pause between soft retries.
+    var healthRetryDelayNanoseconds: UInt64 = 400_000_000
+
+    private struct CachedStatus {
+        let status: OpenCodeRuntimeSetupStatus
+        let checkedAt: Date
+    }
+
+    private var statusCache: [UUID: CachedStatus] = [:]
+    private var inFlightChecks: [UUID: Task<OpenCodeRuntimeSetupStatus, Never>] = [:]
+
     private init() {}
 
-    func verifyRuntime(on server: Server, onOutput: @escaping (String) -> Void) async throws -> OpenCodeRuntimeSetupStatus {
-        let session = try await SSHService.shared.connect(to: server, purpose: .opencode)
-        defer {
-            session.disconnect()
-        }
-
-        onOutput("Checking OpenCode health at \(OpenCodeServerProvisioning.host):\(OpenCodeServerProvisioning.port)...")
-        let health: OpenCodeHealth
-        do {
-            health = try await OpenCodeClientFactory.client(for: server.id).health(session: session)
-        } catch {
-            let diagnostics = (try? await session.execute(Self.diagnosticsCommand)) ?? ""
-            let status = Self.status(from: diagnostics, healthError: error)
-            onOutput(status.message)
-            guard !status.blocksForegroundChat else {
-                throw OpenCodeInstallerError.setupFailed(status.message)
-            }
-            return status
-        }
-
-        guard health.healthy else {
-            throw OpenCodeInstallerError.unhealthy
-        }
-
-        onOutput("OpenCode \(health.version) is healthy.")
-        onOutput("Checking CodeAgents daemon health at \(CodeAgentsDaemonProvisioning.host):\(CodeAgentsDaemonProvisioning.port)...")
-        let daemonOutcome = await CodeAgentsDaemonUpdateService.shared.ensureUpToDate(
-            session: session,
-            serverID: server.id,
-            force: false,
-            allowInstall: true,
-            onOutput: onOutput
-        )
-        switch daemonOutcome {
-        case .alreadyCurrent, .upgraded, .repaired, .skipped:
-            onOutput("CodeAgents daemon is ready.")
-            return .available(version: health.version)
-        case .failed(let reason):
-            let status = OpenCodeRuntimeSetupStatus.daemonUnavailable(
-                version: health.version,
-                reason: reason
-            )
-            onOutput(status.message)
-            return status
+    /// Drop cached health for one server (or all) after install/repair or manual force-check.
+    func invalidateRuntimeStatusCache(for serverID: UUID? = nil) {
+        if let serverID {
+            statusCache.removeValue(forKey: serverID)
+        } else {
+            statusCache.removeAll()
         }
     }
 
-    func checkRuntimeStatus(on server: Server) async -> OpenCodeRuntimeSetupStatus {
-        do {
-            let session = try await SSHService.shared.connect(to: server, purpose: .opencode)
-            defer {
-                session.disconnect()
-            }
-
-            return await checkRuntimeStatus(session: session, serverID: server.id)
-        } catch {
-            return .sshUnavailable(error.localizedDescription)
+    func verifyRuntime(on server: Server, onOutput: @escaping (String) -> Void) async throws -> OpenCodeRuntimeSetupStatus {
+        invalidateRuntimeStatusCache(for: server.id)
+        let status = await probeRuntimeStatus(on: server, onOutput: onOutput, allowDaemonInstall: true)
+        cache(status, for: server.id)
+        guard status.isReady || !status.blocksForegroundChat else {
+            throw OpenCodeInstallerError.setupFailed(status.message)
         }
+        if case .unknown = status.state, status.message.contains("unhealthy") {
+            throw OpenCodeInstallerError.unhealthy
+        }
+        return status
+    }
+
+    /// Shared health entrypoint for Chat, Edit Server, and install verification.
+    /// - Parameter force: Bypass cache (manual "Check again").
+    func checkRuntimeStatus(on server: Server, force: Bool = false) async -> OpenCodeRuntimeSetupStatus {
+        if !force, let cached = statusCache[server.id] {
+            let ttl = cached.status.blocksForegroundChat ? failureCacheTTL : healthyCacheTTL
+            if Date().timeIntervalSince(cached.checkedAt) < ttl {
+                return cached.status
+            }
+        }
+
+        if let existing = inFlightChecks[server.id] {
+            return await existing.value
+        }
+
+        let task = Task { @MainActor in
+            await self.probeRuntimeStatus(on: server, onOutput: nil, allowDaemonInstall: true)
+        }
+        inFlightChecks[server.id] = task
+        let status = await task.value
+        inFlightChecks[server.id] = nil
+        cache(status, for: server.id)
+        return status
     }
 
     func installOrRepairRuntime(
@@ -173,6 +181,8 @@ final class OpenCodeInstallerService {
         password: String?,
         onOutput: @escaping (String) -> Void
     ) async throws -> OpenCodeRuntimeSetupStatus {
+        invalidateRuntimeStatusCache(for: server.id)
+
         let session = try await SSHService.shared.connect(to: server, purpose: .opencode)
         defer {
             session.disconnect()
@@ -210,14 +220,15 @@ final class OpenCodeInstallerService {
             onOutput(trailing)
         }
 
-        let status = await checkRuntimeStatus(session: session, serverID: server.id)
+        let status = await checkRuntimeStatus(session: session, serverID: server.id, allowDaemonInstall: true)
+        cache(status, for: server.id)
         guard status.isReady || !status.blocksForegroundChat else {
             throw OpenCodeInstallerError.setupFailed(status.message)
         }
         return status
     }
 
-    static func status(from diagnostics: String, healthError: Error) -> OpenCodeRuntimeSetupStatus {
+    nonisolated static func status(from diagnostics: String, healthError: Error) -> OpenCodeRuntimeSetupStatus {
         if let clientError = healthError as? OpenCodeClientError {
             switch clientError {
             case .httpError(let status, _):
@@ -243,36 +254,205 @@ final class OpenCodeInstallerService {
         return .unreachable(healthError.localizedDescription)
     }
 
-    private func checkRuntimeStatus(session: SSHSession, serverID: UUID) async -> OpenCodeRuntimeSetupStatus {
+    /// True when the failure looks like a transient tunnel / TCP blip worth soft-retrying.
+    nonisolated static func isTransientHealthFailure(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return false
+        }
+        if let clientError = error as? OpenCodeClientError {
+            switch clientError {
+            case .requestTimedOut, .invalidResponse:
+                return true
+            case .httpError(let status, _):
+                // Auth / permanent HTTP codes should not soft-retry.
+                return status >= 500 || status == 408 || status == 429
+            case .invalidRequest, .decodingFailed:
+                return false
+            }
+        }
+
+        let nsError = error as NSError
+        // POSIX / network blips (connection reset, broken pipe, timed out).
+        if nsError.domain == NSPOSIXErrorDomain {
+            switch nsError.code {
+            case Int(ECONNRESET), Int(EPIPE), Int(ETIMEDOUT), Int(ECONNABORTED), Int(ENOTCONN):
+                return true
+            default:
+                break
+            }
+        }
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorCannotConnectToHost:
+                return true
+            default:
+                break
+            }
+        }
+
+        let message = error.localizedDescription.lowercased()
+        let transientTokens = [
+            "connection reset",
+            "broken pipe",
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "channel closed",
+            "nio",
+            "eof"
+        ]
+        return transientTokens.contains { message.contains($0) }
+    }
+
+    // MARK: - Internals
+
+    private func cache(_ status: OpenCodeRuntimeSetupStatus, for serverID: UUID) {
+        statusCache[serverID] = CachedStatus(status: status, checkedAt: Date())
+    }
+
+    private func probeRuntimeStatus(
+        on server: Server,
+        onOutput: ((String) -> Void)?,
+        allowDaemonInstall: Bool
+    ) async -> OpenCodeRuntimeSetupStatus {
+        onOutput?("Checking OpenCode health at \(OpenCodeServerProvisioning.host):\(OpenCodeServerProvisioning.port)...")
+
+        var lastStatus: OpenCodeRuntimeSetupStatus?
+        let attempts = 1 + max(0, healthRetryCount)
+
+        for attempt in 1...attempts {
+            do {
+                let session = try await SSHService.shared.connect(to: server, purpose: .opencode)
+                defer {
+                    session.disconnect()
+                }
+
+                let status = await checkRuntimeStatus(
+                    session: session,
+                    serverID: server.id,
+                    allowDaemonInstall: allowDaemonInstall,
+                    onOutput: onOutput
+                )
+
+                // Soft-retry only transient unreachable / unknown blips, not auth/missing install.
+                if status.blocksForegroundChat,
+                   attempt < attempts,
+                   shouldSoftRetry(status: status) {
+                    lastStatus = status
+                    SSHLogger.log(
+                        "OpenCode health soft-retry \(attempt)/\(attempts) for server \(server.id): \(status.state)",
+                        level: .warning
+                    )
+                    try? await Task.sleep(nanoseconds: healthRetryDelayNanoseconds)
+                    continue
+                }
+
+                if status.isReady {
+                    onOutput?("OpenCode \(status.version ?? "") is healthy.")
+                } else {
+                    onOutput?(status.message)
+                }
+                return status
+            } catch {
+                let status = OpenCodeRuntimeSetupStatus.sshUnavailable(error.localizedDescription)
+                lastStatus = status
+                if attempt < attempts, Self.isTransientHealthFailure(error) {
+                    SSHLogger.log(
+                        "OpenCode SSH soft-retry \(attempt)/\(attempts) for server \(server.id): \(error.localizedDescription)",
+                        level: .warning
+                    )
+                    try? await Task.sleep(nanoseconds: healthRetryDelayNanoseconds)
+                    continue
+                }
+                onOutput?(status.message)
+                return status
+            }
+        }
+
+        let fallback = lastStatus ?? .unknown("OpenCode health check failed.")
+        onOutput?(fallback.message)
+        return fallback
+    }
+
+    private func shouldSoftRetry(status: OpenCodeRuntimeSetupStatus) -> Bool {
+        switch status.state {
+        case .unreachable, .unknown, .sshUnavailable:
+            return true
+        case .available, .authRequired, .notInstalled, .notRunning, .daemonUnavailable:
+            return false
+        }
+    }
+
+    private func checkRuntimeStatus(
+        session: SSHSession,
+        serverID: UUID,
+        allowDaemonInstall: Bool,
+        onOutput: ((String) -> Void)? = nil
+    ) async -> OpenCodeRuntimeSetupStatus {
         do {
             let health = try await OpenCodeClientFactory.client(for: serverID).health(session: session)
             guard health.healthy else {
                 return .unknown("OpenCode server reported unhealthy.")
             }
+
+            onOutput?("Checking CodeAgents daemon health at \(CodeAgentsDaemonProvisioning.host):\(CodeAgentsDaemonProvisioning.port)...")
             let daemonOutcome = await CodeAgentsDaemonUpdateService.shared.ensureUpToDate(
                 session: session,
                 serverID: serverID,
                 force: false,
-                allowInstall: true
+                allowInstall: allowDaemonInstall,
+                onOutput: onOutput
             )
             if case .failed(let reason) = daemonOutcome {
                 return .daemonUnavailable(version: health.version, reason: reason)
             }
+            if onOutput != nil {
+                onOutput?("CodeAgents daemon is ready.")
+            }
             return .available(version: health.version)
         } catch {
+            // One in-session retry for transient direct-TCP blips before diagnostics.
+            if Self.isTransientHealthFailure(error) {
+                SSHLogger.log(
+                    "OpenCode health probe transient failure; retrying on same session: \(error.localizedDescription)",
+                    level: .warning
+                )
+                try? await Task.sleep(nanoseconds: healthRetryDelayNanoseconds)
+                do {
+                    let health = try await OpenCodeClientFactory.client(for: serverID).health(session: session)
+                    guard health.healthy else {
+                        return .unknown("OpenCode server reported unhealthy.")
+                    }
+                    let daemonOutcome = await CodeAgentsDaemonUpdateService.shared.ensureUpToDate(
+                        session: session,
+                        serverID: serverID,
+                        force: false,
+                        allowInstall: allowDaemonInstall,
+                        onOutput: onOutput
+                    )
+                    if case .failed(let reason) = daemonOutcome {
+                        return .daemonUnavailable(version: health.version, reason: reason)
+                    }
+                    return .available(version: health.version)
+                } catch {
+                    let diagnostics = (try? await session.execute(Self.diagnosticsCommand)) ?? ""
+                    return Self.status(from: diagnostics, healthError: error)
+                }
+            }
+
             let diagnostics = (try? await session.execute(Self.diagnosticsCommand)) ?? ""
             return Self.status(from: diagnostics, healthError: error)
         }
     }
 
-    private static var diagnosticsCommand: String {
+    private nonisolated static var diagnosticsCommand: String {
         """
         if [ -x \(OpenCodeServerProvisioning.binaryPath) ] || command -v opencode >/dev/null 2>&1; then echo binary=present; else echo binary=missing; fi
         if command -v systemctl >/dev/null 2>&1; then echo service=$(systemctl is-active opencode 2>/dev/null || true); else echo service=unknown; fi
         """
     }
 
-    private static func diagnosticValues(from diagnostics: String) -> [String: String] {
+    private nonisolated static func diagnosticValues(from diagnostics: String) -> [String: String] {
         diagnostics
             .split(whereSeparator: \.isNewline)
             .reduce(into: [String: String]()) { values, line in

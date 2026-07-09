@@ -69,6 +69,15 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
     func health(for project: RemoteProject) async -> CodingAgentRuntimeHealth {
         do {
+            return try await probeHealth(for: project, allowRetry: true)
+        } catch {
+            return .unavailable(runtime: kind, message: error.localizedDescription)
+        }
+    }
+
+    /// Soft-retry once on transient NIOSSH / direct-TCP blips with a fresh pooled session.
+    private func probeHealth(for project: RemoteProject, allowRetry: Bool) async throws -> CodingAgentRuntimeHealth {
+        do {
             let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
             let client = client(for: project)
             let health = try await client.health(session: sshSession)
@@ -76,7 +85,18 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                 ? .available(runtime: kind, version: health.version)
                 : .unavailable(runtime: kind, message: "OpenCode server reported unhealthy.")
         } catch {
-            return .unavailable(runtime: kind, message: error.localizedDescription)
+            guard allowRetry, OpenCodeInstallerService.isTransientHealthFailure(error) else {
+                throw error
+            }
+            SSHLogger.log(
+                "OpenCode runtime health transient failure; retrying with fresh session: \(error.localizedDescription)",
+                level: .warning
+            )
+            if let concrete = sshService as? SSHService {
+                concrete.closeConnections(projectId: project.id, purpose: .opencode)
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            return try await probeHealth(for: project, allowRetry: false)
         }
     }
 

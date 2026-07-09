@@ -57,6 +57,17 @@ struct RegularTasksView: View {
                                 }
                                 .accessibilityIdentifier("regular-task-row-\(task.id.uuidString)")
                                 .disabled(isLocked)
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    if !isLocked {
+                                        Button {
+                                            Task { await runTaskNow(task) }
+                                        } label: {
+                                            Label("Run Now", systemImage: "play.fill")
+                                        }
+                                        .tint(.accentColor)
+                                        .accessibilityIdentifier("regular-task-run-now-\(task.id.uuidString)")
+                                    }
+                                }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     if !isLocked {
                                         Button(role: .destructive) {
@@ -377,6 +388,40 @@ struct RegularTasksView: View {
             try await AgentTaskService.shared.deleteTask(task, project: project)
             modelContext.delete(task)
             syncReporter.markSuccess()
+        } catch {
+            syncReporter.markError(error.localizedDescription)
+        }
+    }
+
+    private func runTaskNow(_ task: AgentScheduledTask) async {
+        guard providerMismatch == nil else { return }
+        guard let project = projectContext.activeProject else { return }
+        syncReporter.markSyncing()
+
+        do {
+            do {
+                _ = try await AgentIdentityService.shared.ensureAgentId(for: project, modelContext: modelContext)
+            } catch {
+                SSHLogger.log("Failed to ensure agent id for run-now (projectId=\(project.id)): \(error)", level: .warning)
+            }
+
+            // Unsaved local-only tasks must hit the daemon first.
+            if task.remoteId == nil || task.remoteId?.isEmpty == true {
+                let record = try await AgentTaskService.shared.upsertTask(task, project: project)
+                applySyncRecord(record, to: task)
+            }
+
+            let record = try await AgentTaskService.shared.runTaskNow(task, project: project)
+            applySyncRecord(record, to: task)
+            try? modelContext.save()
+            syncReporter.markSuccess()
+            SSHLogger.log("Manual task run started remoteId=\(task.remoteId ?? "nil")", level: .info)
+
+            // Refresh shortly so last_run / last_error can catch up after the background job.
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await refreshTasks()
+            }
         } catch {
             syncReporter.markError(error.localizedDescription)
         }

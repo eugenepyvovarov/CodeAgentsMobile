@@ -1,6 +1,7 @@
 import XCTest
 @testable import CodeAgentsMobile
 
+@MainActor
 final class OpenCodeInstallerServiceTests: XCTestCase {
     func testStatusClassifiesAuthRequiredHTTPResponse() {
         let status = OpenCodeInstallerService.status(
@@ -37,5 +38,38 @@ final class OpenCodeInstallerServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(status.state, .unreachable)
+    }
+
+    func testTransientHealthFailureDetectsTimeoutAndReset() {
+        XCTAssertTrue(
+            OpenCodeInstallerService.isTransientHealthFailure(
+                OpenCodeClientError.requestTimedOut(seconds: 30)
+            )
+        )
+        XCTAssertTrue(
+            OpenCodeInstallerService.isTransientHealthFailure(
+                OpenCodeClientError.invalidResponse("connection reset by peer")
+            )
+        )
+        XCTAssertTrue(
+            OpenCodeInstallerService.isTransientHealthFailure(
+                OpenCodeClientError.httpError(status: 503, body: "unavailable")
+            )
+        )
+        XCTAssertFalse(
+            OpenCodeInstallerService.isTransientHealthFailure(
+                OpenCodeClientError.httpError(status: 401, body: "unauthorized")
+            )
+        )
+        XCTAssertFalse(
+            OpenCodeInstallerService.isTransientHealthFailure(
+                OpenCodeClientError.decodingFailed("bad json")
+            )
+        )
+    }
+
+    func testInvalidateRuntimeStatusCacheIsSafe() {
+        OpenCodeInstallerService.shared.invalidateRuntimeStatusCache(for: UUID())
+        OpenCodeInstallerService.shared.invalidateRuntimeStatusCache()
     }
 }
