@@ -153,7 +153,7 @@ struct OpenCodeProviderListResponse: Decodable, Equatable {
     }
 }
 
-struct OpenCodeProvider: Decodable, Equatable, Identifiable {
+struct OpenCodeProvider: Codable, Equatable, Identifiable {
     let id: String
     let name: String
     let source: String?
@@ -186,7 +186,7 @@ struct OpenCodeProvider: Decodable, Equatable, Identifiable {
     }
 }
 
-struct OpenCodeProviderModel: Decodable, Equatable, Identifiable {
+struct OpenCodeProviderModel: Codable, Equatable, Identifiable {
     let id: String
     let name: String
     let api: OpenCodeProviderModelAPI?
@@ -313,7 +313,7 @@ struct OpenCodeProviderModel: Decodable, Equatable, Identifiable {
     }
 }
 
-struct OpenCodeReasoningOption: Decodable, Equatable {
+struct OpenCodeReasoningOption: Codable, Equatable {
     let type: String
     let values: [String]?
     let min: Int?
@@ -325,12 +325,12 @@ struct OpenCodeReasoningOption: Decodable, Equatable {
     }
 }
 
-struct OpenCodeModelModalities: Decodable, Equatable {
+struct OpenCodeModelModalities: Codable, Equatable {
     let input: [String]?
     let output: [String]?
 }
 
-struct OpenCodeModelVariantConfig: Decodable, Equatable {
+struct OpenCodeModelVariantConfig: Codable, Equatable {
     let disabled: Bool?
 
     init(disabled: Bool? = nil) {
@@ -343,18 +343,23 @@ struct OpenCodeModelVariantConfig: Decodable, Equatable {
         // Accept arbitrary extra option fields without failing decode.
     }
 
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(disabled, forKey: .disabled)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case disabled
     }
 }
 
-struct OpenCodeProviderModelAPI: Decodable, Equatable {
+struct OpenCodeProviderModelAPI: Codable, Equatable {
     let id: String?
     let url: String?
     let npm: String?
 }
 
-struct OpenCodeProviderAuthMethod: Decodable, Equatable {
+struct OpenCodeProviderAuthMethod: Codable, Equatable {
     let type: String
     let label: String
     let prompts: [OpenCodeProviderAuthPrompt]?
@@ -371,15 +376,61 @@ struct OpenCodeProviderAuthMethod: Decodable, Equatable {
         return normalizedType == "api"
             || normalizedType == "api_key"
             || normalizedType == "apikey"
+            || normalizedType == "key"
             || normalizedLabel.contains("api key")
+            || normalizedLabel.contains("personal access token")
+            || normalizedLabel.contains("model access key")
     }
 
     var isOAuthBased: Bool {
         type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "oauth"
     }
+
+    /// Device-code / remote-server friendly flows (preferred over localhost browser OAuth).
+    var isHeadlessPreferred: Bool {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return label.contains("headless")
+            || label.contains("device")
+            || label.contains("remote")
+            || label.contains("vps")
+    }
+
+    /// Browser OAuth that typically needs a local callback on the OpenCode host.
+    var isBrowserLocalhostLikely: Bool {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !isHeadlessPreferred else { return false }
+        return label.contains("browser")
+            || label.contains("external browser")
+    }
+
+    var shortDisplayLabel: String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "OAuth" : trimmed
+    }
 }
 
-struct OpenCodeProviderAuthPrompt: Decodable, Equatable, Identifiable {
+enum OpenCodeProviderOAuthMethodSelection {
+    /// Prefer headless/device flows for remote SSH servers; fall back to any OAuth method.
+    static func preferred(
+        in methods: [OpenCodeProviderAuthMethod]
+    ) -> (index: Int, method: OpenCodeProviderAuthMethod)? {
+        let oauthMethods = methods.enumerated().filter { $0.element.isOAuthBased }
+        guard !oauthMethods.isEmpty else { return nil }
+
+        if let headless = oauthMethods.first(where: { $0.element.isHeadlessPreferred }) {
+            return (headless.offset, headless.element)
+        }
+
+        if let nonBrowser = oauthMethods.first(where: { !$0.element.isBrowserLocalhostLikely }) {
+            return (nonBrowser.offset, nonBrowser.element)
+        }
+
+        let first = oauthMethods[0]
+        return (first.offset, first.element)
+    }
+}
+
+struct OpenCodeProviderAuthPrompt: Codable, Equatable, Identifiable {
     let type: String
     let key: String
     let message: String
@@ -389,7 +440,7 @@ struct OpenCodeProviderAuthPrompt: Decodable, Equatable, Identifiable {
     var id: String { key }
 }
 
-struct OpenCodeProviderAuthPromptOption: Decodable, Equatable {
+struct OpenCodeProviderAuthPromptOption: Codable, Equatable {
     let value: String
     let label: String
 }

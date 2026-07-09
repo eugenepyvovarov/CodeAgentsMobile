@@ -7,12 +7,14 @@
 
 import Foundation
 
-struct OpenCodeProviderStatus: Equatable {
+struct OpenCodeProviderStatus: Codable, Equatable {
     let providers: [OpenCodeProvider]
     let configuredProviders: [OpenCodeProvider]
     let defaultModels: [String: String]
     let connectedProviderIDs: [String]
     let authenticatedProviderIDs: [String]
+    /// Raw auth type from OpenCode `auth.json` when known (`api`, `oauth`, …), keyed by provider id.
+    let authenticatedAuthTypes: [String: String]
     let authMethods: [String: [OpenCodeProviderAuthMethod]]
 
     init(
@@ -21,6 +23,7 @@ struct OpenCodeProviderStatus: Equatable {
         defaultModels: [String: String],
         connectedProviderIDs: [String],
         authenticatedProviderIDs: [String] = [],
+        authenticatedAuthTypes: [String: String] = [:],
         authMethods: [String: [OpenCodeProviderAuthMethod]]
     ) {
         self.providers = providers
@@ -28,7 +31,24 @@ struct OpenCodeProviderStatus: Equatable {
         self.defaultModels = defaultModels
         self.connectedProviderIDs = connectedProviderIDs
         self.authenticatedProviderIDs = authenticatedProviderIDs
+        self.authenticatedAuthTypes = authenticatedAuthTypes
         self.authMethods = authMethods
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case providers, configuredProviders, defaultModels
+        case connectedProviderIDs, authenticatedProviderIDs, authenticatedAuthTypes, authMethods
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        providers = try container.decode([OpenCodeProvider].self, forKey: .providers)
+        configuredProviders = try container.decodeIfPresent([OpenCodeProvider].self, forKey: .configuredProviders) ?? []
+        defaultModels = try container.decodeIfPresent([String: String].self, forKey: .defaultModels) ?? [:]
+        connectedProviderIDs = try container.decodeIfPresent([String].self, forKey: .connectedProviderIDs) ?? []
+        authenticatedProviderIDs = try container.decodeIfPresent([String].self, forKey: .authenticatedProviderIDs) ?? []
+        authenticatedAuthTypes = try container.decodeIfPresent([String: String].self, forKey: .authenticatedAuthTypes) ?? [:]
+        authMethods = try container.decodeIfPresent([String: [OpenCodeProviderAuthMethod]].self, forKey: .authMethods) ?? [:]
     }
 
     func isAuthenticated(providerID: String) -> Bool {
@@ -37,6 +57,18 @@ struct OpenCodeProviderStatus: Equatable {
         return authenticatedProviderIDs.contains {
             $0.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
         }
+    }
+
+    /// Server-side auth type for a provider (`api`, `oauth`, …), if recorded in auth.json.
+    func authenticatedAuthType(for providerID: String) -> String? {
+        let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProviderID.isEmpty else { return nil }
+        if let exact = authenticatedAuthTypes[normalizedProviderID] {
+            return exact
+        }
+        return authenticatedAuthTypes.first(where: {
+            $0.key.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        })?.value
     }
 
     var apiKeyProviders: [OpenCodeProvider] {
@@ -59,6 +91,35 @@ struct OpenCodeProviderStatus: Equatable {
         .sorted { lhs, rhs in
             lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
         }
+    }
+
+    func authMethods(for providerID: String) -> [OpenCodeProviderAuthMethod] {
+        let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProviderID.isEmpty else { return [] }
+        if let exact = authMethods[normalizedProviderID] {
+            return exact
+        }
+        return authMethods.first(where: {
+            $0.key.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        })?.value ?? []
+    }
+
+    func oauthMethods(for providerID: String) -> [(index: Int, method: OpenCodeProviderAuthMethod)] {
+        authMethods(for: providerID).enumerated().compactMap { index, method in
+            method.isOAuthBased ? (index, method) : nil
+        }
+    }
+
+    func preferredOAuthMethod(for providerID: String) -> (index: Int, method: OpenCodeProviderAuthMethod)? {
+        OpenCodeProviderOAuthMethodSelection.preferred(in: authMethods(for: providerID))
+    }
+
+    func supportsOAuth(for providerID: String) -> Bool {
+        !oauthMethods(for: providerID).isEmpty
+    }
+
+    func supportsAPIKey(for providerID: String) -> Bool {
+        authMethods(for: providerID).contains(where: \.isAPIKeyBased)
     }
 
     func modelChoices(for providerID: String) -> [OpenCodeModelChoice] {
@@ -414,10 +475,21 @@ final class OpenCodeProviderService: ObservableObject {
 
     private let sshService: SSHService
     private let clientOverride: OpenCodeClient?
+    private let statusCache: OpenCodeProviderStatusCache
 
-    init(sshService: SSHService? = nil, client: OpenCodeClient? = nil) {
+    init(
+        sshService: SSHService? = nil,
+        client: OpenCodeClient? = nil,
+        statusCache: OpenCodeProviderStatusCache = .shared
+    ) {
         self.sshService = sshService ?? ServiceManager.shared.sshService
         self.clientOverride = client
+        self.statusCache = statusCache
+    }
+
+    /// Last successful provider catalog for a server (instant UI paint).
+    func cachedStatus(for serverID: UUID) -> OpenCodeProviderStatusCacheEntry? {
+        statusCache.entry(for: serverID)
     }
 
     func status(for project: RemoteProject) async throws -> OpenCodeProviderStatus {
@@ -426,9 +498,9 @@ final class OpenCodeProviderService: ObservableObject {
         let resolvedProviders = try await client.providerList(sshSession: session, directory: project.path)
         let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session, directory: project.path)
         let resolvedConfiguredProviders = try? await client.configuredProviders(sshSession: session, directory: project.path)
-        let resolvedAuthenticatedProviders = await authenticatedProviderIDs(session: session)
+        let resolvedAuthEntries = await authenticatedProviderEntries(session: session)
 
-        return OpenCodeProviderStatus(
+        let status = OpenCodeProviderStatus(
             providers: resolvedProviders.all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
             configuredProviders: resolvedConfiguredProviders?.providers.sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -437,9 +509,20 @@ final class OpenCodeProviderService: ObservableObject {
                 ? resolvedConfiguredProviders?.defaultModels ?? resolvedProviders.defaultModels
                 : resolvedProviders.defaultModels,
             connectedProviderIDs: resolvedProviders.connected.sorted(),
-            authenticatedProviderIDs: resolvedAuthenticatedProviders,
+            authenticatedProviderIDs: resolvedAuthEntries.map(\.providerID).sorted(),
+            authenticatedAuthTypes: Dictionary(uniqueKeysWithValues: resolvedAuthEntries.map { ($0.providerID, $0.authType) }),
             authMethods: resolvedAuthMethods
         )
+        let previousName = statusCache.entry(for: project.serverId)?.serverName
+        statusCache.store(
+            OpenCodeProviderStatusCacheEntry(
+                serverID: project.serverId,
+                serverName: previousName ?? "Server",
+                fetchedAt: Date(),
+                status: status
+            )
+        )
+        return status
     }
 
     func status(for server: Server) async throws -> OpenCodeProviderStatus {
@@ -450,9 +533,9 @@ final class OpenCodeProviderService: ObservableObject {
         let resolvedProviders = try await client.providerList(sshSession: session)
         let resolvedAuthMethods = try await client.providerAuthMethods(sshSession: session)
         let resolvedConfiguredProviders = try? await client.configuredProviders(sshSession: session)
-        let resolvedAuthenticatedProviders = await authenticatedProviderIDs(session: session)
+        let resolvedAuthEntries = await authenticatedProviderEntries(session: session)
 
-        return OpenCodeProviderStatus(
+        let status = OpenCodeProviderStatus(
             providers: resolvedProviders.all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
             configuredProviders: resolvedConfiguredProviders?.providers.sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -461,9 +544,12 @@ final class OpenCodeProviderService: ObservableObject {
                 ? resolvedConfiguredProviders?.defaultModels ?? resolvedProviders.defaultModels
                 : resolvedProviders.defaultModels,
             connectedProviderIDs: resolvedProviders.connected.sorted(),
-            authenticatedProviderIDs: resolvedAuthenticatedProviders,
+            authenticatedProviderIDs: resolvedAuthEntries.map(\.providerID).sorted(),
+            authenticatedAuthTypes: Dictionary(uniqueKeysWithValues: resolvedAuthEntries.map { ($0.providerID, $0.authType) }),
             authMethods: resolvedAuthMethods
         )
+        statusCache.store(status, for: server)
+        return status
     }
 
     func startOAuth(
@@ -586,9 +672,13 @@ final class OpenCodeProviderService: ObservableObject {
             )
         }
 
+        // Only write `small_model` when the profile explicitly sets one.
+        // Leaving it unset lets OpenCode choose a cheaper utility model.
+        let explicitSmallModelID = normalizedProfile.smallModelID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         loaded.document.setModelSelection(
             modelID: normalizedProfile.resolvedModelID,
-            smallModelID: normalizedProfile.resolvedSmallModelID
+            smallModelID: explicitSmallModelID.isEmpty ? nil : explicitSmallModelID
         )
         applyThinkingOptions(to: &loaded.document, profile: normalizedProfile)
         try await writeConfiguration(loaded.document, to: loaded.path, session: session)
@@ -770,7 +860,13 @@ private extension OpenCodeProviderService {
         clientOverride ?? OpenCodeClientFactory.client(for: serverID)
     }
 
-    func authenticatedProviderIDs(session: SSHSession) async -> [String] {
+    struct AuthenticatedProviderEntry: Equatable {
+        let providerID: String
+        /// Normalized auth type from auth.json (`api`, `oauth`, `unknown`, …).
+        let authType: String
+    }
+
+    func authenticatedProviderEntries(session: SSHSession) async -> [AuthenticatedProviderEntry] {
         let command = """
         python3 - <<'PY'
         import json
@@ -784,20 +880,54 @@ private extension OpenCodeProviderService {
         except Exception:
             print("[]")
         else:
+            entries = []
             if isinstance(data, dict):
-                print(json.dumps(sorted(str(key) for key in data.keys() if str(key).strip())))
-            else:
-                print("[]")
+                for key, value in data.items():
+                    provider_id = str(key).strip()
+                    if not provider_id:
+                        continue
+                    auth_type = "unknown"
+                    if isinstance(value, dict):
+                        raw = value.get("type") or value.get("auth") or value.get("method")
+                        if raw is not None and str(raw).strip():
+                            auth_type = str(raw).strip().lower()
+                    entries.append({"providerID": provider_id, "authType": auth_type})
+                entries.sort(key=lambda item: item["providerID"].lower())
+            print(json.dumps(entries))
         PY
         """
 
         guard let output = try? await session.execute(command),
-              let data = output.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
-              let providerIDs = try? JSONDecoder().decode([String].self, from: data) else {
+              let data = output.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
             return []
         }
 
-        return providerIDs
+        struct Payload: Decodable {
+            let providerID: String
+            let authType: String
+        }
+
+        if let payloads = try? JSONDecoder().decode([Payload].self, from: data) {
+            return payloads.map {
+                AuthenticatedProviderEntry(
+                    providerID: $0.providerID,
+                    authType: $0.authType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                )
+            }
+        }
+
+        // Backward-compatible parse if the remote still returns a plain id list.
+        if let providerIDs = try? JSONDecoder().decode([String].self, from: data) {
+            return providerIDs.map {
+                AuthenticatedProviderEntry(providerID: $0, authType: "unknown")
+            }
+        }
+
+        return []
+    }
+
+    func authenticatedProviderIDs(session: SSHSession) async -> [String] {
+        await authenticatedProviderEntries(session: session).map(\.providerID)
     }
 
     func catalogProvider(

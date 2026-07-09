@@ -52,38 +52,34 @@ final class CodeAgentsMobileUITests: XCTestCase {
         try openSettingsFromAgentsScreen()
     }
 
-    func testOpenCodeRuntimeSettingsShowsActiveHeroWithoutLegacyPicker() throws {
+    func testOpenCodeSettingsExposesAIProvidersWithoutRuntimeScreen() throws {
         try openSettingsFromAgentsScreen()
 
         XCTAssertTrue(app.staticTexts["OpenCode"].waitForExistence(timeout: 5), "Settings should group OpenCode controls.")
 
-        let runtimeLink = app.buttons["settings-agent-runtime-link"].firstMatch
-        XCTAssertTrue(runtimeLink.waitForExistence(timeout: 5))
-        runtimeLink.tap()
-
-        XCTAssertTrue(app.navigationBars["OpenCode"].waitForExistence(timeout: 5))
-        let hero = app.descendants(matching: .any)["agent-runtime-hero"].firstMatch
-        XCTAssertTrue(hero.waitForExistence(timeout: 5), "OpenCode runtime hero should be visible.")
-        XCTAssertTrue(app.staticTexts["Active"].waitForExistence(timeout: 5))
-
-        // OpenCode-only: no Claude runtime picker or legacy switch copy.
+        // Runtime & health was a multi-runtime leftover — AI Providers is the only entry.
+        XCTAssertFalse(app.buttons["settings-agent-runtime-link"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["Runtime & health"].exists)
         XCTAssertFalse(app.staticTexts["Claude Proxy (Legacy)"].exists)
-        XCTAssertFalse(app.staticTexts["New agents use OpenCode by default. Existing legacy agents stay on Claude Proxy until you switch them here."].exists)
 
-        let runtimePicker = app.descendants(matching: .any)["agent-runtime-picker"].firstMatch
-        XCTAssertTrue(runtimePicker.waitForExistence(timeout: 5))
-        let pickerValue = (runtimePicker.value as? String) ?? ""
+        let providersLink = app.buttons["settings-ai-providers-link"].firstMatch
+        XCTAssertTrue(providersLink.waitForExistence(timeout: 5))
+        providersLink.tap()
+
+        // Global AI Providers home (status card; save lives in Change → model step).
         XCTAssertTrue(
-            pickerValue.localizedCaseInsensitiveContains("OpenCode"),
-            "Runtime marker should report OpenCode, got: \(pickerValue)"
+            app.navigationBars["AI Providers"].waitForExistence(timeout: 5)
+                || app.navigationBars["OpenCode AI"].waitForExistence(timeout: 2),
+            "AI Providers screen should open from Settings."
         )
-
-        let done = app.buttons["agent-runtime-done-button"].firstMatch
-        if done.waitForExistence(timeout: 2) {
-            done.tap()
-        } else {
-            app.navigationBars.buttons.firstMatch.tap()
-        }
+        XCTAssertTrue(
+            app.descendants(matching: .any)["opencode-ai-change-setup-button"].firstMatch.waitForExistence(timeout: 8),
+            "AI Providers home should show the current setup card."
+        )
+        XCTAssertFalse(
+            app.buttons["opencode-ai-apply-all-servers-button"].firstMatch.exists,
+            "Home sticky Apply was removed; save belongs to model selection."
+        )
     }
 
     func testSettingsAIProvidersIsOpenCodeOnlyWithoutModePicker() throws {

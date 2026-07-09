@@ -45,8 +45,90 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
 
         XCTAssertTrue(methods[0].isOAuthBased)
         XCTAssertFalse(methods[0].isAPIKeyBased)
+        XCTAssertTrue(methods[0].isHeadlessPreferred)
         XCTAssertFalse(methods[1].isOAuthBased)
         XCTAssertTrue(methods[1].isAPIKeyBased)
+    }
+
+    func testOAuthMethodSelectionPrefersHeadlessOverBrowser() {
+        let methods = [
+            OpenCodeProviderAuthMethod(type: "oauth", label: "ChatGPT Pro/Plus (browser)"),
+            OpenCodeProviderAuthMethod(type: "oauth", label: "ChatGPT Pro/Plus (headless)"),
+            OpenCodeProviderAuthMethod(type: "api", label: "Manually enter API Key")
+        ]
+
+        let preferred = OpenCodeProviderOAuthMethodSelection.preferred(in: methods)
+        XCTAssertEqual(preferred?.index, 1)
+        XCTAssertTrue(preferred?.method.isHeadlessPreferred == true)
+    }
+
+    func testOAuthMethodSelectionPrefersXAIHeadlessSuperGrok() {
+        let methods = [
+            OpenCodeProviderAuthMethod(type: "oauth", label: "xAI Grok OAuth (SuperGrok Subscription)"),
+            OpenCodeProviderAuthMethod(type: "oauth", label: "xAI Grok OAuth (Headless / Remote / VPS)"),
+            OpenCodeProviderAuthMethod(type: "api", label: "API Key")
+        ]
+
+        let preferred = OpenCodeProviderOAuthMethodSelection.preferred(in: methods)
+        XCTAssertEqual(preferred?.index, 1)
+        XCTAssertTrue(preferred?.method.label.contains("Headless") == true)
+    }
+
+    func testProviderStatusReportsOAuthSupportForGitHubCopilot() {
+        let status = OpenCodeProviderStatus(
+            providers: [
+                OpenCodeProvider(
+                    id: "github-copilot",
+                    name: "GitHub Copilot",
+                    models: [:]
+                )
+            ],
+            defaultModels: [:],
+            connectedProviderIDs: [],
+            authMethods: [
+                "github-copilot": [
+                    OpenCodeProviderAuthMethod(
+                        type: "oauth",
+                        label: "Login with GitHub Copilot",
+                        prompts: [
+                            OpenCodeProviderAuthPrompt(
+                                type: "select",
+                                key: "deploymentType",
+                                message: "Select GitHub deployment type",
+                                placeholder: nil,
+                                options: [
+                                    OpenCodeProviderAuthPromptOption(value: "github.com", label: "GitHub.com")
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            ]
+        )
+
+        XCTAssertTrue(status.supportsOAuth(for: "github-copilot"))
+        XCTAssertFalse(status.supportsAPIKey(for: "github-copilot"))
+        XCTAssertEqual(status.preferredOAuthMethod(for: "GitHub-Copilot")?.method.label, "Login with GitHub Copilot")
+    }
+
+    func testLegacyOpenAIChatGPTAuthModeDecodesAsOAuth() throws {
+        let json = """
+        {
+          "providerID": "openai",
+          "providerName": "OpenAI",
+          "authModeRawValue": "openAIChatGPT",
+          "modelID": "openai/gpt-5.5",
+          "smallModelID": "",
+          "variant": "",
+          "customBaseURL": "",
+          "customModelID": "",
+          "customModelName": "",
+          "npmPackage": "@ai-sdk/openai-compatible"
+        }
+        """
+        let profile = try JSONDecoder().decode(OpenCodeAIProviderProfile.self, from: Data(json.utf8))
+        XCTAssertEqual(profile.authMode, .oauth)
+        XCTAssertFalse(profile.requiresAPIKeyCredential)
     }
 
     func testProviderOAuthAuthorizationDecodesHeadlessDeviceFlow() throws {
@@ -292,12 +374,12 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         try store.saveGlobalProfile(OpenCodeAIProviderProfile(
             providerID: "OpenAI",
             providerName: "OpenAI",
-            authMode: .openAIChatGPT,
+            authMode: .oauth,
             modelID: "openai/gpt-5.2"
         ))
 
         XCTAssertEqual(store.effectiveProfile(for: serverID).normalizedProviderID, "openai")
-        XCTAssertEqual(store.effectiveProfile(for: serverID).authMode, .openAIChatGPT)
+        XCTAssertEqual(store.effectiveProfile(for: serverID).authMode, .oauth)
         XCTAssertEqual(store.effectiveProfile(for: serverID).resolvedModelID, "openai/gpt-5.2")
 
         try store.saveServerOverride(
@@ -464,7 +546,7 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         let chatGPTProfile = OpenCodeAIProviderProfile(
             providerID: "OpenAI",
             providerName: "OpenAI",
-            authMode: .openAIChatGPT,
+            authMode: .oauth,
             modelID: "openai/gpt-5.5"
         )
 
@@ -676,5 +758,58 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         let decoded = try JSONDecoder().decode(OpenCodeAIProviderProfile.self, from: data)
         XCTAssertEqual(decoded.variant, "high")
         XCTAssertEqual(decoded.resolvedVariant, "high")
+    }
+
+    func testProviderStatusCacheRoundTrip() throws {
+        let suiteName = "OpenCodeProviderStatusCacheTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let serverID = UUID()
+        let status = OpenCodeProviderStatus(
+            providers: [
+                OpenCodeProvider(
+                    id: "openai",
+                    name: "OpenAI",
+                    models: [
+                        "gpt-5.5": OpenCodeProviderModel(
+                            id: "gpt-5.5",
+                            name: "GPT-5.5",
+                            reasoning: true,
+                            reasoningOptions: [
+                                OpenCodeReasoningOption(type: "effort", values: ["low", "high"])
+                            ],
+                            toolCall: true
+                        )
+                    ]
+                )
+            ],
+            configuredProviders: [],
+            defaultModels: ["openai": "gpt-5.5"],
+            connectedProviderIDs: ["openai"],
+            authenticatedProviderIDs: ["openai"],
+            authMethods: [
+                "openai": [OpenCodeProviderAuthMethod(type: "api", label: "API Key")]
+            ]
+        )
+        let cache = OpenCodeProviderStatusCache(userDefaults: defaults)
+        cache.store(
+            OpenCodeProviderStatusCacheEntry(
+                serverID: serverID,
+                serverName: "Dev Box",
+                fetchedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                status: status
+            )
+        )
+
+        let reloaded = OpenCodeProviderStatusCache(userDefaults: defaults)
+        let entry = try XCTUnwrap(reloaded.entry(for: serverID))
+        XCTAssertEqual(entry.serverName, "Dev Box")
+        XCTAssertEqual(entry.status.providers.map(\.id), ["openai"])
+        XCTAssertEqual(entry.status.authenticatedProviderIDs, ["openai"])
+        XCTAssertEqual(
+            entry.status.modelChoices(for: "openai").first?.effortLevels,
+            ["low", "high"]
+        )
     }
 }

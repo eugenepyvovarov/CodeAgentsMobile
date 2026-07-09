@@ -394,149 +394,141 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
     private func saveOpenCodeAIProviderKey(_ config: CloudE2EConfiguration) throws {
         guard let aiAPIKey = config.aiAPIKey else { return }
 
-        try openAgentRuntimeSettings()
+        try openAIProviderSettings()
 
-        // Prefer the OpenCode Connection section on the OpenCode runtime sheet (autofill may already fill key).
-        // Fall back to Global provider & models when the connection section is hidden
-        // (no active project in the sheet).
-        var apiKeyField = app.descendants(matching: .any)["opencode-api-key-field"].firstMatch
-        var saveButton = app.buttons["opencode-save-provider-connection-button"].firstMatch
-
-        if !scrollToElement(apiKeyField, timeout: 20) {
-            let globalLink = app.descendants(matching: .any)["agent-runtime-ai-providers-global-link"].firstMatch
-            let serverLink = app.descendants(matching: .any)["agent-runtime-ai-providers-server-link"].firstMatch
-            if serverLink.waitForExistence(timeout: 5) {
-                tapElement(serverLink)
-            } else {
-                XCTAssertTrue(globalLink.waitForExistence(timeout: 10), "No AI provider settings link on OpenCode runtime sheet.")
-                tapElement(globalLink)
-            }
-            apiKeyField = app.descendants(matching: .any)["opencode-ai-api-key-field"].firstMatch
-            saveButton = app.buttons["opencode-ai-apply-server-button"].firstMatch
-            if !saveButton.waitForExistence(timeout: 5) {
-                saveButton = app.buttons["opencode-ai-apply-all-servers-button"].firstMatch
-            }
-        }
-
+        // Status+commit home: open Change to connect provider / enter key / pick model.
+        let changeCard = app.descendants(matching: .any)["opencode-ai-change-setup-button"].firstMatch
         XCTAssertTrue(
-            scrollToElement(apiKeyField, timeout: 60),
-            "OpenCode API key field did not appear on OpenCode runtime or AI provider settings."
+            changeCard.waitForExistence(timeout: 20),
+            "AI Providers current-setup card missing."
         )
+        tapElement(changeCard)
 
-        // Select provider if the connection picker is present.
-        let providerPicker = app.descendants(matching: .any)["opencode-api-provider-picker"].firstMatch
-        if providerPicker.exists {
-            providerPicker.tap()
-            let providerOption = app.buttons[config.aiProviderID].firstMatch
-            if providerOption.waitForExistence(timeout: 3) {
-                providerOption.tap()
-            } else {
-                let menuItem = app.menuItems[config.aiProviderID].firstMatch
-                if menuItem.waitForExistence(timeout: 2) {
-                    menuItem.tap()
-                } else {
-                    // Picker may already show the selection; dismiss by tapping outside.
-                    openCodeRuntimeNavigationBar().tap()
-                }
+        // Provider list (signed-in + more). Prefer exact accessibility id, then label.
+        let providerID = config.aiProviderID
+        let providerByID = app.descendants(matching: .any)["opencode-ai-change-provider-\(providerID)"].firstMatch
+        if providerByID.waitForExistence(timeout: 8) {
+            tapElement(providerByID)
+        } else {
+            let byLabel = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", providerID)).firstMatch
+            if byLabel.waitForExistence(timeout: 5) {
+                tapElement(byLabel)
             }
         }
 
-        let providerField = app.textFields["opencode-api-provider-field"].firstMatch
-        if providerField.exists {
-            replaceText(in: providerField, with: config.aiProviderID)
-        }
-
-        // Autofill may have enabled Save already; otherwise enter the key.
-        if !saveButton.waitForExistence(timeout: 5) || !saveButton.isEnabled {
-            _ = scrollToElement(apiKeyField, timeout: 20, direction: .down)
+        // Connect step: API key (or Continue if already authorized).
+        let apiKeyField = app.descendants(matching: .any)["opencode-ai-api-key-field"].firstMatch
+        if apiKeyField.waitForExistence(timeout: 8) {
+            _ = scrollToElement(apiKeyField, timeout: 15, direction: .down)
             replaceText(in: apiKeyField, with: aiAPIKey, preferPasteboard: true)
             dismissKeyboardIfNeeded()
         }
 
-        // Fill model fields when present (connection section).
+        let continueConnect = app.buttons["opencode-ai-connect-continue-button"].firstMatch
+        if continueConnect.waitForExistence(timeout: 5), continueConnect.isEnabled {
+            tapElement(continueConnect)
+        }
+
+        // Model step: pick configured model or free-text field.
         if let modelID = config.aiModelID {
-            let modelField = app.descendants(matching: .any)["opencode-connection-model-field"].firstMatch
-            if modelField.waitForExistence(timeout: 3) {
-                replaceText(in: modelField, with: modelID, preferPasteboard: false)
-            }
-        }
-        if let smallModelID = config.aiSmallModelID {
-            let smallField = app.descendants(matching: .any)["opencode-connection-small-model-field"].firstMatch
-            if smallField.waitForExistence(timeout: 3) {
-                replaceText(in: smallField, with: smallModelID, preferPasteboard: false)
+            let modelChoice = app.descendants(matching: .any)["opencode-ai-model-choice-\(modelID)"].firstMatch
+            if modelChoice.waitForExistence(timeout: 6) {
+                tapElement(modelChoice)
+            } else {
+                let modelField = app.textFields["opencode-ai-model-id-field"].firstMatch
+                if modelField.waitForExistence(timeout: 3) {
+                    replaceText(in: modelField, with: modelID, preferPasteboard: false)
+                }
             }
         }
 
-        XCTAssertTrue(scrollToElement(saveButton, timeout: 20), "OpenCode AI save/apply control missing.")
-        let enableDeadline = Date().addingTimeInterval(10)
-        while !saveButton.isEnabled && Date() < enableDeadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        // Save is part of model selection (auto-save on pick, or toolbar Save for free-text / thinking).
+        let modelContinue = app.buttons["opencode-ai-model-continue-button"].firstMatch
+        let saveAll = app.buttons["opencode-ai-apply-all-servers-button"].firstMatch
+        let saveServer = app.buttons["opencode-ai-apply-server-button"].firstMatch
+        if modelContinue.waitForExistence(timeout: 2), modelContinue.isEnabled {
+            tapElement(modelContinue)
         }
-        XCTAssertTrue(saveButton.isEnabled, "OpenCode AI API key save button stayed disabled.")
 
-        // Provider save tunnels OpenCode HTTP over SSH; truncated responses show as alerts.
-        // Product retries once with a fresh session — UI test dismisses alerts and re-taps Save.
+        // Thinking step: pick a level (auto-saves) or use the Save toolbar control.
+        let thinkingNav = app.navigationBars["Thinking"].firstMatch
+        if thinkingNav.waitForExistence(timeout: 3) {
+            let thinkingRows = app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH %@", "opencode-ai-thinking-choice-")
+            )
+            if thinkingRows.count > 0 {
+                let firstThinking = thinkingRows.element(boundBy: 0)
+                if firstThinking.waitForExistence(timeout: 3) {
+                    tapElement(firstThinking)
+                }
+            } else if saveAll.waitForExistence(timeout: 2), saveAll.isEnabled {
+                tapElement(saveAll)
+            } else if saveServer.waitForExistence(timeout: 2), saveServer.isEnabled {
+                tapElement(saveServer)
+            }
+        } else if saveAll.waitForExistence(timeout: 2), saveAll.isEnabled {
+            // Manual model id path — explicit Save on the model step.
+            tapElement(saveAll)
+        } else if saveServer.waitForExistence(timeout: 2), saveServer.isEnabled {
+            tapElement(saveServer)
+        }
+
+        // Wait for Change sheet to dismiss after save (or for apply to settle).
         var failureCount = 0
         let maxFailures = 3
-        var awaitingSaveResult = false
-        var lastTap = Date.distantPast
         let overallDeadline = Date().addingTimeInterval(90)
+        let changeNav = app.navigationBars.matching(
+            NSPredicate(format: "identifier CONTAINS[c] %@ OR label CONTAINS[c] %@", "Choose", "Choose")
+        ).firstMatch
         while Date() < overallDeadline {
             if dismissErrorAlertIfPresent() {
                 failureCount += 1
-                XCTAssertLessThanOrEqual(failureCount, maxFailures, "OpenCode provider save failed repeatedly.")
-                awaitingSaveResult = false
-                RunLoop.current.run(until: Date().addingTimeInterval(2))
-                let waitEnabled = Date().addingTimeInterval(15)
-                while !saveButton.isEnabled && Date() < waitEnabled {
-                    RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+                XCTAssertLessThanOrEqual(failureCount, maxFailures, "OpenCode provider apply failed repeatedly.")
+                // Retry explicit save if the sheet is still open.
+                if saveAll.exists, saveAll.isEnabled {
+                    tapElement(saveAll)
+                } else if saveServer.exists, saveServer.isEnabled {
+                    tapElement(saveServer)
                 }
+                RunLoop.current.run(until: Date().addingTimeInterval(2))
                 continue
             }
-            if saveButton.isEnabled, !awaitingSaveResult {
-                tapPossiblyCoveredElement(saveButton)
-                lastTap = Date()
-                awaitingSaveResult = true
-            }
-            // Quiet period with no alert after a save attempt ⇒ success.
-            if awaitingSaveResult, Date().timeIntervalSince(lastTap) >= 12 {
+            // Sheet dismissed: home Current card is visible again.
+            let homeCard = app.descendants(matching: .any)["opencode-ai-change-setup-button"].firstMatch
+            if homeCard.exists, homeCard.isHittable, !changeNav.exists {
                 break
+            }
+            // Auto-save may still be in flight after model tap.
+            if !saveAll.exists && !saveServer.exists && !thinkingNav.exists && !modelContinue.exists {
+                // Give apply a moment after auto-save selection.
+                RunLoop.current.run(until: Date().addingTimeInterval(2))
+                if homeCard.exists {
+                    break
+                }
             }
             RunLoop.current.run(until: Date().addingTimeInterval(1))
         }
         failIfErrorAlertVisible()
-
-        // Pop nested AI provider settings if we navigated there.
-        if openCodeRuntimeNavigationBar().waitForExistence(timeout: 2) == false {
-            let back = app.navigationBars.buttons.firstMatch
-            if back.exists { back.tap() }
-        }
-        closeAgentRuntimeSettingsIfNeeded()
+        closeAIProviderSettingsIfNeeded()
     }
 
-    /// Navigation title for the OpenCode runtime sheet (formerly "Agent Runtime").
-    private func openCodeRuntimeNavigationBar() -> XCUIElement {
-        app.navigationBars["OpenCode"].firstMatch
-    }
+    private func openAIProviderSettings() throws {
+        try openSettingsFromAgentsScreen()
 
-    private func openAgentRuntimeSettings() throws {
-        let chatTab = app.tabBars.buttons["Chat"].firstMatch
-        XCTAssertTrue(chatTab.waitForExistence(timeout: 30), "Could not find Settings runtime link or Chat tab.")
-        chatTab.tap()
+        let providersLink = app.buttons["settings-ai-providers-link"].firstMatch
+        XCTAssertTrue(providersLink.waitForExistence(timeout: 15), "Settings AI Providers link missing.")
+        tapElement(providersLink)
 
-        let menuButton = app.buttons["chat-more-menu-button"].firstMatch
-        XCTAssertTrue(menuButton.waitForExistence(timeout: 20), "Chat menu button did not appear.")
-        menuButton.tap()
-
-        let runtimeButton = app.descendants(matching: .any)["chat-agent-runtime-settings-button"].firstMatch
-        XCTAssertTrue(runtimeButton.waitForExistence(timeout: 10), "OpenCode menu item did not appear in chat.")
-        tapElement(runtimeButton)
-
-        XCTAssertTrue(openCodeRuntimeNavigationBar().waitForExistence(timeout: 20), "OpenCode runtime sheet did not open.")
+        XCTAssertTrue(
+            app.navigationBars["AI Providers"].waitForExistence(timeout: 15)
+                || app.navigationBars["OpenCode AI"].waitForExistence(timeout: 5)
+                || app.descendants(matching: .any)["opencode-ai-change-setup-button"].firstMatch.waitForExistence(timeout: 5),
+            "AI Providers screen did not open."
+        )
     }
 
     private func startChat(_ config: CloudE2EConfiguration) throws {
-        closeAgentRuntimeSettingsIfNeeded()
+        closeAIProviderSettingsIfNeeded()
 
         let chatTab = app.tabBars.buttons["Chat"].firstMatch
         if !chatTab.waitForExistence(timeout: 20) {
@@ -721,8 +713,7 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
 
     /// Create a minutely scheduled task on the live daemon and verify it syncs + preferably fires.
     private func createAndVerifyMinutelyScheduledTaskOnRealInstance(_ config: CloudE2EConfiguration) throws {
-        // Warm SSH before daemon writes (:8787). Chat alone is not always enough after a long
-        // provision/chat gap — explicitly hit OpenCode "Check runtime" when available.
+        // Warm SSH / OpenCode catalog before daemon writes (:8787) by opening Change Model (status refresh).
         let chatTab = app.tabBars.buttons["Chat"].firstMatch
         if chatTab.waitForExistence(timeout: 10) {
             chatTab.tap()
@@ -730,30 +721,21 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
             let menuButton = app.buttons["chat-more-menu-button"].firstMatch
             if menuButton.waitForExistence(timeout: 10) {
                 if menuButton.isHittable { menuButton.tap() } else { tapElement(menuButton) }
-                let runtimeButton = app.descendants(matching: .any)["chat-agent-runtime-settings-button"].firstMatch
-                if runtimeButton.waitForExistence(timeout: 5) {
-                    tapElement(runtimeButton)
-                    if openCodeRuntimeNavigationBar().waitForExistence(timeout: 10) {
-                        let checkRuntime = app.buttons["agent-runtime-check-button"].firstMatch
-                        if checkRuntime.waitForExistence(timeout: 5) {
-                            if checkRuntime.isHittable { checkRuntime.tap() } else { tapElement(checkRuntime) }
-                            // Wait for status text; prefer full healthy (OpenCode + daemon on :8787).
-                            let statusDeadline = Date().addingTimeInterval(45)
-                            while Date() < statusDeadline {
-                                let health = app.staticTexts.matching(
-                                    NSPredicate(format: "label CONTAINS[c] %@ OR label CONTAINS[c] %@", "healthy", "daemon")
-                                ).firstMatch
-                                if health.exists { break }
-                                RunLoop.current.run(until: Date().addingTimeInterval(1))
-                            }
-                            // Second check after a short settle in case the first probe raced cloud-init.
-                            RunLoop.current.run(until: Date().addingTimeInterval(3))
-                            if checkRuntime.isEnabled {
-                                if checkRuntime.isHittable { checkRuntime.tap() } else { tapElement(checkRuntime) }
-                                RunLoop.current.run(until: Date().addingTimeInterval(10))
-                            }
+                let changeModel = app.descendants(matching: .any)["chat-change-model-button"].firstMatch
+                if changeModel.waitForExistence(timeout: 5) {
+                    tapElement(changeModel)
+                    if app.navigationBars["Model"].waitForExistence(timeout: 10) {
+                        let refresh = app.buttons["chat-model-change-refresh-button"].firstMatch
+                        if refresh.waitForExistence(timeout: 3) {
+                            if refresh.isHittable { refresh.tap() } else { tapElement(refresh) }
+                            RunLoop.current.run(until: Date().addingTimeInterval(8))
                         }
-                        closeAgentRuntimeSettingsIfNeeded()
+                        let close = app.buttons["chat-model-change-close-button"].firstMatch
+                        if close.waitForExistence(timeout: 3) {
+                            close.tap()
+                        } else {
+                            dismissPresentedSheetIfNeeded()
+                        }
                     }
                 }
             }
@@ -913,20 +895,32 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
         )
     }
 
-    private func closeAgentRuntimeSettingsIfNeeded() {
-        let doneButton = app.buttons["agent-runtime-done-button"].firstMatch
-        if doneButton.exists {
-            doneButton.tap()
-            RunLoop.current.run(until: Date().addingTimeInterval(1))
-            return
+    private func closeAIProviderSettingsIfNeeded() {
+        // Pop nested change-sheet / AI Providers back to Settings, or dismiss sheets.
+        for title in ["Close", "Cancel", "Done"] {
+            let button = app.navigationBars.buttons[title].firstMatch
+            if button.exists && button.isHittable {
+                button.tap()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            }
         }
 
-        let runtimeNavigationBar = openCodeRuntimeNavigationBar()
-        guard runtimeNavigationBar.exists else { return }
-
-        for _ in 0..<3 where runtimeNavigationBar.exists {
-            app.swipeDown()
-            RunLoop.current.run(until: Date().addingTimeInterval(1))
+        let providersBar = app.navigationBars["AI Providers"].firstMatch
+        let openCodeAIBar = app.navigationBars["OpenCode AI"].firstMatch
+        let serverAIBar = app.navigationBars["Server AI"].firstMatch
+        for _ in 0..<4 {
+            if providersBar.exists || openCodeAIBar.exists || serverAIBar.exists {
+                let back = app.navigationBars.buttons.firstMatch
+                if back.exists, back.isHittable {
+                    back.tap()
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                    continue
+                }
+                app.swipeDown()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                continue
+            }
+            break
         }
     }
 
@@ -945,7 +939,9 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
             if app.buttons["chat-more-menu-button"].firstMatch.exists
                 && !app.navigationBars["MCP Servers"].exists
                 && !app.navigationBars["Agent Skills"].exists
-                && !openCodeRuntimeNavigationBar().exists {
+                && !app.navigationBars["Model"].exists
+                && !app.navigationBars["AI Providers"].exists
+                && !app.navigationBars["OpenCode AI"].exists {
                 return
             }
             app.swipeDown()

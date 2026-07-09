@@ -31,26 +31,6 @@ struct SettingsView: View {
             Form(content: {
                 Section {
                     NavigationLink {
-                        AgentRuntimeSettingsView()
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "cpu")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(.tint)
-                                .frame(width: 28, height: 28)
-                                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Runtime & health")
-                                Text("Check OpenCode and models on the active server")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .accessibilityElement(children: .combine)
-                    }
-                    .accessibilityIdentifier("settings-agent-runtime-link")
-
-                    NavigationLink {
                         AIProviderSettingsView(initialMode: .openCode)
                     } label: {
                         Label("AI Providers", systemImage: "sparkles")
@@ -59,7 +39,7 @@ struct SettingsView: View {
                 } header: {
                     Text("OpenCode")
                 } footer: {
-                    Text("Chat uses OpenCode on your server. Set providers once, then reuse them everywhere.")
+                    Text("Chat uses OpenCode on your server. Connect providers and models once, then apply them to your servers.")
                 }
                 
                 Section("Cloud Providers") {

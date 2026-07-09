@@ -17,7 +17,9 @@ struct ChatView: View {
     @State private var showingRules = false
     @State private var showingEnvironment = false
     @State private var showingServerSettings = false
-    @State private var showingRuntimeSettings = false
+    @State private var showingModelChange = false
+    /// Bumps when the model sheet closes so the overflow menu summary reloads from the store.
+    @State private var modelSummaryEpoch = 0
     @State private var openCodeRuntimeStatus: OpenCodeRuntimeSetupStatus?
     @State private var isCheckingOpenCodeRuntime = false
     
@@ -53,10 +55,10 @@ struct ChatView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        if let openCodeModelSummary {
+                        if projectContext.activeServer != nil {
                             Section(openCodeModelSummary) {
                                 Button {
-                                    showingRuntimeSettings = true
+                                    showingModelChange = true
                                 } label: {
                                     Label("Change Model…", systemImage: "cpu")
                                 }
@@ -83,13 +85,6 @@ struct ChatView: View {
                         } label: {
                             Label("Permissions", systemImage: "checkmark.shield")
                         }
-
-                        Button {
-                            showingRuntimeSettings = true
-                        } label: {
-                            Label("OpenCode", systemImage: "cpu")
-                        }
-                        .accessibilityIdentifier("chat-agent-runtime-settings-button")
 
                         Button {
                             showingRules = true
@@ -207,9 +202,11 @@ struct ChatView: View {
         .sheet(isPresented: $showingEnvironment) {
             AgentEnvironmentVariablesView()
         }
-        .sheet(isPresented: $showingRuntimeSettings) {
-            NavigationStack {
-                AgentRuntimeSettingsView()
+        .sheet(isPresented: $showingModelChange, onDismiss: {
+            modelSummaryEpoch += 1
+        }) {
+            if let server = projectContext.activeServer {
+                OpenCodeChatModelChangeSheet(server: server)
             }
         }
         .sheet(isPresented: $showingServerSettings) {
@@ -235,16 +232,25 @@ struct ChatView: View {
         assistantLabel
     }
 
-    /// Compact model + thinking label for the chat overflow menu.
-    private var openCodeModelSummary: String? {
-        guard let serverId = projectContext.activeProject?.serverId else { return nil }
+    /// Compact provider · model · thinking label for the chat overflow menu.
+    /// Depends on `modelSummaryEpoch` so Apply/dismiss from the change sheet refreshes the title.
+    private var openCodeModelSummary: String {
+        _ = modelSummaryEpoch
+        guard let serverId = projectContext.activeProject?.serverId else {
+            return "No model selected"
+        }
         let profile = OpenCodeAIProviderSettingsStore().effectiveProfile(for: serverId)
-        guard let modelID = profile.resolvedModelID, !modelID.isEmpty else { return nil }
+        let providerName = OpenCodeProviderPreset.name(for: profile.normalizedProviderID)
+            ?? profile.trimmedProviderName
+        guard let modelID = profile.resolvedModelID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !modelID.isEmpty else {
+            return "\(providerName) · No model"
+        }
         if let variant = profile.resolvedVariant {
             let thinking = OpenCodeThinkingSupport.displayTitle(for: variant)
-            return "\(modelID) · \(thinking)"
+            return "\(providerName) · \(modelID) · \(thinking)"
         }
-        return modelID
+        return "\(providerName) · \(modelID)"
     }
 
     private var activeRuntimeKind: CodingAgentRuntimeKind { .openCode }

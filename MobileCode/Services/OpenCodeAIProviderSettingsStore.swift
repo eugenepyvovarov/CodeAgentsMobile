@@ -9,7 +9,8 @@ import Foundation
 
 enum OpenCodeProviderAuthMode: String, Codable, CaseIterable, Identifiable {
     case apiKey
-    case openAIChatGPT
+    /// Subscription / device / browser OAuth via OpenCode provider plugins.
+    case oauth
 
     var id: String { rawValue }
 
@@ -17,8 +18,8 @@ enum OpenCodeProviderAuthMode: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .apiKey:
             return "API Key"
-        case .openAIChatGPT:
-            return "OpenAI ChatGPT Plus/Pro"
+        case .oauth:
+            return "OAuth / Subscription"
         }
     }
 
@@ -26,8 +27,18 @@ enum OpenCodeProviderAuthMode: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .apiKey:
             return true
-        case .openAIChatGPT:
+        case .oauth:
             return false
+        }
+    }
+
+    /// Maps stored raw values, including the legacy `openAIChatGPT` mode.
+    static func fromStored(_ rawValue: String) -> OpenCodeProviderAuthMode {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case Self.oauth.rawValue, "openAIChatGPT":
+            return .oauth
+        default:
+            return .apiKey
         }
     }
 }
@@ -112,16 +123,10 @@ struct OpenCodeAIProviderProfile: Codable, Equatable {
 
     var authMode: OpenCodeProviderAuthMode {
         get {
-            OpenCodeProviderAuthMode(rawValue: authModeRawValue) ?? .apiKey
+            OpenCodeProviderAuthMode.fromStored(authModeRawValue)
         }
         set {
             authModeRawValue = newValue.rawValue
-            if newValue == .openAIChatGPT {
-                providerID = "openai"
-                if providerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    providerName = "OpenAI"
-                }
-            }
         }
     }
 
