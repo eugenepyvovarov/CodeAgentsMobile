@@ -110,6 +110,49 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         await reregisterAllStoredSubscriptionsIfPossible()
     }
 
+    /// Call after APNs token is set so FCM issues a sendable iOS token.
+    func refreshFCMTokenAfterAPNs() async {
+        guard FirebaseBootstrap.configureIfNeeded() else { return }
+        guard Messaging.messaging().apnsToken != nil else {
+            #if DEBUG
+            SSHLogger.log("Skipping FCM token refresh: APNs token not set yet", level: .warning)
+            #endif
+            return
+        }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Messaging.messaging().deleteToken { error in
+                if let error {
+                    SSHLogger.log(
+                        "FCM deleteToken failed (continuing): \(error.localizedDescription)",
+                        level: .warning
+                    )
+                }
+                Messaging.messaging().token { token, tokenError in
+                    if let tokenError {
+                        SSHLogger.log(
+                            "FCM token refresh failed: \(tokenError.localizedDescription)",
+                            level: .warning
+                        )
+                    }
+                    let resolved = token?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { @MainActor in
+                        if let resolved, !resolved.isEmpty {
+                            self.currentFCMToken = resolved
+                            #if DEBUG
+                            SSHLogger.log(
+                                "Refreshed FCM token after APNs: \(Self.redactedTokenDescription(resolved))",
+                                level: .info
+                            )
+                            #endif
+                        }
+                        continuation.resume()
+                    }
+                }
+            }
+        }
+    }
+
     func syncDeliveredReplyFinishedNotifications() async {
         guard modelContainer != nil else { return }
         let center = UNUserNotificationCenter.current()
@@ -236,6 +279,15 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
     private func fetchFCMToken() async -> String? {
         guard FirebaseBootstrap.configureIfNeeded() else {
+            return nil
+        }
+
+        // Prefer not to register a token that was minted before APNs was wired up.
+        if Messaging.messaging().apnsToken == nil {
+            registerForRemoteNotifications()
+            #if DEBUG
+            SSHLogger.log("Deferring FCM token fetch until APNs token is available", level: .info)
+            #endif
             return nil
         }
 

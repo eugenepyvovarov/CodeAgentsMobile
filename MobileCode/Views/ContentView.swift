@@ -55,7 +55,12 @@ struct ContentView: View {
             case .active:
                 // App became active - start monitoring
                 startCloudInitMonitoring()
-                Task { await PushNotificationsManager.shared.syncDeliveredReplyFinishedNotifications() }
+                Task {
+                    await PushNotificationsManager.shared.syncDeliveredReplyFinishedNotifications()
+                    // Re-bind FCM device tokens after prune/reinstall without requiring
+                    // the user to re-toggle push in Edit Server.
+                    await PushNotificationsManager.shared.refreshSubscriptions()
+                }
             case .inactive, .background:
                 // App went to background - stop monitoring to save resources
                 cloudInitMonitor.stopAllMonitoring()

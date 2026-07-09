@@ -47,13 +47,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         #if DEBUG
         NSLog("APNs device token received (\(deviceToken.count) bytes)")
         #endif
+        // Force a fresh FCM token once APNs is known. Tokens fetched before APNs
+        // is set can be UNREGISTERED at send time even though registration "succeeds".
         Task {
+            await PushNotificationsManager.shared.refreshFCMTokenAfterAPNs()
             await PushNotificationsManager.shared.refreshSubscriptions()
         }
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         NSLog("APNs registration failed: \(error.localizedDescription)")
+        SSHLogger.log("APNs registration failed: \(error.localizedDescription)", level: .warning)
     }
 
     func application(
