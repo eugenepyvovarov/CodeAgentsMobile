@@ -194,7 +194,7 @@ final class AgentsListSoftSyncService {
         var localUserTexts = Set(
             existingMessages
                 .filter { $0.role == .user }
-                .map { $0.content.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .map { OpenCodeChatMapper.normalizedUserPromptForDedupe($0.content) }
                 .filter { !$0.isEmpty }
         )
 
@@ -203,11 +203,12 @@ final class AgentsListSoftSyncService {
         var newAssistants = 0
 
         for hydrated in result.hydratedMessages {
+            let remoteCore = OpenCodeChatMapper.normalizedUserPromptForDedupe(hydrated.text)
             let merge = OpenCodeHydratedMessageMerge.action(
                 for: hydrated,
                 existingRuntimeMessageIDs: runtimeIDs,
-                hasLocalUserMessage: localUserTexts.contains(
-                    hydrated.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                hasLocalUserMessage: hydrated.role == .user && (
+                    remoteCore.isEmpty || localUserTexts.contains(remoteCore)
                 )
             )
 
@@ -250,9 +251,9 @@ final class AgentsListSoftSyncService {
             runtimeIDs.insert(hydrated.runtimeMessageID)
             project.noteLastMessage(at: message.timestamp)
             if hydrated.role == .user {
-                let trimmed = hydrated.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    localUserTexts.insert(trimmed)
+                let core = OpenCodeChatMapper.normalizedUserPromptForDedupe(hydrated.text)
+                if !core.isEmpty {
+                    localUserTexts.insert(core)
                 }
             }
             inserted += 1

@@ -328,11 +328,19 @@ extension ChatViewModel {
     }
 
     func hasLocalUserMessage(matching text: String) -> Bool {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return false }
+        let remoteCore = OpenCodeChatMapper.normalizedUserPromptForDedupe(text)
+        guard !remoteCore.isEmpty else {
+            // Fully synthetic remote user turns should never insert.
+            return true
+        }
         return messages.contains { message in
-            message.role == .user &&
-                message.content.trimmingCharacters(in: .whitespacesAndNewlines) == normalized
+            guard message.role == .user else { return false }
+            let localCore = OpenCodeChatMapper.normalizedUserPromptForDedupe(message.content)
+            if localCore.isEmpty { return false }
+            if localCore == remoteCore { return true }
+            // Local optimistic prompt vs OpenCode echo with extra whitespace / casing.
+            if localCore.caseInsensitiveCompare(remoteCore) == .orderedSame { return true }
+            return false
         }
     }
 

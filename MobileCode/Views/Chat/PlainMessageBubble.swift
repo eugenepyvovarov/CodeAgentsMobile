@@ -10,6 +10,10 @@ import SwiftUI
 struct PlainMessageBubble: View {
     let message: Message
     @State private var showActionButtons = false
+
+    private var chatAttachments: [ChatMessageAttachment] {
+        message.chatAttachments
+    }
     
     var body: some View {
         let isUser = message.role == MessageRole.user
@@ -23,6 +27,8 @@ struct PlainMessageBubble: View {
         let containsTableWidget = containsCodeAgentsUI && compactContent.contains("\"type\":\"table\"")
         let bubbleMaxWidth = UIScreen.main.bounds.width * (containsTableWidget ? 0.94 : 0.78)
         let shouldForceFullWidth = !isUser && containsCodeAgentsUI
+        let hasText = !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasAttachments = !chatAttachments.isEmpty
 
         ZStack {
             // Invisible background to catch taps outside
@@ -42,31 +48,38 @@ struct PlainMessageBubble: View {
                 }
                 
                 VStack(alignment: message.role == MessageRole.user ? .trailing : .leading, spacing: 8) {
-                    CodeAgentsUIMessageContentView(
-                        text: message.content,
-                        textColor: bubbleTextColor,
-                        isAssistant: message.role == MessageRole.assistant
-                    )
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(bubbleBackground)
-                        .foregroundColor(bubbleTextColor)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(isUser ? .clear : bubbleBorderColor, lineWidth: 0.5)
+                    if hasAttachments {
+                        MessageAttachmentsStrip(attachments: chatAttachments, isUser: isUser)
+                            .frame(maxWidth: bubbleMaxWidth, alignment: isUser ? .trailing : .leading)
+                    }
+
+                    if hasText {
+                        CodeAgentsUIMessageContentView(
+                            text: message.content,
+                            textColor: bubbleTextColor,
+                            isAssistant: message.role == MessageRole.assistant
                         )
-                        .shadow(color: isUser ? Color.accentColor.opacity(0.15) : Color.black.opacity(0.08), radius: 2, y: 1)
-                        .frame(
-                            minWidth: shouldForceFullWidth ? bubbleMaxWidth : nil,
-                            maxWidth: bubbleMaxWidth,
-                            alignment: isUser ? .trailing : .leading
-                        )
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                showActionButtons.toggle()
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(bubbleBackground)
+                            .foregroundColor(bubbleTextColor)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(isUser ? .clear : bubbleBorderColor, lineWidth: 0.5)
+                            )
+                            .shadow(color: isUser ? Color.accentColor.opacity(0.15) : Color.black.opacity(0.08), radius: 2, y: 1)
+                            .frame(
+                                minWidth: shouldForceFullWidth ? bubbleMaxWidth : nil,
+                                maxWidth: bubbleMaxWidth,
+                                alignment: isUser ? .trailing : .leading
+                            )
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showActionButtons.toggle()
+                                }
                             }
-                        }
+                    }
                     
                     // Action buttons (same style for both user and assistant)
                     if showActionButtons {

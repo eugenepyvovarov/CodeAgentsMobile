@@ -514,4 +514,35 @@ final class OpenCodeChatMapperTests: XCTestCase {
 
         XCTAssertTrue(hydrated.isEmpty)
     }
+
+    func testHydratedUserMessagesDropSyntheticToolNarration() throws {
+        let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [
+          {
+            "info": {"role":"user","id":"msg_user","sessionID":"ses_fixture","time":{"created":1}},
+            "parts": [
+              {"type":"text","id":"prt_user","messageID":"msg_user","sessionID":"ses_fixture","text":"translate this photo"},
+              {"type":"text","id":"prt_synth","messageID":"msg_user","sessionID":"ses_fixture","synthetic":true,"text":"Called the Read tool with the following input: {\\"filePath\\":\\"/tmp/a.jpg\\"}"}
+            ]
+          }
+        ]
+        """.utf8))
+
+        let hydrated = OpenCodeChatMapper.hydratedMessages(from: messages)
+
+        XCTAssertEqual(hydrated.count, 1)
+        XCTAssertEqual(hydrated[0].text, "translate this photo")
+        XCTAssertFalse(hydrated[0].text.contains("Called the Read tool"))
+    }
+
+    func testNormalizedUserPromptForDedupeStripsAtRefsAndSyntheticLines() {
+        let raw = """
+        @.codeagents/attachments/abc.jpg
+
+        can you translate the text on the paper?
+        Called the Read tool with the following input: {"filePath":"/tmp/a.jpg"}
+        """
+        let core = OpenCodeChatMapper.normalizedUserPromptForDedupe(raw)
+        XCTAssertEqual(core, "can you translate the text on the paper?")
+    }
 }

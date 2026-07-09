@@ -145,49 +145,21 @@ struct ChatDetailView: View {
                     await MainActor.run {
                         selectedSkill = nil
                         attachments = []
-                    }
-
-                    guard let project = projectContext.activeProject else {
-                        await viewModel.sendMessage(draft.text)
-                        return
-                    }
-
-                    let skillSlug = selectedSkillSnapshot?.slug
-                    let hasLocalFiles = attachmentsSnapshot.contains { attachment in
-                        if case .localFile = attachment { return true }
-                        return false
-                    }
-
-                    do {
-                        var references = attachmentsSnapshot.compactMap { $0.relativeReferencePath }
-
-                        if hasLocalFiles {
-                            await MainActor.run {
-                                isUploadingAttachments = true
-                            }
-                            references = try await ChatAttachmentUploadService.shared.resolveFileReferences(
-                                for: attachmentsSnapshot,
-                                in: project
-                            )
-                            await MainActor.run {
-                                isUploadingAttachments = false
-                            }
+                        isUploadingAttachments = attachmentsSnapshot.contains {
+                            if case .localFile = $0 { return true }
+                            return false
                         }
+                    }
 
-                        let prompt = ChatSkillPromptBuilder.build(
-                            message: draft.text,
-                            skillName: selectedSkillSnapshot.map { SkillNameFormatter.displayName(from: $0.name) },
-                            skillSlug: skillSlug,
-                            fileReferences: references
-                        )
+                    await viewModel.sendComposedMessage(
+                        text: draft.text,
+                        attachments: attachmentsSnapshot,
+                        skillName: selectedSkillSnapshot.map { SkillNameFormatter.displayName(from: $0.name) },
+                        skillSlug: selectedSkillSnapshot?.slug
+                    )
 
-                        await viewModel.sendMessage(prompt)
-                    } catch {
-                        await MainActor.run {
-                            attachmentErrorMessage = error.localizedDescription
-                            showAttachmentError = true
-                            isUploadingAttachments = false
-                        }
+                    await MainActor.run {
+                        isUploadingAttachments = false
                     }
                 }
             }

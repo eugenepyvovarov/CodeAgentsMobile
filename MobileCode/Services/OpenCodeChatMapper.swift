@@ -38,21 +38,34 @@ enum OpenCodeChatMapper {
     }
 
     static func renderedText(from parts: [OpenCodeMessagePart]) -> String {
-        parts.compactMap { renderedText(from: $0) }.joined(separator: "\n")
+        parts
+            .compactMap { renderedText(from: $0) }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func renderedText(from part: OpenCodeMessagePart, delta: String? = nil, previous: String? = nil) -> String? {
         let payload = part.payload
 
+        // OpenCode injects synthetic user text (e.g. "Called the Read tool…") for model context only.
+        if isSyntheticPart(payload) {
+            return nil
+        }
+
         switch part {
         case .text:
             if let text = payload.text {
-                return text
+                let cleaned = strippingSyntheticToolNarration(text)
+                return cleaned.isEmpty ? nil : cleaned
             }
             if let delta {
-                return (previous ?? "") + delta
+                let merged = strippingSyntheticToolNarration((previous ?? "") + delta)
+                return merged.isEmpty ? nil : merged
             }
-            return previous
+            return previous.flatMap { value in
+                let cleaned = strippingSyntheticToolNarration(value)
+                return cleaned.isEmpty ? nil : cleaned
+            }
 
         case .reasoning,
              .tool,
@@ -68,6 +81,83 @@ enum OpenCodeChatMapper {
              .unknown:
             return nil
         }
+    }
+
+    /// True when a text part is OpenCode bookkeeping, not something the human typed.
+    static func isSyntheticPart(_ payload: OpenCodeMessagePartPayload) -> Bool {
+        if let flag = payload.raw["synthetic"]?.value as? Bool, flag {
+            return true
+        }
+        if let flag = payload.raw["ignored"]?.value as? Bool, flag {
+            return true
+        }
+        if let text = payload.text, isSyntheticToolNarration(text) {
+            return true
+        }
+        return false
+    }
+
+    /// Matches OpenCode auto-injected tool narration such as:
+    /// `Called the Read tool with the following input: {...}`
+    static func isSyntheticToolNarration(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        // Whole message is tool narration (optionally multi-line JSON body).
+        if trimmed.range(
+            of: #"^Called the \S+ tool with the following input\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil {
+            return true
+        }
+
+        // Mixed human text + appended tool narration: strip is handled by callers via line filter.
+        return false
+    }
+
+    /// Removes synthetic tool-narration lines while keeping real user prose.
+    static func strippingSyntheticToolNarration(_ text: String) -> String {
+        let lines = text.components(separatedBy: .newlines)
+        var kept: [String] = []
+        var skippingJSON = false
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.range(
+                of: #"^Called the \S+ tool with the following input\b"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil {
+                skippingJSON = trimmed.contains("{") && !trimmed.contains("}")
+                continue
+            }
+            if skippingJSON {
+                if trimmed.contains("}") {
+                    skippingJSON = false
+                }
+                continue
+            }
+            kept.append(line)
+        }
+
+        return kept
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Normalizes user bubble text for local↔remote dedupe (drops @file refs).
+    static func normalizedUserPromptForDedupe(_ text: String) -> String {
+        let withoutSynthetic = strippingSyntheticToolNarration(text)
+        let lines = withoutSynthetic.components(separatedBy: .newlines)
+        let kept = lines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { return false }
+            if trimmed.hasPrefix("@") { return false }
+            if trimmed.hasPrefix(".codeagents/") || trimmed.hasPrefix(".claude/") { return false }
+            return true
+        }
+        return kept
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func normalizedPayloadData(

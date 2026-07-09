@@ -27,6 +27,9 @@ final class Message {
     
     // Track if message is currently streaming
     var isStreaming: Bool = false
+
+    /// JSON-encoded `[ChatMessageAttachment]` for local previews and upload status.
+    var attachmentsJSON: Data?
     
     init(content: String = "", role: MessageRole = .user, projectId: UUID? = nil, originalJSON: Data? = nil, isComplete: Bool = true, isStreaming: Bool = false) {
         self.id = UUID()
@@ -37,6 +40,15 @@ final class Message {
         self.originalJSON = originalJSON
         self.isComplete = isComplete
         self.isStreaming = isStreaming
+    }
+
+    var chatAttachments: [ChatMessageAttachment] {
+        get { ChatMessageAttachmentCodec.decode(attachmentsJSON) }
+        set { attachmentsJSON = ChatMessageAttachmentCodec.encode(newValue) }
+    }
+
+    var hasChatAttachments: Bool {
+        !(attachmentsJSON?.isEmpty ?? true)
     }
     
     // Computed property to decode original JSON when needed

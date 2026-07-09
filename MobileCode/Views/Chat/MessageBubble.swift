@@ -18,7 +18,8 @@ struct MessageBubble: View {
         // Check if message has visible content
         let hasStructuredContent = (message.structuredMessages?.isEmpty == false) || 
                                  (message.structuredContent != nil)
-        let hasVisibleContent = !message.content.isEmpty || 
+        let hasVisibleContent = !message.content.isEmpty ||
+                              message.hasChatAttachments ||
                               hasStructuredContent || 
                               isStreaming
         let isUser = message.role == MessageRole.user

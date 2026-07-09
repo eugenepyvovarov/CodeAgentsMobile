@@ -41,6 +41,16 @@ extension ChatViewModel {
     /// Send a message to the active coding-agent runtime (OpenCode only).
     /// - Parameter text: The message text
     func sendMessage(_ text: String) async {
+        await sendComposedMessage(text: text, attachments: [], skillName: nil, skillSlug: nil)
+    }
+
+    /// Optimistic chat send: save human text (+ local attachment previews) first, upload, then prompt OpenCode.
+    func sendComposedMessage(
+        text: String,
+        attachments: [ChatComposerAttachment],
+        skillName: String?,
+        skillSlug: String?
+    ) async {
         guard let project = ProjectContext.shared.activeProject else {
             addErrorMessage("No active agent. Please select an agent first.")
             return
@@ -56,10 +66,114 @@ extension ChatViewModel {
             saveChanges()
         }
 
-        await sendOpenCodeMessage(text, project: project)
+        let displayText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !displayText.isEmpty || !attachments.isEmpty else { return }
+
+        var records = attachments.map(ChatMessageAttachment.fromComposer)
+
+        // Insert the user bubble immediately (thumbnail + status), before any network work.
+        let userMessage = createMessage(content: displayText, role: .user)
+        if !records.isEmpty {
+            userMessage.chatAttachments = records
+            saveChanges()
+            messagesRevision += 1
+        }
+
+        let needsUpload = records.contains { $0.remoteReference == nil }
+        var fileReferences: [String] = records.compactMap(\.remoteReference)
+
+        if needsUpload {
+            records = records.map { record in
+                var updated = record
+                if updated.remoteReference == nil {
+                    updated.uploadStatus = .uploading
+                    updated.errorMessage = nil
+                }
+                return updated
+            }
+            updateMessageAttachments(userMessage, records)
+
+            do {
+                let resolved = try await ChatAttachmentUploadService.shared.resolveFileReferences(
+                    for: attachments,
+                    in: project
+                )
+                // resolveFileReferences walks attachments in order (project + local).
+                if resolved.count == records.count {
+                    records = zip(records, resolved).map { record, reference in
+                        var updated = record
+                        updated.remoteReference = reference
+                        updated.uploadStatus = .uploaded
+                        updated.errorMessage = nil
+                        return updated
+                    }
+                } else {
+                    // Fallback: fill missing refs from remaining resolved paths.
+                    var queue = resolved
+                    records = records.map { record in
+                        var updated = record
+                        if let existing = updated.remoteReference, !existing.isEmpty {
+                            updated.uploadStatus = .uploaded
+                            queue.removeAll { $0 == existing }
+                            return updated
+                        }
+                        if let next = queue.first {
+                            queue.removeFirst()
+                            updated.remoteReference = next
+                            updated.uploadStatus = .uploaded
+                            updated.errorMessage = nil
+                        } else {
+                            updated.uploadStatus = .failed
+                            updated.errorMessage = "Upload incomplete"
+                        }
+                        return updated
+                    }
+                }
+                fileReferences = records.compactMap(\.remoteReference)
+                updateMessageAttachments(userMessage, records)
+
+                if fileReferences.isEmpty {
+                    addErrorMessage("Attachment upload failed: no files reached the server.")
+                    return
+                }
+            } catch {
+                records = records.map { record in
+                    var updated = record
+                    if updated.uploadStatus == .uploading || updated.remoteReference == nil {
+                        updated.uploadStatus = .failed
+                        updated.errorMessage = error.localizedDescription
+                    }
+                    return updated
+                }
+                updateMessageAttachments(userMessage, records)
+                addErrorMessage("Attachment upload failed: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        let wirePrompt = ChatSkillPromptBuilder.build(
+            message: displayText,
+            skillName: skillName,
+            skillSlug: skillSlug,
+            fileReferences: fileReferences
+        )
+
+        // Nothing to send (empty text and no files).
+        if wirePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
+
+        await sendOpenCodeMessage(wirePrompt, project: project, createUserMessage: false)
     }
 
-    func sendOpenCodeMessage(_ text: String, project: RemoteProject) async {
+    func updateMessageAttachments(_ message: Message, _ attachments: [ChatMessageAttachment]) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        messages[index].chatAttachments = attachments
+        saveChanges()
+        messagesRevision += 1
+    }
+
+    func sendOpenCodeMessage(_ text: String, project: RemoteProject, createUserMessage: Bool = true) async {
         if let existingId = project.activeStreamingMessageId {
             let staleCutoff = Date().addingTimeInterval(-staleStreamingTimeout)
             let existingMessage = messages.first(where: { $0.id == existingId })
@@ -102,7 +216,9 @@ extension ChatViewModel {
         isProcessing = false
         saveChanges()
 
-        _ = createMessage(content: text, role: .user)
+        if createUserMessage {
+            _ = createMessage(content: text, role: .user)
+        }
         let assistantMessage = createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
         streamingMessage = assistantMessage
         streamingRedrawToken = UUID()
