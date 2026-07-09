@@ -163,11 +163,15 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
     -packageCachePath "${TF_PACKAGE_CACHE_PATH}"
   mkdir -p "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts"
 
+  # Auth flags are shared. DerivedData/package-cache are archive-only:
+  # xcodebuild -exportArchive rejects -derivedDataPath without -scheme.
   XCODEBUILD_AUTH_FLAGS=(
     -allowProvisioningUpdates
     -authenticationKeyPath "${PRIVATE_KEY_FILE}"
     -authenticationKeyID "${ASC_KEY_ID}"
     -authenticationKeyIssuerID "${ASC_ISSUER_ID}"
+  )
+  XCODEBUILD_ARCHIVE_ONLY_FLAGS=(
     -derivedDataPath
     "${TF_DERIVED_DATA_PATH}"
     -packageCachePath
@@ -178,6 +182,9 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
   for flag in "${XCODEBUILD_AUTH_FLAGS[@]}"; do
     ASC_ARCHIVE_FLAGS+=(--archive-xcodebuild-flag="${flag}")
     ASC_EXPORT_FLAGS+=(--export-xcodebuild-flag="${flag}")
+  done
+  for flag in "${XCODEBUILD_ARCHIVE_ONLY_FLAGS[@]}"; do
+    ASC_ARCHIVE_FLAGS+=(--archive-xcodebuild-flag="${flag}")
   done
 
   EXPORT_OPTIONS="${CODEAGENTS_EXPORT_OPTIONS_PLIST:-${DIST_DIR}/ExportOptions-AppStore.plist}"
