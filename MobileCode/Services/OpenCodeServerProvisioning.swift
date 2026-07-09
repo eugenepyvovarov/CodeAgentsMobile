@@ -220,7 +220,11 @@ enum CodeAgentsDaemonProvisioning {
     static let host = "127.0.0.1"
     static let port = 8787
     static let installTimeoutSeconds = 300
-    static let installScriptURL = "https://raw.githubusercontent.com/eugenepyvovarov/codeagents-server-cc-proxy/HEAD/install.sh"
+    static let repositoryOwner = "eugenepyvovarov"
+    static let repositoryName = "codeagents-server-cc-proxy"
+    static let repositoryURL = "https://github.com/\(repositoryOwner)/\(repositoryName).git"
+    static let installScriptURL = "https://raw.githubusercontent.com/\(repositoryOwner)/\(repositoryName)/HEAD/install.sh"
+    static let remoteHeadAPIURL = "https://api.github.com/repos/\(repositoryOwner)/\(repositoryName)/commits/HEAD"
     static let serviceName = "codeagents-daemon"
     static let installDirectory = "/opt/codeagents-daemon"
     static let dataDirectory = "/opt/codeagents-daemon/data"
@@ -228,11 +232,25 @@ enum CodeAgentsDaemonProvisioning {
     static let environmentFilePath = "/etc/codeagents-daemon.env"
     static let legacyEnvironmentFilePath = "/etc/claude-proxy.env"
 
+    /// Parsed `/healthz` payload from the CodeAgents daemon.
+    struct HealthSnapshot: Equatable {
+        let status: String?
+        let version: String?
+        let startedAt: String?
+
+        var isHealthy: Bool {
+            let normalized = (status ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized == "ok" || normalized == "healthy" || normalized == "up"
+        }
+    }
+
     static var healthURL: String {
         "http://\(host):\(port)/healthz"
     }
 
-    static func installCommand() -> String {
+    /// Install/upgrade command. Cloud-init runs as root (`useSudo: false`);
+    /// app SSH sessions use passwordless sudo (`useSudo: true`).
+    static func installCommand(useSudo: Bool = false) -> String {
         let environment = [
             "INSTALL_DIR=\(installDirectory)",
             "DATA_DIR=\(dataDirectory)",
@@ -240,11 +258,52 @@ enum CodeAgentsDaemonProvisioning {
             "SERVICE_NAME=\(serviceName)",
             "INSTALL_CLAUDE_CLI=0"
         ].joined(separator: " ")
-        return "bash -lc 'set -euo pipefail; curl --connect-timeout 20 --retry 3 --retry-delay 2 -fsSL \(installScriptURL) | \(environment) bash'"
+        let runner = useSudo
+            ? "sudo -n env \(environment) bash"
+            : "\(environment) bash"
+        return "bash -lc 'set -euo pipefail; curl --connect-timeout 20 --retry 3 --retry-delay 2 -fsSL \(installScriptURL) | \(runner)'"
     }
 
     static func healthCheckCommand() -> String {
         "curl -fsS \(healthURL)"
+    }
+
+    /// Probe GitHub for the daemon repo HEAD SHA (full or short).
+    /// Prefers `git ls-remote`; falls back to the GitHub commits API JSON body
+    /// (parsed client-side by `parseRemoteHead`).
+    static func remoteHeadProbeCommand() -> String {
+        """
+        bash -lc 'set -euo pipefail
+        if command -v git >/dev/null 2>&1; then
+          sha=$(git ls-remote \(repositoryURL) HEAD 2>/dev/null | cut -f1 | head -1)
+          if [ -n "$sha" ]; then
+            printf "%s" "$sha"
+            exit 0
+          fi
+        fi
+        curl --connect-timeout 15 --retry 2 --retry-delay 1 -fsSL \
+          -H "Accept: application/vnd.github+json" \
+          -H "User-Agent: CodeAgentsMobile" \
+          \(remoteHeadAPIURL)'
+        """
+    }
+
+    static func restartCommand() -> String {
+        """
+        if command -v systemctl >/dev/null 2>&1; then
+          sudo -n systemctl restart \(serviceName) 2>/dev/null \
+            || sudo -n systemctl restart claude-proxy 2>/dev/null \
+            || true
+        fi
+        if command -v supervisorctl >/dev/null 2>&1; then
+          sudo -n supervisorctl restart \(serviceName) 2>/dev/null \
+            || sudo -n supervisorctl restart claude-proxy 2>/dev/null \
+            || true
+        fi
+        if command -v service >/dev/null 2>&1; then
+          sudo -n service \(serviceName) restart 2>/dev/null || true
+        fi
+        """
     }
 
     static func waitForHealthScript(maxAttempts: Int = 30) -> String {
@@ -264,6 +323,96 @@ enum CodeAgentsDaemonProvisioning {
           exit 1
         fi
         """
+    }
+
+    /// Parse daemon `/healthz` JSON for status/version.
+    static func parseHealthz(_ raw: String) -> HealthSnapshot? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let status = stringValue(object["status"])
+        let version = stringValue(object["version"])
+        let startedAt = stringValue(object["started_at"]) ?? stringValue(object["startedAt"])
+        if status == nil && version == nil && startedAt == nil {
+            return nil
+        }
+        return HealthSnapshot(status: status, version: version, startedAt: startedAt)
+    }
+
+    /// Normalize a git SHA / version token for comparison.
+    static func normalizeVersion(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !trimmed.isEmpty, trimmed != "unknown" else { return nil }
+        // Accept only hex-ish git SHAs (short or full).
+        let allowed = CharacterSet(charactersIn: "0123456789abcdef")
+        guard trimmed.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return trimmed
+        }
+        return trimmed
+    }
+
+    /// Match short/full SHAs (`7ce9caf` vs `7ce9cafabc...`).
+    static func versionsMatch(installed: String?, expected: String?) -> Bool {
+        guard let installed = normalizeVersion(installed),
+              let expected = normalizeVersion(expected) else {
+            return false
+        }
+        if installed == expected { return true }
+        return installed.hasPrefix(expected) || expected.hasPrefix(installed)
+    }
+
+    /// First git SHA token found in probe output (ls-remote / GitHub API JSON).
+    static func parseRemoteHead(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let sha = stringValue(object["sha"]),
+           let normalized = normalizeVersion(sha),
+           isHexSHA(normalized) {
+            return normalized
+        }
+
+        let hex = CharacterSet(charactersIn: "0123456789abcdef")
+        // Prefer a bare SHA line; also accept `sha\trefs/heads/main`.
+        for line in trimmed.split(whereSeparator: \.isNewline) {
+            guard let first = line.split(whereSeparator: { $0.isWhitespace }).first else { continue }
+            let token = String(first)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !token.isEmpty else { continue }
+            if let normalized = normalizeVersion(token),
+               normalized.unicodeScalars.allSatisfy({ hex.contains($0) }),
+               normalized.count >= 7 {
+                return normalized
+            }
+        }
+        return nil
+    }
+
+    private static func isHexSHA(_ value: String) -> Bool {
+        let hex = CharacterSet(charactersIn: "0123456789abcdef")
+        return value.count >= 7 && value.unicodeScalars.allSatisfy { hex.contains($0) }
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
     }
 }
 

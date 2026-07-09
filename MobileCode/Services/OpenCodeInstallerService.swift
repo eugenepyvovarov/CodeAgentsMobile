@@ -133,14 +133,21 @@ final class OpenCodeInstallerService {
 
         onOutput("OpenCode \(health.version) is healthy.")
         onOutput("Checking CodeAgents daemon health at \(CodeAgentsDaemonProvisioning.host):\(CodeAgentsDaemonProvisioning.port)...")
-        do {
-            try await verifyDaemonHealth(using: session)
-            onOutput("CodeAgents daemon is healthy.")
+        let daemonOutcome = await CodeAgentsDaemonUpdateService.shared.ensureUpToDate(
+            session: session,
+            serverID: server.id,
+            force: false,
+            allowInstall: true,
+            onOutput: onOutput
+        )
+        switch daemonOutcome {
+        case .alreadyCurrent, .upgraded, .repaired, .skipped:
+            onOutput("CodeAgents daemon is ready.")
             return .available(version: health.version)
-        } catch {
+        case .failed(let reason):
             let status = OpenCodeRuntimeSetupStatus.daemonUnavailable(
                 version: health.version,
-                reason: error.localizedDescription
+                reason: reason
             )
             onOutput(status.message)
             return status
@@ -242,20 +249,20 @@ final class OpenCodeInstallerService {
             guard health.healthy else {
                 return .unknown("OpenCode server reported unhealthy.")
             }
-            do {
-                try await verifyDaemonHealth(using: session)
-            } catch {
-                return .daemonUnavailable(version: health.version, reason: error.localizedDescription)
+            let daemonOutcome = await CodeAgentsDaemonUpdateService.shared.ensureUpToDate(
+                session: session,
+                serverID: serverID,
+                force: false,
+                allowInstall: true
+            )
+            if case .failed(let reason) = daemonOutcome {
+                return .daemonUnavailable(version: health.version, reason: reason)
             }
             return .available(version: health.version)
         } catch {
             let diagnostics = (try? await session.execute(Self.diagnosticsCommand)) ?? ""
             return Self.status(from: diagnostics, healthError: error)
         }
-    }
-
-    private func verifyDaemonHealth(using session: SSHSession) async throws {
-        _ = try await session.execute(CodeAgentsDaemonProvisioning.healthCheckCommand())
     }
 
     private static var diagnosticsCommand: String {

@@ -317,27 +317,36 @@ final class ProxyTaskService {
         }
     }
 
-    /// Probe / restart the CodeAgents daemon via shell (not DirectTCPIP). Stale or down daemons
-    /// otherwise hang openDirectTCPIP tunnels on 127.0.0.1:8787 during task writes.
+    /// Probe / restart / auto-upgrade the CodeAgents daemon via shell (not DirectTCPIP).
+    /// Stale or down daemons otherwise hang openDirectTCPIP tunnels on 127.0.0.1:8787
+    /// during task writes. Also upgrades behind-HEAD daemons so customers pick up
+    /// scheduler fixes without a manual SSH deploy.
     private func ensureDaemonReachable(for project: RemoteProject) async {
         do {
             sshService.closeConnections(projectId: project.id, purpose: .fileOperations)
             let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-            if let health = try? await session.execute(CodeAgentsDaemonProvisioning.healthCheckCommand()),
-               !health.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return
-            }
-            SSHLogger.log("Agent daemon health check failed; attempting restart", level: .warning)
-            _ = try? await session.execute(
-                """
-                if command -v systemctl >/dev/null 2>&1; then
-                  sudo -n systemctl restart codeagents-daemon 2>/dev/null || true
-                elif command -v service >/dev/null 2>&1; then
-                  sudo -n service codeagents-daemon restart 2>/dev/null || true
-                fi
-                """
+            let outcome = await CodeAgentsDaemonUpdateService.shared.ensureUpToDate(
+                session: session,
+                serverID: project.serverId,
+                force: false,
+                allowInstall: true
             )
-            _ = try? await session.execute(CodeAgentsDaemonProvisioning.waitForHealthScript(maxAttempts: 20))
+            switch outcome {
+            case .failed(let reason):
+                SSHLogger.log("Agent daemon ensure failed: \(reason)", level: .warning)
+            case .upgraded(let from, let to):
+                SSHLogger.log(
+                    "Agent daemon auto-upgraded \(from ?? "unknown") → \(to)",
+                    level: .info
+                )
+            case .repaired(let version):
+                SSHLogger.log(
+                    "Agent daemon repaired (version=\(version ?? "unknown"))",
+                    level: .info
+                )
+            case .alreadyCurrent, .skipped:
+                break
+            }
         } catch {
             SSHLogger.log("Agent daemon ensure failed: \(error.localizedDescription)", level: .warning)
         }
