@@ -18,6 +18,10 @@ final class RemoteProject {
     var path: String
     var lastModified: Date
     var createdAt: Date
+
+    /// Timestamp of the latest chat message (user or assistant) for this agent.
+    /// Used to order the Agents list — not bumped by hydration anchors, unread, or other metadata.
+    var lastMessageAt: Date?
     
     /// Server ID where this project exists
     var serverId: UUID
@@ -120,6 +124,20 @@ final class RemoteProject {
         lastModified = Date()
     }
 
+    /// Move agents-list ordering forward when a chat message is known.
+    /// Only advances; never rewinds if an older message is re-hydrated.
+    func noteLastMessage(at date: Date = Date()) {
+        if let current = lastMessageAt, current >= date {
+            return
+        }
+        lastMessageAt = date
+    }
+
+    /// Sort key for the Agents list: last chat message, else creation time.
+    var agentsListSortDate: Date {
+        lastMessageAt ?? createdAt
+    }
+
     var selectedAgentRuntime: CodingAgentRuntimeKind {
         get {
             guard let agentRuntimeRawValue,
@@ -165,8 +183,7 @@ final class RemoteProject {
 
     @discardableResult
     func applyOpenCodeSessionFromPush(_ sessionId: String?) -> Bool {
-        guard let sessionId = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionId.isEmpty else {
+        guard let sessionId = OpenCodeSessionID.sanitize(sessionId) else {
             return false
         }
 

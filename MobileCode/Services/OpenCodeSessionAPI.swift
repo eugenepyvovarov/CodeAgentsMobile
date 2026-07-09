@@ -533,6 +533,19 @@ enum OpenCodeSessionJSON {
     }
 }
 
+/// Validates OpenCode session ids before pin/storage.
+/// Real ids look like `ses_<long token>`; placeholders such as `ses_diag` are rejected.
+enum OpenCodeSessionID {
+    static func sanitize(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        guard trimmed.hasPrefix("ses_"), trimmed.count >= 16 else { return nil }
+        let token = trimmed.dropFirst(4)
+        guard token.count >= 12, token.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
+        return trimmed
+    }
+}
+
 enum OpenCodeSessionPath {
     static func path(_ path: String, directory: String?) -> String {
         guard let directory else { return path }

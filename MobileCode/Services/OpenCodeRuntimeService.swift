@@ -397,6 +397,12 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             return existing
         }
 
+        // Drop placeholders / stale local ids (e.g. ses_diag) so we create a real session.
+        if project.openCodeSessionId != nil {
+            project.openCodeSessionId = nil
+            project.updateLastModified()
+        }
+
         let client = client(for: project)
         let created = try await client.createSession(
             sshSession: sshSession,
@@ -630,9 +636,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
     }
 
     private func sanitizedSessionID(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmed, !trimmed.isEmpty else { return nil }
-        return trimmed
+        OpenCodeSessionID.sanitize(value)
     }
 
     private func openCodePermissionResponse(decision: ToolApprovalDecision, scope: ToolApprovalScope) -> String {

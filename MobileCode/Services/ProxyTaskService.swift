@@ -472,6 +472,12 @@ final class ProxyTaskService {
             return existing
         }
 
+        // Drop placeholders / stale local ids (e.g. ses_diag) so we do not re-pin them.
+        if project.openCodeSessionId != nil {
+            project.openCodeSessionId = nil
+            project.updateLastModified()
+        }
+
         let session = try await sshService.getConnection(for: project, purpose: .opencode)
         let created = try await OpenCodeClientFactory.client(for: project.serverId).createSession(
             sshSession: session,
@@ -489,10 +495,9 @@ final class ProxyTaskService {
         return sessionId
     }
 
+    /// Accept only real OpenCode session ids (`ses_` + long token). Rejects placeholders like `ses_diag`.
     private func sanitizedOpenCodeSessionId(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmed, !trimmed.isEmpty else { return nil }
-        return trimmed
+        OpenCodeSessionID.sanitize(value)
     }
 
     private func buildQuery(_ items: [String: String]) -> String {
