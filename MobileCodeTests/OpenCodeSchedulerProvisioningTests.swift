@@ -16,5 +16,7 @@ final class OpenCodeSchedulerProvisioningTests: XCTestCase {
         XCTAssertEqual(server.headers?["x-codeagents-agent-id"], "agent-demo")
         XCTAssertEqual(server.headers?["x-codeagents-conversation-id"], "session-demo")
         XCTAssertEqual(server.headers?["x-codeagents-project-path"], "/home/codeagent/projects/demo")
+        XCTAssertEqual(server.headers?["x-codeagents-time-zone"], TimeZone.current.identifier)
+        XCTAssertFalse(server.headers?["x-codeagents-time-zone"]?.isEmpty ?? true)
     }
 }

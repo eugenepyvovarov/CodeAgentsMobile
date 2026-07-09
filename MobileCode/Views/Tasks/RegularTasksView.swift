@@ -212,9 +212,50 @@ struct RegularTasksView: View {
             }
             let remoteTasks = try await AgentTaskService.shared.fetchTasks(for: project)
             applyRemoteTasks(remoteTasks, project: project)
+            await healUTCTimeZonesIfNeeded(for: project)
             syncReporter.markSuccess()
         } catch {
             syncReporter.markError(error.localizedDescription)
+        }
+    }
+
+    /// MCP creates that omit `time_zone` silently land on UTC, so "09:00" becomes 09:00 UTC.
+    /// Re-push those tasks with the phone timezone so wall-clock times match user intent.
+    private func healUTCTimeZonesIfNeeded(for project: RemoteProject) async {
+        let phoneTimeZone = TimeZone.current.identifier
+        guard phoneTimeZone != "UTC" else { return }
+
+        let candidates = tasks.filter { task in
+            guard task.remoteId != nil else { return false }
+            let zone = task.timeZoneId.trimmingCharacters(in: .whitespacesAndNewlines)
+            return zone.isEmpty || zone == "UTC"
+        }
+        guard !candidates.isEmpty else { return }
+
+        for task in candidates {
+            let previousZone = task.timeZoneId
+            task.timeZoneId = phoneTimeZone
+            task.markUpdated()
+            do {
+                let record = try await AgentTaskService.shared.upsertTask(task, project: project)
+                applySyncRecord(record, to: task)
+                SSHLogger.log(
+                    "Healed scheduled task timezone from \(previousZone) to \(phoneTimeZone) (remoteId=\(task.remoteId ?? "nil"))",
+                    level: .info
+                )
+            } catch {
+                task.timeZoneId = previousZone
+                SSHLogger.log(
+                    "Failed to heal scheduled task timezone: \(error.localizedDescription)",
+                    level: .warning
+                )
+            }
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            SSHLogger.log("Failed to save timezone-healed tasks: \(error.localizedDescription)", level: .error)
         }
     }
 
@@ -343,6 +384,9 @@ struct RegularTasksView: View {
 
     private func applySyncRecord(_ record: AgentTaskRecord, to task: AgentScheduledTask) {
         task.remoteId = record.id
+        if let timeZoneId = record.timeZoneId, !timeZoneId.isEmpty {
+            task.timeZoneId = timeZoneId
+        }
         if let nextRun = record.nextRunAt {
             task.nextRunAt = nextRun
         }
@@ -419,6 +463,13 @@ private struct RegularTaskRow: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+
+                    if let nextRun = TaskScheduleFormatter.nextRunDescription(for: task) {
+                        Text(nextRun)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
 
                     let preview = TaskScheduleFormatter.promptPreview(task.prompt)
                     if !preview.isEmpty {

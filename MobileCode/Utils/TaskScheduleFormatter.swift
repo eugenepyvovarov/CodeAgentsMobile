@@ -17,6 +17,7 @@ enum TaskScheduleFormatter {
                                           calendar: calendar)
         let base: String
 
+        let withTime: String
         switch task.frequency {
         case .minutely:
             base = task.interval == 1 ? "Every minute" : "Every \(task.interval) minutes"
@@ -26,20 +27,25 @@ enum TaskScheduleFormatter {
             return base
         case .daily:
             base = task.interval == 1 ? "Daily" : "Every \(task.interval) days"
-            return "\(base) at \(timeString)"
+            withTime = "\(base) at \(timeString)"
         case .weekly:
             base = task.interval == 1 ? "Weekly" : "Every \(task.interval) weeks"
             let days = weekdayList(mask: task.weekdayMask, calendar: calendar)
-            return "\(base) on \(days) at \(timeString)"
+            withTime = "\(base) on \(days) at \(timeString)"
         case .monthly:
             base = task.interval == 1 ? "Monthly" : "Every \(task.interval) months"
             let detail = monthlyDetail(for: task, calendar: calendar)
-            return "\(base) \(detail) at \(timeString)"
+            withTime = "\(base) \(detail) at \(timeString)"
         case .yearly:
             base = task.interval == 1 ? "Yearly" : "Every \(task.interval) years"
             let detail = yearlyDetail(for: task, calendar: calendar)
-            return "\(base) \(detail) at \(timeString)"
+            withTime = "\(base) \(detail) at \(timeString)"
         }
+
+        if let zoneLabel = timezoneLabelIfNonLocal(task.timeZoneId) {
+            return "\(withTime) (\(zoneLabel))"
+        }
+        return withTime
     }
 
     static func promptPreview(_ prompt: String) -> String {
@@ -54,6 +60,43 @@ enum TaskScheduleFormatter {
             return String(fallback)
         }
         return ""
+    }
+
+    /// Secondary line for Regular Tasks: next fire in the device's local clock, plus task timezone when it differs.
+    static func nextRunDescription(for task: AgentScheduledTask, now: Date = Date()) -> String? {
+        guard let nextRunAt = task.nextRunAt else { return nil }
+
+        let formatter = DateFormatter()
+        formatter.doesRelativeDateFormatting = true
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.timeZone = .current
+
+        var line = "Next \(formatter.string(from: nextRunAt))"
+        if let zoneLabel = timezoneLabelIfNonLocal(task.timeZoneId) {
+            line += " · \(zoneLabel)"
+        }
+        if nextRunAt < now, task.isEnabled {
+            line += " (overdue)"
+        }
+        return line
+    }
+
+    static func timezoneLabelIfNonLocal(_ timeZoneId: String) -> String? {
+        let trimmed = timeZoneId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed == TimeZone.current.identifier {
+            return nil
+        }
+        if let zone = TimeZone(identifier: trimmed) {
+            let seconds = zone.secondsFromGMT()
+            if seconds == TimeZone.current.secondsFromGMT(),
+               zone.isDaylightSavingTime() == TimeZone.current.isDaylightSavingTime() {
+                // Same offset as device (e.g. Europe/Berlin vs Europe/Prague) — still show id when not identical.
+            }
+            return trimmed
+        }
+        return trimmed
     }
 
     static func date(for minutes: Int, timeZoneId: String, calendar: Calendar = .current) -> Date {
