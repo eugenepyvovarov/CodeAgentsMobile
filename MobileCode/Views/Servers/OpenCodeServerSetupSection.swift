@@ -303,8 +303,12 @@ struct OpenCodeServerSetupSection: View {
     private func checkStatus() async {
         isChecking = true
         defer { isChecking = false }
-        // Manual / toolbar checks always bypass the shared cache.
-        status = await OpenCodeInstallerService.shared.checkRuntimeStatus(on: server, force: true)
+        // Manual / toolbar checks always bypass the shared cache and include daemon health.
+        status = await OpenCodeInstallerService.shared.checkRuntimeStatus(
+            on: server,
+            force: true,
+            includeDaemon: true
+        )
     }
 
     @MainActor

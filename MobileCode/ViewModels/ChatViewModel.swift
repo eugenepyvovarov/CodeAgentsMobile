@@ -78,6 +78,9 @@ class ChatViewModel {
     /// Cancellable full-session OpenCode hydration that runs after bounded visible-path recovery.
     var openCodeFullHydrationTask: Task<Void, Never>?
 
+    /// In-flight OpenCode `/event` consumer for the active send. Soft-steer reuses this instead of dual-attaching.
+    var openCodeSendTask: Task<Void, Never>?
+
     /// Track if configuration is in progress to prevent race conditions
     var isConfiguring = false
     
@@ -389,6 +392,9 @@ class ChatViewModel {
         guard target > project.lastReadUnreadCursor else { return }
         project.lastReadUnreadCursor = target
         saveChanges()
+        if let modelContext {
+            UnreadBadgeService.refreshAppIconBadge(using: modelContext)
+        }
     }
 
     

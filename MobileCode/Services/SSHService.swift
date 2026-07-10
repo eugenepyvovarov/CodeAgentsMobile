@@ -120,41 +120,32 @@ class SSHService: SSHConnectionProviding {
             throw SSHError.notConnected
         }
 
-        let key = ConnectionKey(serverId: serverId, purpose: purpose)
         projectServerMap[project.id] = serverId
+        return try await getOrCreatePooledConnection(
+            server: server,
+            purpose: purpose,
+            retainerId: project.id
+        )
+    }
 
-        // Drop dead pooled sessions before reuse (stale after OOM / network blip).
+    /// Get or create a pooled connection for a server without a project context.
+    ///
+    /// Used by OpenCode health probes and connection warm-up so chat hydrate/send can reuse
+    /// the same `.opencode` login instead of opening a second SSH session.
+    /// Retains with `server.id` as a synthetic retainer until server-scope close or last release.
+    func getConnection(for server: Server, purpose: ConnectionPurpose) async throws -> SSHSession {
+        try await getOrCreatePooledConnection(
+            server: server,
+            purpose: purpose,
+            retainerId: server.id
+        )
+    }
+
+    /// Whether a pooled session for this server + purpose is currently alive.
+    func hasLiveConnection(serverId: UUID, purpose: ConnectionPurpose) -> Bool {
+        let key = ConnectionKey(serverId: serverId, purpose: purpose)
         pruneDeadConnection(for: key)
-
-        if let existingSession = connectionPool[key], existingSession.isAlive {
-            retain(projectId: project.id, key: key)
-            SSHLogger.log("Reusing existing connection for \(key) (retainers=\(connectionRetainers[key]?.count ?? 0))", level: .debug)
-            return existingSession
-        }
-
-        if let connectionTask = connectionTasks[key] {
-            SSHLogger.log("Awaiting existing connection attempt for \(key)", level: .debug)
-            let session = try await connectionTask.value
-            retain(projectId: project.id, key: key)
-            return session
-        }
-
-        SSHLogger.log("Creating new connection for \(key)", level: .info)
-        let connectionTask = Task { @MainActor in
-            try await createSession(for: server)
-        }
-        connectionTasks[key] = connectionTask
-
-        do {
-            let session = try await connectionTask.value
-            connectionPool[key] = session
-            retain(projectId: project.id, key: key)
-            connectionTasks.removeValue(forKey: key)
-            return session
-        } catch {
-            connectionTasks.removeValue(forKey: key)
-            throw error
-        }
+        return connectionPool[key]?.isAlive == true
     }
 
     /// Check if a connection is active for a project and purpose
@@ -246,9 +237,60 @@ class SSHService: SSHConnectionProviding {
 
     // MARK: - Private Methods
 
-    private func retain(projectId: UUID, key: ConnectionKey) {
+    /// Shared pool entrypoint: one in-flight connect task per server+purpose so health probe,
+    /// hydrate, and send never open concurrent logins for the same key.
+    private func getOrCreatePooledConnection(
+        server: Server,
+        purpose: ConnectionPurpose,
+        retainerId: UUID
+    ) async throws -> SSHSession {
+        let key = ConnectionKey(serverId: server.id, purpose: purpose)
+
+        // Drop dead pooled sessions before reuse (stale after OOM / network blip).
+        pruneDeadConnection(for: key)
+
+        if let existingSession = connectionPool[key], existingSession.isAlive {
+            retain(retainerId: retainerId, key: key)
+            SSHLogger.log(
+                "Reusing existing connection for \(key) (retainers=\(connectionRetainers[key]?.count ?? 0))",
+                level: .debug
+            )
+            return existingSession
+        }
+
+        if let connectionTask = connectionTasks[key] {
+            SSHLogger.log("Awaiting existing connection attempt for \(key)", level: .debug)
+            let session = try await connectionTask.value
+            // Task may have failed for another waiter, or session may have been pruned.
+            if let pooled = connectionPool[key], pooled.isAlive {
+                retain(retainerId: retainerId, key: key)
+                return pooled
+            }
+            retain(retainerId: retainerId, key: key)
+            return session
+        }
+
+        SSHLogger.log("Creating new connection for \(key)", level: .info)
+        let connectionTask = Task { @MainActor in
+            try await createSession(for: server)
+        }
+        connectionTasks[key] = connectionTask
+
+        do {
+            let session = try await connectionTask.value
+            connectionPool[key] = session
+            retain(retainerId: retainerId, key: key)
+            connectionTasks.removeValue(forKey: key)
+            return session
+        } catch {
+            connectionTasks.removeValue(forKey: key)
+            throw error
+        }
+    }
+
+    private func retain(retainerId: UUID, key: ConnectionKey) {
         var retainers = connectionRetainers[key] ?? []
-        retainers.insert(projectId)
+        retainers.insert(retainerId)
         connectionRetainers[key] = retainers
     }
 

@@ -330,16 +330,19 @@ struct ChatView: View {
 
             openCodeConnectionPhase = .connecting(attempt: attempt, maxAttempts: maxAttempts)
 
-            // First attempt may use cache; later attempts always force a fresh probe.
+            // First attempt may use cache / warm; later attempts always force a fresh probe.
+            // Daemon ensure stays off the chat-ready path (scheduled after ready).
             let status = await OpenCodeInstallerService.shared.checkRuntimeStatus(
                 on: server,
-                force: force || attempt > 1
+                force: force || attempt > 1,
+                includeDaemon: false
             )
 
             guard generation == openCodeConnectGeneration else { return }
 
             if !status.blocksForegroundChat {
                 openCodeConnectionPhase = .ready
+                OpenCodeInstallerService.shared.scheduleBackgroundDaemonEnsure(for: server)
                 return
             }
 

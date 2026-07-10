@@ -96,4 +96,56 @@ final class AgentsListSoftSyncTests: XCTestCase {
         XCTAssertEqual(next?.lastRead, 4)
         XCTAssertEqual(max(0, (next?.lastKnown ?? 0) - (next?.lastRead ?? 0)), 1)
     }
+
+    func testAbsoluteCursorRaisesKnownWithoutInsertDelta() {
+        // Soft-sync used to miss streaming placeholders that only updated in place.
+        let next = AgentsListUnreadCursor.applyingAbsolute(
+            lastKnown: 3,
+            lastRead: 3,
+            unreadConversationId: "ses_a",
+            sessionId: "ses_a",
+            absoluteAssistantCount: 5
+        )
+
+        XCTAssertEqual(next?.lastKnown, 5)
+        XCTAssertEqual(next?.lastRead, 3)
+        XCTAssertEqual(max(0, (next?.lastKnown ?? 0) - (next?.lastRead ?? 0)), 2)
+    }
+
+    func testAbsoluteCursorNoChangeWhenEqual() {
+        let next = AgentsListUnreadCursor.applyingAbsolute(
+            lastKnown: 5,
+            lastRead: 3,
+            unreadConversationId: "ses_a",
+            sessionId: "ses_a",
+            absoluteAssistantCount: 5
+        )
+        XCTAssertNil(next)
+    }
+
+    func testAbsoluteCursorBaselinesFirstBind() {
+        let next = AgentsListUnreadCursor.applyingAbsolute(
+            lastKnown: 0,
+            lastRead: 0,
+            unreadConversationId: nil,
+            sessionId: "ses_a",
+            absoluteAssistantCount: 7
+        )
+        XCTAssertEqual(next?.lastKnown, 7)
+        XCTAssertEqual(next?.lastRead, 7)
+        XCTAssertEqual(max(0, (next?.lastKnown ?? 0) - (next?.lastRead ?? 0)), 0)
+    }
+
+    func testAbsoluteCursorResetsOnSessionChange() {
+        let next = AgentsListUnreadCursor.applyingAbsolute(
+            lastKnown: 10,
+            lastRead: 10,
+            unreadConversationId: "ses_old",
+            sessionId: "ses_new",
+            absoluteAssistantCount: 2
+        )
+        XCTAssertEqual(next?.lastKnown, 2)
+        XCTAssertEqual(next?.lastRead, 0)
+        XCTAssertEqual(next?.unreadConversationId, "ses_new")
+    }
 }

@@ -10,8 +10,17 @@ import Observation
 import SwiftData
 
 extension ChatViewModel {
+    /// True while an OpenCode `/event` consumer is attached for this chat.
+    var isOpenCodeEventStreamActive: Bool {
+        guard let openCodeSendTask else { return false }
+        return !openCodeSendTask.isCancelled
+    }
+
     func abortCurrentResponse() async {
         guard let project = ProjectContext.shared.activeProject else { return }
+
+        openCodeSendTask?.cancel()
+        openCodeSendTask = nil
 
         do {
             try await runtimeRegistry.runtime(for: .openCode).abort(project: project)
@@ -19,15 +28,7 @@ extension ChatViewModel {
             addErrorMessage("Failed to stop OpenCode response: \(error.localizedDescription)")
         }
 
-        if let activeMessageId = project.activeStreamingMessageId,
-           let message = messages.first(where: { $0.id == activeMessageId }) {
-            if message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                updateMessage(message, with: "[Response stopped]")
-            }
-            message.isStreaming = false
-            message.isComplete = true
-        }
-
+        finalizeOpenCodeStreamingMessages(markerForEmpty: "[Response stopped]")
         project.activeStreamingMessageId = nil
         project.updateLastModified()
         streamingMessage = nil
@@ -258,64 +259,104 @@ extension ChatViewModel {
     }
 
     func sendOpenCodeMessage(_ text: String, project: RemoteProject, createUserMessage: Bool = true) async {
-        if let existingId = project.activeStreamingMessageId {
-            let staleCutoff = Date().addingTimeInterval(-staleStreamingTimeout)
-            let existingMessage = messages.first(where: { $0.id == existingId })
-            let isStale = (existingMessage?.timestamp ?? project.lastModified) < staleCutoff
-
-            if let existingMessage = existingMessage {
-                if existingMessage.isComplete || !existingMessage.isStreaming || isStale {
-                    existingMessage.isStreaming = false
-                    existingMessage.isComplete = true
-                    project.activeStreamingMessageId = nil
-                    project.updateLastModified()
-                    saveChanges()
-                } else {
-                    addErrorMessage("Previous message is still processing. Please wait for it to complete or clear the chat.")
-                    return
-                }
-            } else if project.lastModified < staleCutoff {
-                project.activeStreamingMessageId = nil
-                project.updateLastModified()
-                saveChanges()
-            } else {
-                addErrorMessage("Previous message is still processing. Please wait for it to complete or clear the chat.")
-                return
-            }
-        }
-
         await ensureSendTimeSetup(for: project, includeRules: false)
-
-        if let previousStreaming = messages.last(where: { $0.isStreaming }) {
-            previousStreaming.isStreaming = false
-            previousStreaming.isComplete = true
-            if previousStreaming.content.isEmpty && previousStreaming.originalJSON == nil {
-                updateMessage(previousStreaming, with: "[Response was interrupted by new message]")
-            }
-            saveChanges()
-        }
-
-        streamingMessage = nil
-        streamingBlocks = []
-        isProcessing = false
-        saveChanges()
 
         if createUserMessage {
             _ = createMessage(content: text, role: .user)
         }
+
+        project.selectedAgentRuntime = .openCode
+        project.updateLastModified()
+        saveChanges()
+
+        // Soft-steer: session already has a live `/event` consumer. OpenCode's loop will
+        // pick up this new user prompt at the next step boundary — do not dual-attach.
+        switch OpenCodeMidAnswerSendPolicy.mode(isEventStreamActive: isOpenCodeEventStreamActive) {
+        case .softSteerPromptOnly:
+            await softSteerOpenCodePrompt(text, project: project)
+            return
+        case .startStream:
+            break
+        }
+
+        clearStaleOpenCodeStreamingAnchor(on: project)
+
         let assistantMessage = createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
         streamingMessage = assistantMessage
         streamingRedrawToken = UUID()
         isProcessing = true
-
-        project.selectedAgentRuntime = .openCode
         project.activeStreamingMessageId = assistantMessage.id
         project.updateLastModified()
         saveChanges()
 
+        let sendTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.consumeOpenCodeSendStream(
+                text: text,
+                project: project,
+                assistantMessage: assistantMessage
+            )
+        }
+        openCodeSendTask = sendTask
+        await sendTask.value
+        if openCodeSendTask == sendTask {
+            openCodeSendTask = nil
+        }
+    }
+
+    /// Inject a follow-up while the agent is still answering (OpenCode prompt_async, no new /event).
+    private func softSteerOpenCodePrompt(_ text: String, project: RemoteProject) async {
+        isProcessing = true
+        showActiveSessionIndicator = true
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
-            let stream = runtime.sendMessage(text, in: project, messageId: assistantMessage.id, mcpServers: cachedMCPServers)
+            try await runtime.submitPrompt(text, in: project, messageId: nil, mcpServers: cachedMCPServers)
+        } catch {
+            addErrorMessage("Failed to send follow-up to OpenCode: \(error.localizedDescription)")
+        }
+    }
+
+    private func clearStaleOpenCodeStreamingAnchor(on project: RemoteProject) {
+        guard let existingId = project.activeStreamingMessageId else { return }
+        let staleCutoff = Date().addingTimeInterval(-staleStreamingTimeout)
+        let existingMessage = messages.first(where: { $0.id == existingId })
+        let isStale = (existingMessage?.timestamp ?? project.lastModified) < staleCutoff
+
+        if let existingMessage {
+            if existingMessage.isComplete || !existingMessage.isStreaming || isStale {
+                existingMessage.isStreaming = false
+                existingMessage.isComplete = true
+                project.activeStreamingMessageId = nil
+                project.updateLastModified()
+                saveChanges()
+            }
+        } else if isStale {
+            project.activeStreamingMessageId = nil
+            project.updateLastModified()
+            saveChanges()
+        }
+    }
+
+    private func finalizeOpenCodeStreamingMessages(markerForEmpty: String?) {
+        for message in messages where message.isStreaming {
+            message.isStreaming = false
+            message.isComplete = true
+            if let markerForEmpty,
+               message.role == .assistant,
+               message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                updateMessage(message, with: markerForEmpty)
+            }
+        }
+    }
+
+    private func consumeOpenCodeSendStream(
+        text: String,
+        project: RemoteProject,
+        assistantMessage: Message
+    ) async {
+        do {
+            let runtime = runtimeRegistry.runtime(for: .openCode)
+            let stream = runtime.sendMessage(text, in: project, messageId: nil, mcpServers: cachedMCPServers)
             var didReceiveAnswerText = false
             var didReceiveProgress = false
             var toolMessagesByPartID: [String: Message] = [:]
@@ -323,8 +364,12 @@ extension ChatViewModel {
             var textMessagesByMessageID: [String: Message] = [:]
             var assistantMessageIsTransientProgress = false
             var assistantMessageWasRemoved = false
+            // Placeholder may be removed; keep a live target for late progress/errors after soft-steer.
+            var activeAssistantPlaceholder: Message? = assistantMessage
 
             for try await chunk in stream {
+                if Task.isCancelled { break }
+
                 let chunkType = chunk.metadata?["type"] as? String
 
                 if chunkType == "tool_permission" {
@@ -344,6 +389,13 @@ extension ChatViewModel {
                     let toolMessage: Message
                     if let existing = toolMessagesByPartID[partID] {
                         toolMessage = existing
+                    } else if let runtimeMessageID = chunk.metadata?["opencodeMessageId"] as? String,
+                              let existing = messages.first(where: {
+                                  openCodeRuntimeMessageID(from: $0) == runtimeMessageID
+                                      && $0.role == .assistant
+                              }) {
+                        toolMessage = existing
+                        toolMessagesByPartID[partID] = toolMessage
                     } else {
                         toolMessage = createMessage(
                             content: chunk.content,
@@ -354,6 +406,7 @@ extension ChatViewModel {
                         toolMessagesByPartID[partID] = toolMessage
                     }
                     project.activeStreamingMessageId = toolMessage.id
+                    isProcessing = true
 
                     let originalJSON = (chunk.metadata?["originalJSON"] as? String)?.data(using: .utf8)
                     updateMessageWithJSON(
@@ -376,11 +429,15 @@ extension ChatViewModel {
                     guard !didReceiveAnswerText else {
                         continue
                     }
-                    updateMessage(assistantMessage, with: chunk.content)
-                    assistantMessage.isStreaming = true
-                    assistantMessage.isComplete = false
+                    let progressTarget = activeAssistantPlaceholder
+                        ?? createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
+                    activeAssistantPlaceholder = progressTarget
+                    updateMessage(progressTarget, with: chunk.content)
+                    progressTarget.isStreaming = true
+                    progressTarget.isComplete = false
                     assistantMessageIsTransientProgress = true
-                    project.activeStreamingMessageId = assistantMessage.id
+                    project.activeStreamingMessageId = progressTarget.id
+                    isProcessing = true
                     if let provider = chunk.metadata?["runtimeProvider"] as? String {
                         project.lastSuccessfulRuntimeProviderRawValue = provider
                     }
@@ -389,9 +446,13 @@ extension ChatViewModel {
 
                 if chunk.isError {
                     let errorText = chunk.content.isEmpty ? "OpenCode failed to respond." : chunk.content
-                    updateMessage(assistantMessage, with: errorText)
-                    assistantMessage.isStreaming = false
-                    assistantMessage.isComplete = true
+                    let lastTextMessage = textMessagesByMessageID.values.max(by: { $0.timestamp < $1.timestamp })
+                    let errorTarget = activeAssistantPlaceholder
+                        ?? lastTextMessage
+                        ?? createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
+                    updateMessage(errorTarget, with: errorText)
+                    errorTarget.isStreaming = false
+                    errorTarget.isComplete = true
                     didReceiveAnswerText = true
                     break
                 }
@@ -402,10 +463,17 @@ extension ChatViewModel {
                     let targetMessage: Message
                     if let messageID, let existing = textMessagesByMessageID[messageID] {
                         targetMessage = existing
+                    } else if let messageID,
+                              let existing = messages.first(where: { openCodeRuntimeMessageID(from: $0) == messageID }) {
+                        targetMessage = existing
+                        textMessagesByMessageID[messageID] = existing
                     } else if let partID, let existing = textMessagesByPartID[partID] {
                         targetMessage = existing
-                    } else if !didReceiveAnswerText && !didReceiveProgress && assistantMessage.content.isEmpty {
-                        targetMessage = assistantMessage
+                    } else if let placeholder = activeAssistantPlaceholder,
+                              !didReceiveAnswerText,
+                              !didReceiveProgress,
+                              placeholder.content.isEmpty {
+                        targetMessage = placeholder
                     } else {
                         targetMessage = createMessage(
                             content: "",
@@ -422,12 +490,15 @@ extension ChatViewModel {
                     }
                     updateOpenCodeMessage(targetMessage, with: chunk)
                     project.activeStreamingMessageId = targetMessage.id
+                    isProcessing = true
                     didReceiveAnswerText = true
-                    if targetMessage.id != assistantMessage.id,
-                       assistantMessageIsTransientProgress || assistantMessage.content.isEmpty {
-                        removeTransientOpenCodeMessage(assistantMessage)
+                    if let placeholder = activeAssistantPlaceholder,
+                       targetMessage.id != placeholder.id,
+                       assistantMessageIsTransientProgress || placeholder.content.isEmpty {
+                        removeTransientOpenCodeMessage(placeholder)
                         assistantMessageIsTransientProgress = false
                         assistantMessageWasRemoved = true
+                        activeAssistantPlaceholder = nil
                     }
                 }
 
@@ -444,21 +515,29 @@ extension ChatViewModel {
                               let completedTextMessage = textMessagesByMessageID[messageID] {
                         completedTextMessage.isStreaming = false
                         completedTextMessage.isComplete = true
-                    } else if !assistantMessageWasRemoved {
-                        assistantMessage.isStreaming = false
-                        assistantMessage.isComplete = true
+                    } else if let placeholder = activeAssistantPlaceholder, !assistantMessageWasRemoved {
+                        placeholder.isStreaming = false
+                        placeholder.isComplete = true
                     } else {
                         project.activeStreamingMessageId = nil
                     }
+                    // Stream consumer ends when runtime finishes (session idle after full run,
+                    // including any soft-steered follow-ups in the same OpenCode loop).
                     break
                 }
             }
 
-            if !didReceiveAnswerText {
+            if Task.isCancelled {
+                finalizeOpenCodeStreamingMessages(markerForEmpty: nil)
+            } else if !didReceiveAnswerText {
                 let fallback = didReceiveProgress
                     ? "OpenCode ran steps but did not return a final message."
                     : "OpenCode finished without returning text."
-                updateMessage(assistantMessage, with: fallback)
+                if let placeholder = activeAssistantPlaceholder, !assistantMessageWasRemoved {
+                    updateMessage(placeholder, with: fallback)
+                } else {
+                    _ = createMessage(content: fallback, role: .assistant)
+                }
             }
 
             for toolMessage in toolMessagesByPartID.values {
@@ -469,18 +548,51 @@ extension ChatViewModel {
                 textMessage.isStreaming = false
                 textMessage.isComplete = true
             }
-            if !assistantMessageWasRemoved {
-                assistantMessage.isStreaming = false
-                assistantMessage.isComplete = true
+            if let placeholder = activeAssistantPlaceholder, !assistantMessageWasRemoved {
+                placeholder.isStreaming = false
+                placeholder.isComplete = true
             }
+            project.activeStreamingMessageId = nil
+            project.noteLastMessage()
+            project.updateLastModified()
+            saveChanges()
+
+            // When the user left this chat (agents list / other agent), bump unread and
+            // fire the same reply_finished path scheduled jobs use.
+            if !Task.isCancelled {
+                let preview = messages
+                    .filter { $0.role == .assistant }
+                    .sorted { $0.timestamp < $1.timestamp }
+                    .last(where: {
+                        !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    })?
+                    .content
+                let absolute = UnreadBadgeMath.renderableAssistantCount(in: messages)
+                // activeServer is nil on agents list; resolve by project.serverId.
+                let server = ProjectContext.shared.activeServer
+                    ?? ServerManager.shared.server(withId: project.serverId)
+                await PushNotificationsManager.shared.notifyInteractiveReplyFinished(
+                    project: project,
+                    server: server,
+                    messagePreview: preview,
+                    absoluteAssistantCount: absolute
+                )
+                saveChanges()
+            }
+        } catch is CancellationError {
+            finalizeOpenCodeStreamingMessages(markerForEmpty: nil)
             project.activeStreamingMessageId = nil
             project.updateLastModified()
             saveChanges()
         } catch {
             let errorText = "Failed to get OpenCode response: \(error.localizedDescription)"
-            updateMessage(assistantMessage, with: errorText)
-            assistantMessage.isStreaming = false
-            assistantMessage.isComplete = true
+            if assistantMessage.isStreaming || assistantMessage.content.isEmpty {
+                updateMessage(assistantMessage, with: errorText)
+                assistantMessage.isStreaming = false
+                assistantMessage.isComplete = true
+            } else {
+                addErrorMessage(errorText)
+            }
             project.activeStreamingMessageId = nil
             project.updateLastModified()
             saveChanges()
@@ -489,5 +601,6 @@ extension ChatViewModel {
         streamingMessage = nil
         streamingBlocks = []
         isProcessing = false
+        showActiveSessionIndicator = false
     }
 }

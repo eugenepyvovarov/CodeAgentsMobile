@@ -154,6 +154,13 @@ protocol CodingAgentRuntimeService: AnyObject {
         messageId: UUID?,
         mcpServers: [MCPServer]
     ) -> AsyncThrowingStream<MessageChunk, Error>
+    /// Submit a prompt without attaching a new event stream (soft-steer while a stream is already live).
+    func submitPrompt(
+        _ text: String,
+        in project: RemoteProject,
+        messageId: UUID?,
+        mcpServers: [MCPServer]
+    ) async throws
     func hydrateMessages(for project: RemoteProject) async throws -> [CodingAgentRuntimeHydratedMessage]
     func hydrateMessages(for project: RemoteProject, mode: OpenCodeHydrationMode) async throws -> OpenCodeHydrationResult
     func abort(project: RemoteProject) async throws
@@ -189,6 +196,15 @@ extension CodingAgentRuntimeService {
             storedState: state,
             diff: OpenCodeHydrationDiffer.diff(local: state, remote: state)
         )
+    }
+
+    func submitPrompt(
+        _ text: String,
+        in project: RemoteProject,
+        messageId: UUID?,
+        mcpServers: [MCPServer]
+    ) async throws {
+        throw CodingAgentRuntimeError.unsupported("This runtime does not support mid-answer prompt submission.")
     }
 
     func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws {

@@ -4,27 +4,35 @@
 //
 //  Created by Claude on 2025-06-10.
 //
-//  Purpose: Display and manage remote agents
+//  Purpose: Agents chat list (Messages/Telegram-style conversations).
 //
 
 import SwiftUI
 import SwiftData
 
 struct ProjectsView: View {
-    @State private var viewModel = ProjectsViewModel()
+    // MARK: - Environment
+
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
+
+    // MARK: - Shared state
+
+    @StateObject private var serverManager = ServerManager.shared
+    @StateObject private var projectContext = ProjectContext.shared
+
+    // MARK: - Local UI state
+
     @State private var showingSettings = false
     @State private var showingAddProject = false
     @State private var projectToDelete: RemoteProject?
     @State private var projectToEdit: RemoteProject?
     @State private var deleteFromServer = false
     @State private var editMode: EditMode = .inactive
-    @StateObject private var serverManager = ServerManager.shared
-    @StateObject private var projectContext = ProjectContext.shared
-    @Environment(\.modelContext) private var modelContext
-    
-    @Query private var projectsUnsorted: [RemoteProject]
 
-    @Environment(\.scenePhase) private var scenePhase
+    // MARK: - Data
+
+    @Query private var projectsUnsorted: [RemoteProject]
 
     /// Agents ordered by last chat message (not metadata/hydration bumps).
     private var projects: [RemoteProject] {
@@ -35,158 +43,154 @@ struct ProjectsView: View {
             return lhs.createdAt > rhs.createdAt
         }
     }
-    
+
     private var isEditing: Bool {
         editMode.isEditing
     }
-    
+
+    // MARK: - Body
+
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                List {
-                    if !projects.isEmpty {
-                        ForEach(projects) { project in
-                            if isEditing {
-                                ProjectRow(
-                                    project: project,
-                                    isEditing: true,
-                                    onEdit: { projectToEdit = project },
-                                    onDelete: { projectToDelete = project }
-                                )
-                            } else {
-                                ProjectRow(project: project)
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                        Button {
-                                            projectToEdit = project
-                                        } label: {
-                                            Label("Rename", systemImage: "pencil")
-                                        }
-                                        .tint(.blue)
-
-                                        Button {
-                                            projectToDelete = project
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                        .tint(.red)
-                                    }
+            chatList
+                .navigationTitle("Agents")
+                .toolbar { agentsToolbar }
+                .environment(\.editMode, $editMode)
+                .sheet(isPresented: $showingSettings) {
+                    NavigationStack {
+                        SettingsView()
+                    }
+                }
+                .sheet(isPresented: $showingAddProject) {
+                    AddProjectSheet()
+                }
+                .sheet(item: $projectToEdit) { project in
+                    EditProjectSheet(project: project)
+                }
+                .sheet(item: $projectToDelete) { project in
+                    DeleteProjectConfirmationSheet(
+                        project: project,
+                        deleteFromServer: $deleteFromServer,
+                        onDelete: {
+                            Task {
+                                await performDeletion(of: project)
                             }
+                        },
+                        onCancel: {
+                            projectToDelete = nil
+                            deleteFromServer = false
                         }
-                    } else {
-                    // Empty state
-                    VStack(spacing: 16) {
-                        Image(systemName: "folder.badge.plus")
-                            .font(.system(size: 50))
-                            .foregroundColor(.secondary)
-                        
-                        Text("No Agents Yet")
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                        
-                        Button {
-                            showingAddProject = true
-                        } label: {
-                            Text("Create Agent")
-                                .font(.footnote)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(Color.orange)
-                                .foregroundColor(.white)
-                                .clipShape(Capsule())
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 40)
-                    }
+                    )
                 }
-                .listStyle(.insetGrouped)
-                
-                // Add new agent button at the bottom (only when projects exist)
-                if !projects.isEmpty {
-                    Button {
-                        showingAddProject = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "plus.circle.fill")
-                            Text("Create Agent")
-                        }
-                        .font(.body)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.orange)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                    }
-                    .padding()
+                // Soft background sync (independent of push):
+                // 1) pull new OpenCode messages + unread badges for listed agents
+                // 2) keep CodeAgents daemons current
+                .task {
+                    backfillLastMessageDatesIfNeeded()
                 }
-            }
-            .navigationTitle("Agents")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if !projects.isEmpty {
-                        EditButton()
-                    }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .accessibilityIdentifier("agents-settings-button")
-                }
-            }
-            .environment(\.editMode, $editMode)
-            .sheet(isPresented: $showingSettings) {
-                NavigationStack {
-                    SettingsView()
-                }
-            }
-            .sheet(isPresented: $showingAddProject) {
-                AddProjectSheet()
-            }
-            .sheet(item: $projectToEdit) { project in
-                EditProjectSheet(project: project)
-            }
-            .sheet(item: $projectToDelete) { project in
-                DeleteProjectConfirmationSheet(
-                    project: project,
-                    deleteFromServer: $deleteFromServer,
-                    onDelete: {
-                        Task {
-                            await performDeletion(of: project)
-                        }
-                    },
-                    onCancel: {
-                        projectToDelete = nil
-                        deleteFromServer = false
-                    }
-                )
-            }
-            // Soft background sync (independent of push):
-            // 1) pull new OpenCode messages + unread badges for listed agents
-            // 2) keep CodeAgents daemons current
-            // Re-poll while Agents stays visible so scheduled replies still surface
-            // when the server has push disabled.
-            .task {
-                backfillLastMessageDatesIfNeeded()
-            }
-            .task(id: softSyncKey) {
-                await softSyncListedAgents()
-                while !Task.isCancelled {
-                    let interval = AgentsListSoftSyncService.shared.messageCheckCooldown
-                    let nanos = UInt64(max(15, interval) * 1_000_000_000)
-                    try? await Task.sleep(nanoseconds: nanos)
-                    guard !Task.isCancelled else { break }
-                    guard scenePhase == .active else { continue }
+                .task(id: softSyncKey) {
                     await softSyncListedAgents()
+                    while !Task.isCancelled {
+                        let interval = AgentsListSoftSyncService.shared.messageCheckCooldown
+                        let nanos = UInt64(max(15, interval) * 1_000_000_000)
+                        try? await Task.sleep(nanoseconds: nanos)
+                        guard !Task.isCancelled else { break }
+                        guard scenePhase == .active else { continue }
+                        await softSyncListedAgents()
+                    }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        Task { await softSyncListedAgents() }
+                    }
+                }
+        }
+    }
+
+    // MARK: - List
+
+    @ViewBuilder
+    private var chatList: some View {
+        if projects.isEmpty {
+            emptyState
+        } else {
+            List {
+                ForEach(projects) { project in
+                    Group {
+                        if isEditing {
+                            AgentChatListRow(
+                                project: project,
+                                isEditing: true,
+                                onEdit: { projectToEdit = project },
+                                onDelete: { projectToDelete = project }
+                            )
+                        } else {
+                            AgentChatListRow(project: project)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button {
+                                        projectToEdit = project
+                                    } label: {
+                                        Label("Rename", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
+
+                                    Button {
+                                        projectToDelete = project
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    .tint(.red)
+                                }
+                        }
+                    }
+                    // Tighten system list cell chrome (main vertical density lever).
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                 }
             }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active {
-                    Task { await softSyncListedAgents() }
-                }
+            .listStyle(.plain)
+            .listRowSpacing(0)
+            .environment(\.defaultMinListRowHeight, 1)
+        }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No Agents Yet", systemImage: "bubble.left.and.bubble.right")
+        } description: {
+            Text("Create an agent to start chatting with OpenCode on your server.")
+        } actions: {
+            PrimaryGlassButton {
+                showingAddProject = true
+            } label: {
+                Label("Create Agent", systemImage: "plus.message")
             }
+            .accessibilityIdentifier("agents-create-empty-button")
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var agentsToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            if !projects.isEmpty {
+                EditButton()
+            }
+        }
+        ToolbarItemGroup(placement: .navigationBarTrailing) {
+            if !projects.isEmpty {
+                Button {
+                    showingAddProject = true
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .accessibilityLabel("Create Agent")
+                .accessibilityIdentifier("agents-compose-button")
+            }
+            Button {
+                showingSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityIdentifier("agents-settings-button")
         }
     }
 
@@ -278,128 +282,6 @@ struct ProjectsView: View {
             // Failed to delete project
             // TODO: Show error alert
         }
-    }
-}
-
-struct ProjectRow: View {
-    let project: RemoteProject
-    var isEditing: Bool = false
-    var onEdit: (() -> Void)?
-    var onDelete: (() -> Void)?
-    @StateObject private var projectContext = ProjectContext.shared
-    @State private var isActivating = false
-    
-    @Query private var servers: [Server]
-    
-    private var server: Server? {
-        servers.first { $0.id == project.serverId }
-    }
-    
-    var body: some View {
-        Group {
-            if isEditing {
-                HStack {
-                    leftColumn
-                    Spacer()
-                    unreadBadge
-                    activationIndicator
-                    actionButtons
-                }
-                .padding(.vertical, 4)
-            } else {
-                Button {
-                    Task {
-                        await activateProject()
-                    }
-                } label: {
-                    HStack {
-                        leftColumn
-                        Spacer()
-                        unreadBadge
-                        activationIndicator
-                    }
-                    .padding(.vertical, 4)
-                }
-                .disabled(isActivating)
-                .opacity(isActivating ? 0.6 : 1.0)
-            }
-        }
-    }
-    
-    private var leftColumn: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(project.displayTitle)
-                .font(.headline)
-                .foregroundColor(.primary)
-            
-            if let server = server {
-                Text("\(server.username)@\(server.host)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fontDesign(.monospaced)
-            }
-            
-            if let lastMessageAt = project.lastMessageAt {
-                Text("Last message \(lastMessageAt, style: .relative) ago")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            } else {
-                Text("Created \(project.createdAt, style: .relative) ago")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var activationIndicator: some View {
-        if isActivating {
-            ProgressView()
-                .scaleEffect(0.8)
-        }
-    }
-
-    @ViewBuilder
-    private var unreadBadge: some View {
-        if let text = project.unreadBadgeText {
-            Text(text)
-                .font(.caption2.weight(.semibold))
-                .foregroundColor(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Color.red)
-                .clipShape(Capsule())
-                .accessibilityLabel("\(project.unreadCount) unread message\(project.unreadCount == 1 ? "" : "s")")
-        }
-    }
-    
-    private var actionButtons: some View {
-        HStack(spacing: 12) {
-            if let onEdit {
-                Button(action: onEdit) {
-                    Image(systemName: "pencil")
-                }
-                .accessibilityLabel("Edit Agent")
-            }
-            
-            if let onDelete {
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
-                }
-                .accessibilityLabel("Delete Agent")
-            }
-        }
-        .buttonStyle(.borderless)
-    }
-    
-    private func activateProject() async {
-        isActivating = true
-        defer { isActivating = false }
-        
-        // Set the project as active
-        projectContext.setActiveProject(project)
-        
-        // Navigation would typically be handled by the parent view
     }
 }
 

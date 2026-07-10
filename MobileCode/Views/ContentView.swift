@@ -56,26 +56,66 @@ struct ContentView: View {
                 // App became active - start monitoring
                 startCloudInitMonitoring()
                 Task {
+                    // Warm OpenCode SSH early so chat reopen reuses a pooled login.
+                    await OpenCodeInstallerService.shared.warmActiveProjectConnectionIfNeeded()
                     await PushNotificationsManager.shared.syncDeliveredReplyFinishedNotifications()
                     // App-default push: provision secrets + subscribe agents (throttled).
                     await PushNotificationsManager.shared.ensureAppDefaultPush(modelContext: modelContext)
+                    await softSyncBackgroundAgentsUnread()
                 }
             case .inactive, .background:
                 // App went to background - stop monitoring to save resources
                 cloudInitMonitor.stopAllMonitoring()
+                // Keep icon badge accurate from last known cursors before suspend.
+                UnreadBadgeService.refreshAppIconBadge(using: modelContext)
             @unknown default:
                 break
             }
         }
         .onChange(of: projectContext.activeProject?.id) { _, _ in
             configureManagers()
+            UnreadBadgeService.refreshAppIconBadge(using: modelContext)
         }
         .task {
             seedAIProvidersEvidenceStateIfNeeded()
             seedSettingsListsEvidenceStateIfNeeded()
             seedChatOpenDeferredStartupEvidenceStateIfNeeded()
             await PushNotificationsManager.shared.ensureAppDefaultPush(modelContext: modelContext)
+            UnreadBadgeService.refreshAppIconBadge(using: modelContext)
         }
+        // Soft-poll other agents while a chat is open (and all agents on the list)
+        // so unread badges update even without push.
+        .task {
+            await runBackgroundAgentsUnreadSoftSyncLoop()
+        }
+    }
+
+    /// Periodic soft hydrate for agents other than the open chat.
+    private func runBackgroundAgentsUnreadSoftSyncLoop() async {
+        while !Task.isCancelled {
+            if scenePhase == .active {
+                await softSyncBackgroundAgentsUnread()
+            }
+            let interval = AgentsListSoftSyncService.shared.messageCheckCooldown
+            let nanos = UInt64(max(15, interval) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanos)
+        }
+    }
+
+    /// Hydrate non-active agents and refresh app-icon + list unread badges.
+    private func softSyncBackgroundAgentsUnread() async {
+        let projects = (try? modelContext.fetch(FetchDescriptor<RemoteProject>())) ?? []
+        guard !projects.isEmpty else {
+            UnreadBadgeService.refreshAppIconBadge(using: modelContext)
+            return
+        }
+        // Skip the open agent: ChatViewModel already hydrates that session.
+        let excluding = projectContext.activeProject?.id
+        await AgentsListSoftSyncService.shared.softSyncMessages(
+            projects: projects,
+            modelContext: modelContext,
+            excludingProjectID: excluding
+        )
     }
     
     private func configureManagers() {

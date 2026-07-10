@@ -110,8 +110,10 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         mcpServers: [MCPServer] = []
     ) -> AsyncThrowingStream<MessageChunk, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let lifetime = OpenCodeSendStreamLifetime()
+            lifetime.task = Task {
                 do {
+                    try Task.checkCancellation()
                     let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
                     let client = client(for: project)
                     let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
@@ -135,22 +137,19 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         SSHLogger.log("OpenCode event stream attached: \(diagnostics.description)", level: .debug)
                     }
 
-                    let prompt = try OpenCodePromptBuilder.build(
-                        messageID: messageId?.uuidString,
-                        composedPrompt: text,
-                        projectPath: project.path,
-                        model: promptModel,
-                        variant: promptVariant
-                    )
-                    try await validatePromptReferences(prompt, sshSession: sshSession)
-                    try await client.promptAsync(
+                    try await submitPromptPayload(
+                        text,
+                        project: project,
+                        messageId: messageId,
                         sshSession: sshSession,
+                        client: client,
                         sessionID: sessionID,
-                        payload: prompt.payload,
-                        directory: project.path
+                        promptModel: promptModel,
+                        promptVariant: promptVariant
                     )
 
                     func consume(_ event: OpenCodeEvent) async throws -> Bool {
+                        try Task.checkCancellation()
                         let chunks = accumulator.consume(event)
                         for chunk in chunks {
                             continuation.yield(chunk)
@@ -174,6 +173,9 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                                 return
                             }
                         }
+                    } catch is CancellationError {
+                        continuation.finish()
+                        return
                     } catch {
                         let fallbackChunks = (try? await fallbackHydrationChunks(
                             project: project,
@@ -199,11 +201,68 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         continuation.yield(chunk)
                     }
                     continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
+
+            continuation.onTermination = { _ in
+                lifetime.cancel()
+            }
         }
+    }
+
+    /// Soft-steer: inject a new user prompt into the active OpenCode session without attaching `/event`.
+    /// OpenCode's agent loop picks up the newest user message at the next step boundary.
+    func submitPrompt(
+        _ text: String,
+        in project: RemoteProject,
+        messageId: UUID? = nil,
+        mcpServers: [MCPServer] = []
+    ) async throws {
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
+        let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
+        let promptModel = await resolvePromptModel(for: project, sshSession: sshSession)
+        let promptVariant = resolvePromptVariant(for: project)
+        try await submitPromptPayload(
+            text,
+            project: project,
+            messageId: messageId,
+            sshSession: sshSession,
+            client: client,
+            sessionID: sessionID,
+            promptModel: promptModel,
+            promptVariant: promptVariant
+        )
+    }
+
+    private func submitPromptPayload(
+        _ text: String,
+        project: RemoteProject,
+        messageId: UUID?,
+        sshSession: SSHSession,
+        client: OpenCodeClient,
+        sessionID: String,
+        promptModel: OpenCodePromptModel?,
+        promptVariant: String?
+    ) async throws {
+        let prompt = try OpenCodePromptBuilder.build(
+            messageID: messageId?.uuidString,
+            composedPrompt: text,
+            projectPath: project.path,
+            model: promptModel,
+            variant: promptVariant
+        )
+        try await validatePromptReferences(prompt, sshSession: sshSession)
+        try await client.promptAsync(
+            sshSession: sshSession,
+            sessionID: sessionID,
+            payload: prompt.payload,
+            directory: project.path
+        )
     }
 
     func hydrateMessages(for project: RemoteProject) async throws -> [CodingAgentRuntimeHydratedMessage] {
@@ -690,6 +749,15 @@ private enum OpenCodeTimedEvent {
     case event(OpenCodeEvent)
     case ended
     case timedOut
+}
+
+/// Cancels the in-flight send-stream Task when the AsyncThrowingStream consumer ends or is cancelled.
+private final class OpenCodeSendStreamLifetime: @unchecked Sendable {
+    var task: Task<Void, Never>?
+
+    func cancel() {
+        task?.cancel()
+    }
 }
 
 enum OpenCodeStreamCompletionPolicy {

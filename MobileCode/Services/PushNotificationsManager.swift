@@ -161,6 +161,12 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
     func handleRemoteNotification(userInfo: [AnyHashable: Any]) async -> Bool {
         guard let payload = PushPayload(userInfo: userInfo) else { return false }
+        // Warm SSH as soon as a reply-finished push lands (even if user has not tapped yet).
+        if payload.type == "reply_finished", let server = serverMatchingPush(payload: payload) {
+            Task {
+                await OpenCodeInstallerService.shared.warmConnection(for: server, probeHealth: true)
+            }
+        }
         return await applyReplyFinishedUpdateIfPossible(payload: payload)
     }
 
@@ -220,14 +226,222 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             }
         }
 
+        var didApply = false
         for notification in notifications {
             let userInfo = notification.request.content.userInfo
             guard let payload = PushPayload(userInfo: userInfo) else { continue }
-            _ = await applyReplyFinishedUpdateIfPossible(payload: payload)
+            if await applyReplyFinishedUpdateIfPossible(payload: payload) {
+                didApply = true
+            }
+        }
+        // apply already refreshes badge; still recompute once if nothing applied so icon stays honest.
+        if !didApply {
+            refreshAppIconBadgeFromStore()
         }
     }
 
+    /// Interactive OpenCode stream finished. When the user is not watching this chat,
+    /// bump unread and fire the same `triggerReplyFinished` gateway path jobs use
+    /// (local notification fallback if the gateway call fails).
+    func notifyInteractiveReplyFinished(
+        project: RemoteProject,
+        server: Server?,
+        messagePreview: String?,
+        absoluteAssistantCount: Int
+    ) async {
+        let sessionId = project.openCodeSessionId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let sessionId, !sessionId.isEmpty else { return }
+
+        let absolute = max(0, absoluteAssistantCount)
+
+        if let cursors = AgentsListUnreadCursor.applyingAbsolute(
+            lastKnown: project.lastKnownUnreadCursor,
+            lastRead: project.lastReadUnreadCursor,
+            unreadConversationId: project.unreadConversationId,
+            sessionId: sessionId,
+            absoluteAssistantCount: absolute
+        ) {
+            project.lastKnownUnreadCursor = cursors.lastKnown
+            project.lastReadUnreadCursor = cursors.lastRead
+            project.unreadConversationId = cursors.unreadConversationId
+            project.noteLastMessage()
+            project.updateLastModified()
+            if let modelContainer {
+                let context = ModelContext(modelContainer)
+                // Project may be from a different context; persist via active store when possible.
+                try? context.save()
+            }
+        }
+
+        // If user is staring at this chat, keep counters honest but skip banners.
+        if isViewingChat(for: project) {
+            if project.unreadCount > 0 {
+                // Viewing live stream: treat as read so the agents list stays clean.
+                project.lastReadUnreadCursor = project.lastKnownUnreadCursor
+            }
+            if let modelContainer {
+                UnreadBadgeService.refreshAppIconBadge(using: ModelContext(modelContainer))
+            }
+            return
+        }
+
+        if let modelContainer {
+            UnreadBadgeService.refreshAppIconBadge(using: ModelContext(modelContainer))
+        }
+
+        let preview = Self.normalizedPreview(messagePreview)
+        var gatewaySucceeded = false
+        if let server,
+           let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !secret.isEmpty {
+            do {
+                try await gatewayClient.triggerReplyFinished(
+                    secret: secret,
+                    payload: TriggerReplyFinishedPayload(
+                        cwd: project.path,
+                        conversationId: sessionId,
+                        messagePreview: preview,
+                        renderableAssistantCount: absolute
+                    )
+                )
+                gatewaySucceeded = true
+                #if DEBUG
+                SSHLogger.log(
+                    "Interactive reply_finished gateway ok for \(project.displayTitle)",
+                    level: .info
+                )
+                #endif
+            } catch {
+                SSHLogger.log(
+                    "Interactive reply_finished gateway failed: \(error.localizedDescription)",
+                    level: .warning
+                )
+            }
+        }
+
+        // Local banner only when the gateway did not deliver (missing secret / network).
+        // Successful gateway sends real FCM like scheduled jobs.
+        if !gatewaySucceeded {
+            await postLocalReplyFinishedNotification(
+                project: project,
+                server: server,
+                title: agentDisplayName(for: project, server: server),
+                body: preview ?? "Reply ready",
+                conversationId: sessionId,
+                absoluteAssistantCount: absolute
+            )
+        }
+    }
+
+    /// Soft-sync found higher unread for an agent the user is not viewing.
+    func notifySoftSyncUnreadIncrease(
+        project: RemoteProject,
+        previousUnread: Int,
+        newUnread: Int,
+        preview: String?
+    ) async {
+        guard newUnread > previousUnread else { return }
+        guard !isViewingChat(for: project) else { return }
+
+        let sessionId = project.openCodeSessionId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let server = fetchServer(withId: project.serverId)
+        await postLocalReplyFinishedNotification(
+            project: project,
+            server: server,
+            title: agentDisplayName(for: project, server: server),
+            body: Self.normalizedPreview(preview) ?? "Reply ready",
+            conversationId: sessionId,
+            absoluteAssistantCount: project.lastKnownUnreadCursor
+        )
+    }
+
     // MARK: - Private
+
+    /// True when the user is on Chat for this agent (suppress banners for that chat only).
+    private func isViewingChat(for project: RemoteProject) -> Bool {
+        guard AppNavigationState.shared.selectedTab == .chat,
+              let active = ProjectContext.shared.activeProject else {
+            return false
+        }
+        return active.id == project.id
+    }
+
+    private func agentDisplayName(for project: RemoteProject, server: Server?) -> String {
+        if let server {
+            return "\(project.displayTitle)@\(server.name)"
+        }
+        return project.displayTitle
+    }
+
+    private nonisolated static func normalizedPreview(_ text: String?, maxLen: Int = 160) -> String? {
+        guard let text else { return nil }
+        let collapsed = text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return nil }
+        if collapsed.count <= maxLen { return collapsed }
+        let end = collapsed.index(collapsed.startIndex, offsetBy: max(0, maxLen - 1))
+        return String(collapsed[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    private func postLocalReplyFinishedNotification(
+        project: RemoteProject,
+        server: Server?,
+        title: String,
+        body: String,
+        conversationId: String?,
+        absoluteAssistantCount: Int
+    ) async {
+        guard await hasNotificationDeliveryPermission() else { return }
+
+        // Suppress only when user is inside this chat (same rule as FCM willPresent).
+        if isViewingChat(for: project) { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.threadIdentifier = project.id.uuidString
+
+        var userInfo: [AnyHashable: Any] = [
+            "type": "reply_finished",
+            "cwd": project.path,
+            "local": "1",
+        ]
+        if let conversationId, !conversationId.isEmpty {
+            userInfo["conversation_id"] = conversationId
+        }
+        if absoluteAssistantCount >= 0 {
+            userInfo["renderable_assistant_count"] = String(absoluteAssistantCount)
+        }
+        if let server,
+           let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !secret.isEmpty {
+            userInfo["server_key"] = secret.sha256Hex()
+        }
+        content.userInfo = userInfo
+
+        let request = UNNotificationRequest(
+            identifier: "reply-finished-\(project.id.uuidString)",
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            // Drive the same in-app refresh path FCM uses (hydrate + badge).
+            _ = await handleRemoteNotification(userInfo: userInfo)
+        } catch {
+            SSHLogger.log(
+                "Local reply_finished notification failed: \(error.localizedDescription)",
+                level: .warning
+            )
+        }
+    }
 
     private nonisolated static func redactedTokenDescription(_ token: String) -> String {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -335,6 +549,22 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         return (try? context.fetch(descriptor))?.first
     }
 
+    /// Resolve the server that owns a push payload via hashed push secret.
+    private func serverMatchingPush(payload: PushPayload) -> Server? {
+        guard let modelContainer else { return nil }
+        let context = ModelContext(modelContainer)
+        let servers: [Server]
+        do {
+            servers = try context.fetch(FetchDescriptor<Server>())
+        } catch {
+            return nil
+        }
+        return servers.first { server in
+            guard let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id) else { return false }
+            return secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
+        }
+    }
+
     private func fetchFCMToken() async -> String? {
         guard FirebaseBootstrap.configureIfNeeded() else {
             return nil
@@ -408,6 +638,12 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
         ProjectContext.shared.setActiveProject(project)
         AppNavigationState.shared.selectedTab = .chat
+
+        // Kick off pooled OpenCode SSH + health before ChatView's connect loop so the
+        // notification-open path reuses a warm session instead of a cold login.
+        Task {
+            await OpenCodeInstallerService.shared.warmConnection(for: matchedServer, probeHealth: true)
+        }
     }
 
     @discardableResult
@@ -496,7 +732,16 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
         syncActiveProjectIfNeeded(from: project, payload: payload)
         postReplyFinishedEvent(project: project, server: matchedServer, payload: payload)
+        // Always refresh app-icon total after cursor changes (background + other agents).
+        refreshAppIconBadgeFromStore()
         return true
+    }
+
+    /// Recompute the home-screen badge from persisted agent unread cursors.
+    private func refreshAppIconBadgeFromStore() {
+        guard let modelContainer else { return }
+        let context = ModelContext(modelContainer)
+        UnreadBadgeService.refreshAppIconBadge(using: context)
     }
 
     private func syncActiveProjectIfNeeded(from project: RemoteProject, payload: PushPayload) {
@@ -758,15 +1003,29 @@ extension PushNotificationsManager: @preconcurrency UNUserNotificationCenterDele
         completionHandler()
     }
 
+    /// Suppress the system banner only for the agent chat the user is currently viewing.
+    /// Background / other agents always surface banners + sound while the app is foregrounded.
     private func shouldSuppressForegroundNotification(payload: PushPayload) -> Bool {
+        // Must be on the Chat tab of a live agent.
         guard AppNavigationState.shared.selectedTab == .chat,
               let activeProject = ProjectContext.shared.activeProject,
-              activeProject.path == payload.cwd,
-              let activeServer = ProjectContext.shared.activeServer,
-              let secret = try? KeychainManager.shared.retrievePushSecret(for: activeServer.id) else {
+              let activeServer = ProjectContext.shared.activeServer else {
             return false
         }
 
-        return secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
+        // Different agent path → always show (background chat replies).
+        let activePath = activeProject.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payloadPath = payload.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !activePath.isEmpty, activePath == payloadPath else {
+            return false
+        }
+
+        // Same path must also be on the same server (secret hash).
+        guard let secret = try? KeychainManager.shared.retrievePushSecret(for: activeServer.id) else {
+            return false
+        }
+        let matchesServer =
+            secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
+        return matchesServer
     }
 }

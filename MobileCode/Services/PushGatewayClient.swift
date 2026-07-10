@@ -47,6 +47,14 @@ struct PushGatewayClient {
         _ = try await sendJSON(to: url, secret: secret, payload: payload)
     }
 
+    /// Same Cloud Function the CodeAgents daemon calls when a scheduled job finishes.
+    /// Used by the app for interactive OpenCode replies that complete while the user is
+    /// not watching that chat (agents list / other agent / background).
+    func triggerReplyFinished(secret: String, payload: TriggerReplyFinishedPayload) async throws {
+        let url = try Self.functionsBaseURL().appendingPathComponent("triggerReplyFinished")
+        _ = try await sendJSON(to: url, secret: secret, payload: payload)
+    }
+
     // MARK: - Private
 
     private func sendJSON<Payload: Encodable>(to url: URL, secret: String, payload: Payload) async throws -> Data {
@@ -78,5 +86,24 @@ struct RegisterSubscriptionPayload: Codable {
         self.fcm_token = fcmToken
         self.agent_display_name = agentDisplayName
         self.platform = "ios"
+    }
+}
+
+struct TriggerReplyFinishedPayload: Codable {
+    let cwd: String
+    let conversation_id: String?
+    let message_preview: String?
+    let renderable_assistant_count: Int?
+
+    init(
+        cwd: String,
+        conversationId: String?,
+        messagePreview: String?,
+        renderableAssistantCount: Int?
+    ) {
+        self.cwd = cwd
+        self.conversation_id = conversationId
+        self.message_preview = messagePreview
+        self.renderable_assistant_count = renderableAssistantCount
     }
 }

@@ -233,7 +233,7 @@ struct CodeAgentsUITableDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 detailSummary
 
                 CodeAgentsUITableGrid(
@@ -245,7 +245,9 @@ struct CodeAgentsUITableDetailSheet: View {
                     sortAscending: sortAscending,
                     onHeaderTap: toggleSort
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(
@@ -461,37 +463,60 @@ struct CodeAgentsUITableGrid: View {
             rows: rows
         )
 
-        ScrollView(scrollAxes, showsIndicators: mode == .detail) {
-            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+        // Detail fullscreen: pin short tables to top-leading. Dual-axis ScrollView
+        // otherwise centers content when the grid is smaller than the viewport.
+        if mode == .detail {
+            GeometryReader { proxy in
+                ScrollView(scrollAxes, showsIndicators: true) {
+                    tableGrid(widths: widths, alignments: alignments)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .frame(
+                            minWidth: proxy.size.width,
+                            minHeight: proxy.size.height,
+                            alignment: .topLeading
+                        )
+                }
+                .defaultScrollAnchor(.topLeading)
+            }
+            .background(Color(.systemBackground))
+        } else {
+            ScrollView(scrollAxes, showsIndicators: false) {
+                tableGrid(widths: widths, alignments: alignments)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .background(Color(.systemBackground).opacity(0.55))
+        }
+    }
+
+    @ViewBuilder
+    private func tableGrid(widths: [CGFloat], alignments: [TextAlignment]) -> some View {
+        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(0..<columnCount, id: \.self) { index in
+                    headerCell(
+                        text: table.columns[index],
+                        columnIndex: index,
+                        width: widths[index],
+                        alignment: alignments[index]
+                    )
+                }
+            }
+
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
                 GridRow {
-                    ForEach(0..<columnCount, id: \.self) { index in
-                        headerCell(
-                            text: table.columns[index],
-                            columnIndex: index,
-                            width: widths[index],
-                            alignment: alignments[index]
+                    ForEach(0..<columnCount, id: \.self) { columnIndex in
+                        bodyCell(
+                            text: value(at: columnIndex, in: row),
+                            rowIndex: rowIndex,
+                            columnIndex: columnIndex,
+                            width: widths[columnIndex],
+                            alignment: alignments[columnIndex],
+                            isLastRow: rowIndex == rows.count - 1
                         )
                     }
                 }
-
-                ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
-                    GridRow {
-                        ForEach(0..<columnCount, id: \.self) { columnIndex in
-                            bodyCell(
-                                text: value(at: columnIndex, in: row),
-                                rowIndex: rowIndex,
-                                columnIndex: columnIndex,
-                                width: widths[columnIndex],
-                                alignment: alignments[columnIndex],
-                                isLastRow: rowIndex == rows.count - 1
-                            )
-                        }
-                    }
-                }
             }
-            .fixedSize(horizontal: true, vertical: false)
         }
-        .background(Color(.systemBackground).opacity(mode == .preview ? 0.55 : 1))
     }
 
     @ViewBuilder

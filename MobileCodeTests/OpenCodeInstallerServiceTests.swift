@@ -72,4 +72,19 @@ final class OpenCodeInstallerServiceTests: XCTestCase {
         OpenCodeInstallerService.shared.invalidateRuntimeStatusCache(for: UUID())
         OpenCodeInstallerService.shared.invalidateRuntimeStatusCache()
     }
+
+    func testHealthyCacheTTLIsLongEnoughForNotificationReopen() {
+        // Soft opens after notification should reuse a recent healthy probe.
+        XCTAssertGreaterThanOrEqual(OpenCodeInstallerService.shared.healthyCacheTTL, 120)
+    }
+
+    func testAvailableAndDaemonUnavailableDoNotBlockForegroundChat() {
+        XCTAssertFalse(OpenCodeRuntimeSetupStatus.available(version: "1.0").blocksForegroundChat)
+        XCTAssertFalse(
+            OpenCodeRuntimeSetupStatus.daemonUnavailable(version: "1.0", reason: "down")
+                .blocksForegroundChat
+        )
+        XCTAssertTrue(OpenCodeRuntimeSetupStatus.unreachable("blip").blocksForegroundChat)
+        XCTAssertTrue(OpenCodeRuntimeSetupStatus.sshUnavailable("offline").blocksForegroundChat)
+    }
 }
