@@ -268,6 +268,11 @@ struct ProjectsView: View {
             if deleteFromServer {
                 try await ServiceManager.shared.projectService.deleteProject(project)
             }
+
+            await PushNotificationsManager.shared.unregisterDevice(
+                serverId: project.serverId,
+                cwd: project.path
+            )
             
             // Delete locally
             modelContext.delete(project)

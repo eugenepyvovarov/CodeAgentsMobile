@@ -88,6 +88,8 @@ final class CodeAgentsDaemonUpdateTests: XCTestCase {
 
         XCTAssertTrue(root.contains("INSTALL_DIR=/opt/codeagents-daemon"))
         XCTAssertTrue(root.contains(CodeAgentsDaemonProvisioning.installScriptURL))
+        XCTAssertTrue(root.contains(CodeAgentsDaemonProvisioning.pinnedInstallCommit))
+        XCTAssertFalse(root.contains("/HEAD/install.sh"))
         XCTAssertFalse(root.contains("sudo -n env"))
 
         XCTAssertTrue(sudo.contains("sudo -n env"))
@@ -95,13 +97,15 @@ final class CodeAgentsDaemonUpdateTests: XCTestCase {
         XCTAssertTrue(sudo.contains("INSTALL_CLAUDE_CLI=0"))
     }
 
-    func testRemoteHeadProbeCommandTargetsDaemonRepo() {
+    func testRemoteHeadProbeCommandUsesPinnedCommit() {
         let command = CodeAgentsDaemonProvisioning.remoteHeadProbeCommand()
 
-        XCTAssertTrue(command.contains(CodeAgentsDaemonProvisioning.repositoryURL))
-        XCTAssertTrue(command.contains("git ls-remote"))
-        XCTAssertTrue(command.contains(CodeAgentsDaemonProvisioning.remoteHeadAPIURL))
-        XCTAssertTrue(command.contains("User-Agent: CodeAgentsMobile"))
+        XCTAssertTrue(command.contains(CodeAgentsDaemonProvisioning.pinnedInstallCommit))
+        XCTAssertEqual(
+            CodeAgentsDaemonProvisioning.expectedDaemonVersion,
+            CodeAgentsDaemonProvisioning.pinnedInstallCommit
+        )
+        XCTAssertFalse(command.contains("git ls-remote"))
     }
 
     func testNormalizeVersionDropsUnknown() {

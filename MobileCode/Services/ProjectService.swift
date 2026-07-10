@@ -34,11 +34,14 @@ class ProjectService {
     ///   - server: Server to create the agent on
     ///   - customPath: Optional custom path for the agent (if nil, uses server default)
     func createProject(name: String, on server: Server, customPath: String? = nil) async throws {
-        SSHLogger.log("Creating agent '\(name)' on server \(server.name)", level: .info)
-        
+        guard let safeName = SSHShellQuoting.sanitizedPathComponent(name) else {
+            throw ProjectServiceError.invalidName
+        }
+        SSHLogger.log("Creating agent on server \(server.name)", level: .info)
+
         // Get a direct connection to the server
         let session = try await sshService.connect(to: server)
-        
+
         // Use custom path if provided, otherwise ensure the server has a default projects path
         let basePath: String
         if let customPath = customPath {
@@ -49,51 +52,55 @@ class ProjectService {
             }
             basePath = server.defaultProjectsPath ?? "/root/projects"
         }
-        
-        let projectPath = "\(basePath)/\(name)"
-        
-        SSHLogger.log("Creating agent at path: \(projectPath)", level: .info)
-        
+
+        let projectPath = "\(basePath)/\(safeName)"
+        let qBase = SSHShellQuoting.quote(basePath)
+        let qProject = SSHShellQuoting.quote(projectPath)
+
+        SSHLogger.log("Creating agent directory", level: .info)
+
         // First, ensure the base projects directory exists and check permissions
-        _ = try await session.execute("mkdir -p '\(basePath)'")
-        
+        _ = try await session.execute("mkdir -p -- \(qBase)")
+
         // Validate write permissions on the base directory
         let canWrite = try await validateWritePermission(at: basePath, using: session)
-        
+
         if !canWrite {
-            SSHLogger.log("No write permission at \(basePath), trying fallback", level: .warning)
+            SSHLogger.log("No write permission at base path, trying fallback", level: .warning)
             // If we can't write to the default location, try the fallback
             if basePath != "/root/projects" {
-                let fallbackPath = "/root/projects/\(name)"
-                _ = try await session.execute("mkdir -p '/root/projects'")
-                
+                let fallbackPath = "/root/projects/\(safeName)"
+                let qFallbackRoot = SSHShellQuoting.quote("/root/projects")
+                let qFallback = SSHShellQuoting.quote(fallbackPath)
+                _ = try await session.execute("mkdir -p -- \(qFallbackRoot)")
+
                 if try await validateWritePermission(at: "/root/projects", using: session) {
-                    SSHLogger.log("Using fallback path: \(fallbackPath)", level: .info)
-                    _ = try await session.execute("mkdir -p '\(fallbackPath)'")
-                    
+                    SSHLogger.log("Using fallback path", level: .info)
+                    _ = try await session.execute("mkdir -p -- \(qFallback)")
+
                     // Verify creation
-                    let checkFallback = try await session.execute("test -d '\(fallbackPath)' && echo 'EXISTS'")
+                    let checkFallback = try await session.execute("test -d \(qFallback) && echo 'EXISTS'")
                     guard checkFallback.trimmingCharacters(in: .whitespacesAndNewlines) == "EXISTS" else {
                         throw ProjectServiceError.failedToCreateDirectory
                     }
-                    
-                    SSHLogger.log("Successfully created agent at fallback: \(fallbackPath)", level: .info)
+
+                    SSHLogger.log("Successfully created agent at fallback", level: .info)
                     return
                 }
             }
             throw ProjectServiceError.noWritePermission
         }
-        
+
         // Create the project directory
-        _ = try await session.execute("mkdir -p '\(projectPath)'")
-        
+        _ = try await session.execute("mkdir -p -- \(qProject)")
+
         // Check if directory was created successfully
-        let checkResult = try await session.execute("test -d '\(projectPath)' && echo 'EXISTS'")
+        let checkResult = try await session.execute("test -d \(qProject) && echo 'EXISTS'")
         guard checkResult.trimmingCharacters(in: .whitespacesAndNewlines) == "EXISTS" else {
             throw ProjectServiceError.failedToCreateDirectory
         }
-        
-        SSHLogger.log("Successfully created agent at \(projectPath)", level: .info)
+
+        SSHLogger.log("Successfully created agent directory", level: .info)
     }
     
     /// Delete an agent directory from the server
@@ -103,35 +110,37 @@ class ProjectService {
             throw ProjectServiceError.serverNotFound
         }
         
-        SSHLogger.log("Deleting agent '\(project.name)' from server \(server.name)", level: .info)
-        
+        SSHLogger.log("Deleting agent from server \(server.name)", level: .info)
+
         // Get a connection for this project
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        
+        let qPath = SSHShellQuoting.quote(project.path)
+
         // Confirm the directory exists before deletion
-        let checkResult = try await session.execute("test -d '\(project.path)' && echo 'EXISTS'")
+        let checkResult = try await session.execute("test -d \(qPath) && echo 'EXISTS'")
         guard checkResult.trimmingCharacters(in: .whitespacesAndNewlines) == "EXISTS" else {
             throw ProjectServiceError.projectNotFound
         }
-        
-        // Delete the project directory
-        _ = try await session.execute("rm -rf '\(project.path)'")
-        
+
+        // Delete the project directory (-- ends option parsing)
+        _ = try await session.execute("rm -rf -- \(qPath)")
+
         // Close all connections for this project
         sshService.closeConnections(projectId: project.id)
-        
-        SSHLogger.log("Successfully deleted agent at \(project.path)", level: .info)
+
+        SSHLogger.log("Successfully deleted agent directory", level: .info)
     }
-    
+
     // MARK: - Private Methods
-    
+
     /// Validate write permissions at a given path
     /// - Parameters:
     ///   - path: Path to check
     ///   - session: SSH session to use for checking
     /// - Returns: true if writable, false otherwise
     private func validateWritePermission(at path: String, using session: SSHSession) async throws -> Bool {
-        let result = try await session.execute("test -w '\(path)' && echo 'writable' || echo 'not writable'")
+        let qPath = SSHShellQuoting.quote(path)
+        let result = try await session.execute("test -w \(qPath) && echo 'writable' || echo 'not writable'")
         return result.trimmingCharacters(in: .whitespacesAndNewlines) == "writable"
     }
 }
@@ -143,11 +152,14 @@ enum ProjectServiceError: LocalizedError {
     case projectNotFound
     case failedToCreateDirectory
     case noWritePermission
-    
+    case invalidName
+
     var errorDescription: String? {
         switch self {
         case .serverNotFound:
             return "Server not found"
+        case .invalidName:
+            return "Invalid agent name"
         case .projectNotFound:
             return "Agent directory not found on server"
         case .failedToCreateDirectory:

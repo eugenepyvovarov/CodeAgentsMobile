@@ -47,6 +47,12 @@ struct PushGatewayClient {
         _ = try await sendJSON(to: url, secret: secret, payload: payload)
     }
 
+    /// Remove this installation from the push gateway (all agents, or one cwd).
+    func unregisterSubscription(secret: String, payload: UnregisterSubscriptionPayload) async throws {
+        let url = try Self.functionsBaseURL().appendingPathComponent("unregisterSubscription")
+        _ = try await sendJSON(to: url, secret: secret, payload: payload)
+    }
+
     /// Same Cloud Function the CodeAgents daemon calls when a scheduled job finishes.
     /// Used by the app for interactive OpenCode replies that complete while the user is
     /// not watching that chat (agents list / other agent / background).
@@ -89,21 +95,35 @@ struct RegisterSubscriptionPayload: Codable {
     }
 }
 
+struct UnregisterSubscriptionPayload: Codable {
+    let installation_id: String
+    let cwd: String?
+
+    init(installationId: String, cwd: String? = nil) {
+        self.installation_id = installationId
+        self.cwd = cwd
+    }
+}
+
 struct TriggerReplyFinishedPayload: Codable {
     let cwd: String
     let conversation_id: String?
     let message_preview: String?
     let renderable_assistant_count: Int?
+    /// Gateway defaults lock-screen body to "Reply ready" unless this is true.
+    let include_preview: Bool
 
     init(
         cwd: String,
         conversationId: String?,
         messagePreview: String?,
-        renderableAssistantCount: Int?
+        renderableAssistantCount: Int?,
+        includePreview: Bool = false
     ) {
         self.cwd = cwd
         self.conversation_id = conversationId
         self.message_preview = messagePreview
         self.renderable_assistant_count = renderableAssistantCount
+        self.include_preview = includePreview
     }
 }

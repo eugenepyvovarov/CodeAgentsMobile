@@ -31,9 +31,7 @@ class SwiftSHSession: SSHSession, @unchecked Sendable {
     
     init(server: Server) {
         self.server = server
-        
-        // Enable verbose logging for debugging
-        SSHLogger.logLevel = .verbose
+        // Do not force verbose logging — defaults are Debug=.info / Release=.warning.
     }
     
     deinit {
@@ -318,7 +316,10 @@ class SwiftSHSession: SSHSession, @unchecked Sendable {
                         NIOSSHHandler(
                             role: .client(.init(
                                 userAuthDelegate: authDelegate,
-                                serverAuthDelegate: AcceptAllHostKeysDelegate()
+                                serverAuthDelegate: TOFUHostKeyDelegate(
+                                    host: self.server.host,
+                                    port: self.server.port
+                                )
                             )),
                             allocator: channel.allocator,
                             inboundChildChannelInitializer: nil

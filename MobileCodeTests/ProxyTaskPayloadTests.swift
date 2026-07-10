@@ -56,6 +56,47 @@ final class ProxyTaskPayloadTests: XCTestCase {
         XCTAssertNil(payload["open_code_session_target"])
     }
 
+    @MainActor
+    func testOnceTaskPayloadIncludesNextRunAt() throws {
+        let project = RemoteProject(name: "MobileCode", serverId: UUID(), basePath: "/workspace")
+        project.proxyAgentId = "agent_fixture"
+        project.selectedAgentRuntime = .openCode
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let runAt = calendar.date(from: DateComponents(year: 2026, month: 7, day: 15, hour: 9, minute: 0))!
+
+        let task = AgentScheduledTask(
+            projectId: project.id,
+            title: "One shot",
+            prompt: "Do this once",
+            isEnabled: true,
+            timeZoneId: "UTC",
+            frequency: .once,
+            interval: 1,
+            dayOfMonth: 15,
+            monthOfYear: 7,
+            timeOfDayMinutes: 9 * 60,
+            nextRunAt: runAt
+        )
+
+        let body = try AgentTaskService.shared.buildPayload(
+            for: task,
+            project: project,
+            conversationId: "proxy_conversation"
+        )
+        let payload = try decodePayload(body)
+
+        let schedule = try XCTUnwrap(payload["schedule"] as? [String: Any])
+        XCTAssertEqual(schedule["frequency"] as? String, "once")
+        XCTAssertEqual(schedule["time_minutes"] as? Int, 9 * 60)
+        XCTAssertEqual(schedule["day_of_month"] as? Int, 15)
+        XCTAssertEqual(schedule["month"] as? Int, 7)
+
+        let nextRun = try XCTUnwrap(payload["next_run_at"] as? String)
+        XCTAssertTrue(nextRun.contains("2026-07-15"), "next_run_at should include fire date: \(nextRun)")
+    }
+
     private func decodePayload(_ body: String) throws -> [String: Any] {
         let data = try XCTUnwrap(body.data(using: .utf8))
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])

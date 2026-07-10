@@ -579,6 +579,50 @@ class KeychainManager {
     
 }
 
+// MARK: - Generic Secrets
+
+extension KeychainManager {
+    /// Store an arbitrary secret string under a Keychain account (device-local).
+    func storeGenericSecret(_ secret: String, account: String) throws {
+        guard let data = secret.data(using: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        try store(data: data, for: account, syncToiCloud: false)
+    }
+
+    /// Retrieve a generic secret string.
+    func retrieveGenericSecret(account: String) throws -> String {
+        let data = try retrieve(for: account, syncToiCloud: false)
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        return value
+    }
+
+    /// Delete a generic secret if present.
+    func deleteGenericSecret(account: String) throws {
+        try delete(for: account, syncToiCloud: false)
+    }
+
+    // MARK: - Daemon Bearer Token (per server)
+
+    private func daemonTokenKey(for serverId: UUID) -> String {
+        "daemon.token.\(serverId.uuidString)"
+    }
+
+    func storeDaemonToken(_ token: String, for serverId: UUID) throws {
+        try storeGenericSecret(token, account: daemonTokenKey(for: serverId))
+    }
+
+    func retrieveDaemonToken(for serverId: UUID) throws -> String {
+        try retrieveGenericSecret(account: daemonTokenKey(for: serverId))
+    }
+
+    func deleteDaemonToken(for serverId: UUID) throws {
+        try deleteGenericSecret(account: daemonTokenKey(for: serverId))
+    }
+}
+
 // MARK: - Convenience Extensions
 
 extension Server {

@@ -63,7 +63,8 @@ final class ProxyStreamClient {
     /// GET /v1/conversations/canonical?cwd=… — used by `ProxyTaskService` for task payloads.
     func fetchCanonicalConversationId(
         session: SSHSession,
-        cwd: String
+        cwd: String,
+        authorizationHeader: String? = nil
     ) async throws -> String {
         let handle = try await session.openDirectTCPIP(targetHost: host, targetPort: port)
         defer {
@@ -71,7 +72,7 @@ final class ProxyStreamClient {
         }
 
         ProxyStreamDiagnostics.log("canonical resolve cwdLen=\(cwd.count)")
-        let requestText = buildGetCanonicalRequest(cwd: cwd)
+        let requestText = buildGetCanonicalRequest(cwd: cwd, authorizationHeader: authorizationHeader)
         try await handle.sendInput(requestText)
 
         let chunkedDecoder = ChunkedBodyDecoder()
@@ -206,15 +207,18 @@ final class ProxyStreamClient {
         return canonicalId
     }
 
-    private func buildGetCanonicalRequest(cwd: String) -> String {
+    private func buildGetCanonicalRequest(cwd: String, authorizationHeader: String?) -> String {
         let encodedCwd = cwd.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? cwd
         let path = "/v1/conversations/canonical?cwd=\(encodedCwd)"
-        let headers = [
+        var headers = [
             "GET \(path) HTTP/1.1",
             "Host: \(host):\(port)",
             "Accept: application/json",
             "Connection: close"
         ]
+        if let auth = authorizationHeader?.trimmingCharacters(in: .whitespacesAndNewlines), !auth.isEmpty {
+            headers.append("Authorization: \(auth)")
+        }
         return headers.joined(separator: "\r\n") + "\r\n\r\n"
     }
 }

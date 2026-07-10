@@ -63,6 +63,12 @@ enum ProxyTaskError: LocalizedError {
         guard case .httpError(let status, let body) = self else { return false }
         return status == 404 && body.contains("task_not_found")
     }
+
+    /// Bearer missing/mismatched against CODEAGENTS_DAEMON_TOKEN.
+    var isUnauthorized: Bool {
+        guard case .httpError(let status, _) = self else { return false }
+        return status == 401
+    }
 }
 
 @MainActor
@@ -90,10 +96,10 @@ final class ProxyTaskService {
             _ = try await self.resolveCanonicalConversationId(for: project, session: session)
             let agentId = Self.resolvedAgentId(for: project)
 
-            let primary = try await self.requestTaskList(session: session, agentId: agentId)
+            let primary = try await self.requestTaskList(session: session, agentId: agentId, project: project)
             // MCP create can store tasks under a drifted agent_id (case / pre-identity UUID).
             // Always merge project-scoped tasks from the unfiltered list so sync never drops them.
-            let all = try await self.requestTaskList(session: session, agentId: nil)
+            let all = try await self.requestTaskList(session: session, agentId: nil, project: project)
             let recovered = Self.tasksMatching(project: project, preferredAgentId: agentId, from: all)
 
             var byId: [String: ProxyTaskRecord] = [:]
@@ -186,7 +192,31 @@ final class ProxyTaskService {
         return (normalized as NSString).lastPathComponent
     }
 
-    private func requestTaskList(session: SSHSession, agentId: String?) async throws -> [ProxyTaskRecord] {
+    private func daemonAuthorization(for project: RemoteProject) -> String? {
+        AgentDaemonTokenService.shared.authorizationHeaderValue(for: project.serverId)
+    }
+
+    private func authenticatedRequest(
+        session: SSHSession,
+        method: String,
+        path: String,
+        body: String?,
+        project: RemoteProject
+    ) async throws -> ProxyHTTPResponse {
+        try await client.request(
+            session: session,
+            method: method,
+            path: path,
+            body: body,
+            authorizationHeader: daemonAuthorization(for: project)
+        )
+    }
+
+    private func requestTaskList(
+        session: SSHSession,
+        agentId: String?,
+        project: RemoteProject
+    ) async throws -> [ProxyTaskRecord] {
         let query: String
         if let agentId, !agentId.isEmpty {
             query = buildQuery(["agent_id": agentId])
@@ -194,7 +224,13 @@ final class ProxyTaskService {
             query = ""
         }
         let path = "/v1/agent/tasks\(query)"
-        let response = try await client.request(session: session, method: "GET", path: path, body: nil)
+        let response = try await authenticatedRequest(
+            session: session,
+            method: "GET",
+            path: path,
+            body: nil,
+            project: project
+        )
         return try parseTaskList(from: response.body)
     }
 
@@ -237,7 +273,13 @@ final class ProxyTaskService {
         do {
             try await withDaemonOperation(project: project, forceRefresh: true) { session in
                 let path = "/v1/agent/tasks/\(remoteId)"
-                _ = try await self.client.request(session: session, method: "DELETE", path: path, body: nil)
+                _ = try await self.authenticatedRequest(
+                    session: session,
+                    method: "DELETE",
+                    path: path,
+                    body: nil,
+                    project: project
+                )
             }
         } catch let error as ProxyTaskError where error.isTaskNotFound {
             // Already gone on daemon — local delete still succeeds.
@@ -276,11 +318,12 @@ final class ProxyTaskService {
     private func postRunNow(remoteId: String, project: RemoteProject) async throws -> ProxyTaskRecord {
         try await withDaemonOperation(project: project, forceRefresh: true) { session in
             let path = "/v1/agent/tasks/\(remoteId)/run"
-            let response = try await self.client.request(
+            let response = try await self.authenticatedRequest(
                 session: session,
                 method: "POST",
                 path: path,
-                body: nil
+                body: nil,
+                project: project
             )
             // 202 Accepted is success for fire-and-forget runs.
             if response.statusCode != 200 && response.statusCode != 202 {
@@ -296,11 +339,12 @@ final class ProxyTaskService {
 
         try await withDaemonOperation(project: project, forceRefresh: false) { session in
             let body = try self.activeOpenCodeSessionPayload(project: project, sessionId: sessionId)
-            _ = try await self.client.request(
+            _ = try await self.authenticatedRequest(
                 session: session,
                 method: "POST",
                 path: "/v1/opencode/active-session",
-                body: body
+                body: body,
+                project: project
             )
         }
     }
@@ -310,11 +354,12 @@ final class ProxyTaskService {
 
         try await withDaemonOperation(project: project, forceRefresh: false) { session in
             let body = try self.activeOpenCodeSessionPayload(project: project, sessionId: nil)
-            _ = try await self.client.request(
+            _ = try await self.authenticatedRequest(
                 session: session,
                 method: "POST",
                 path: "/v1/opencode/active-session",
-                body: body
+                body: body,
+                project: project
             )
         }
     }
@@ -330,11 +375,12 @@ final class ProxyTaskService {
                 project: project,
                 conversationId: conversationId
             )
-            let response = try await self.client.request(
+            let response = try await self.authenticatedRequest(
                 session: session,
                 method: "POST",
                 path: "/v1/agent/tasks",
-                body: body
+                body: body,
+                project: project
             )
             return try self.parseTask(from: response.body)
         }
@@ -352,11 +398,12 @@ final class ProxyTaskService {
                 conversationId: conversationId
             )
             let path = "/v1/agent/tasks/\(remoteId)"
-            let response = try await self.client.request(
+            let response = try await self.authenticatedRequest(
                 session: session,
                 method: "PATCH",
                 path: path,
-                body: body
+                body: body,
+                project: project
             )
             return try self.parseTask(from: response.body)
         }
@@ -369,12 +416,51 @@ final class ProxyTaskService {
         timeoutSeconds: TimeInterval = 30,
         operation: @escaping (SSHSession) async throws -> T
     ) async throws -> T {
-        if forceRefresh {
+        // forceRefresh: full health/upgrade path. Always ensure bearer when missing;
+        // also best-effort ensure before every op so server token is adopted after reinstall.
+        let needsDaemonToken = !ProxyInstallerService.shared.hasLocalDaemonToken(for: project.serverId)
+        if forceRefresh || needsDaemonToken {
             await ensureDaemonReachable(for: project)
-            sshService.closeConnections(projectId: project.id, purpose: .agentDaemon)
+            if forceRefresh {
+                sshService.closeConnections(projectId: project.id, purpose: .agentDaemon)
+            }
+        } else if daemonAuthorization(for: project) == nil {
+            await ensureDaemonReachable(for: project)
         }
 
-        return try await withThrowingTaskGroup(of: T.self) { group in
+        // If Keychain still empty, adopt/write token over the file-ops session before HTTP.
+        if !ProxyInstallerService.shared.hasLocalDaemonToken(for: project.serverId) {
+            await resyncDaemonTokenAfterUnauthorized(for: project)
+        }
+
+        do {
+            return try await runDaemonOperation(
+                project: project,
+                timeoutSeconds: timeoutSeconds,
+                operation: operation
+            )
+        } catch let error as ProxyTaskError where error.isUnauthorized {
+            // Stale Keychain vs server env after reinstall/upgrade — re-adopt and retry once.
+            SSHLogger.log(
+                "Agent daemon 401; resyncing CODEAGENTS_DAEMON_TOKEN for \(project.serverId.uuidString)",
+                level: .warning
+            )
+            await resyncDaemonTokenAfterUnauthorized(for: project)
+            sshService.closeConnections(projectId: project.id, purpose: .agentDaemon)
+            return try await runDaemonOperation(
+                project: project,
+                timeoutSeconds: timeoutSeconds,
+                operation: operation
+            )
+        }
+    }
+
+    private func runDaemonOperation<T>(
+        project: RemoteProject,
+        timeoutSeconds: TimeInterval,
+        operation: @escaping (SSHSession) async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
             group.addTask { @MainActor in
                 let session = try await self.sshService.getConnection(for: project, purpose: .agentDaemon)
                 return try await operation(session)
@@ -388,6 +474,21 @@ final class ProxyTaskService {
                 throw ProxyTaskError.invalidResponse("No response")
             }
             return result
+        }
+    }
+
+    private func resyncDaemonTokenAfterUnauthorized(for project: RemoteProject) async {
+        do {
+            let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+            try await ProxyInstallerService.shared.resyncDaemonTokenAfterUnauthorized(
+                for: project.serverId,
+                using: session
+            )
+        } catch {
+            SSHLogger.log(
+                "Daemon token resync after 401 failed: \(error.localizedDescription)",
+                level: .warning
+            )
         }
     }
 
@@ -447,6 +548,11 @@ final class ProxyTaskService {
             payload["title"] = trimmedTitle
         }
 
+        // One-shot absolute fire time so the daemon can set anchor_at correctly across years.
+        if task.frequency.isOneShot, let nextRunAt = task.nextRunAt {
+            payload["next_run_at"] = iso8601Formatter.string(from: nextRunAt)
+        }
+
         if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode {
             payload["open_code_session_target"] = "active_agent_chat"
         }
@@ -499,10 +605,20 @@ final class ProxyTaskService {
         for project: RemoteProject,
         session: SSHSession
     ) async throws -> String {
-        let canonicalId = try await streamClient.fetchCanonicalConversationId(
-            session: session,
-            cwd: project.path
-        )
+        let canonicalId: String
+        do {
+            canonicalId = try await streamClient.fetchCanonicalConversationId(
+                session: session,
+                cwd: project.path,
+                authorizationHeader: daemonAuthorization(for: project)
+            )
+        } catch let error as ProxyStreamError {
+            // Normalize so withDaemonOperation can resync on 401.
+            if let status = error.statusCode {
+                throw ProxyTaskError.httpError(status: status, body: error.proxyErrorMessage ?? error.localizedDescription)
+            }
+            throw ProxyTaskError.invalidResponse(error.localizedDescription)
+        }
 
         var didUpdate = false
         if project.proxyConversationId != canonicalId {
@@ -821,19 +937,29 @@ private struct ProxyHTTPResponse {
 private final class ProxyTaskClient {
     private let host: String
     private let port: Int
+    private let authorizationHeader: String?
 
-    init(host: String = "127.0.0.1", port: Int = 8787) {
+    init(host: String = "127.0.0.1", port: Int = 8787, authorizationHeader: String? = nil) {
         self.host = host
         self.port = port
+        self.authorizationHeader = authorizationHeader
     }
 
     func request(session: SSHSession,
                  method: String,
                  path: String,
-                 body: String?) async throws -> ProxyHTTPResponse {
-        try await withThrowingTaskGroup(of: ProxyHTTPResponse.self) { group in
+                 body: String?,
+                 authorizationHeader: String? = nil) async throws -> ProxyHTTPResponse {
+        let auth = authorizationHeader ?? self.authorizationHeader
+        return try await withThrowingTaskGroup(of: ProxyHTTPResponse.self) { group in
             group.addTask {
-                try await self.performRequest(session: session, method: method, path: path, body: body)
+                try await self.performRequest(
+                    session: session,
+                    method: method,
+                    path: path,
+                    body: body,
+                    authorizationHeader: auth
+                )
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: 15 * 1_000_000_000)
@@ -852,13 +978,19 @@ private final class ProxyTaskClient {
     private func performRequest(session: SSHSession,
                                 method: String,
                                 path: String,
-                                body: String?) async throws -> ProxyHTTPResponse {
+                                body: String?,
+                                authorizationHeader: String?) async throws -> ProxyHTTPResponse {
         let handle = try await session.openDirectTCPIP(targetHost: host, targetPort: port)
         defer {
             handle.terminate()
         }
 
-        let requestText = buildRequest(method: method, path: path, body: body)
+        let requestText = buildRequest(
+            method: method,
+            path: path,
+            body: body,
+            authorizationHeader: authorizationHeader
+        )
         try await handle.sendInput(requestText)
 
         var state = ProxyHTTPParseState.headers
@@ -969,13 +1101,22 @@ private final class ProxyTaskClient {
         return ProxyHTTPResponse(statusCode: finalStatus, headers: headers, body: bodyText)
     }
 
-    private func buildRequest(method: String, path: String, body: String?) -> String {
+    private func buildRequest(
+        method: String,
+        path: String,
+        body: String?,
+        authorizationHeader: String?
+    ) -> String {
         var headers = [
             "\(method) \(path) HTTP/1.1",
             "Host: \(host):\(port)",
             "Accept: application/json",
             "Connection: close"
         ]
+
+        if let auth = authorizationHeader, !auth.isEmpty {
+            headers.append("Authorization: \(auth)")
+        }
 
         let bodyText = body ?? ""
         if !bodyText.isEmpty {

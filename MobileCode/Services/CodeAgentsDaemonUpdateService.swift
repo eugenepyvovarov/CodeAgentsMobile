@@ -2,9 +2,9 @@
 //  CodeAgentsDaemonUpdateService.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Keep the remote CodeAgents daemon on the latest published GitHub
-//  revision without per-customer SSH deploys. Uses healthz.version vs repo HEAD
-//  and re-runs the standard install script when behind or unhealthy.
+//  Purpose: Keep the remote CodeAgents daemon on the app-pinned GitHub revision
+//  without per-customer SSH deploys. Uses healthz.version vs pinnedInstallCommit
+//  and re-runs the pinned install script when behind or unhealthy.
 //
 
 import Foundation
@@ -26,13 +26,16 @@ enum CodeAgentsDaemonUpdateOutcome: Equatable {
     }
 }
 
-/// App-driven daemon auto-upgrade.
+/// App-driven daemon auto-upgrade to the **pinned** revision shipped with the app.
 ///
 /// Customers never need a manual `git pull` on each droplet: whenever the app
 /// talks to a server (Agents list soft check / OpenCode health / task ensure),
-/// it compares `GET /healthz` → `version` with GitHub HEAD and reinstalls via
-/// the same `install.sh` path used for first-time setup when the daemon is
-/// behind or down.
+/// it compares `GET /healthz` → `version` with `CodeAgentsDaemonProvisioning.pinnedInstallCommit`
+/// and reinstalls via the pinned `install.sh` when the daemon is behind or down.
+/// Does **not** follow mutable GitHub HEAD.
+///
+/// Also auto-provisions `CODEAGENTS_DAEMON_TOKEN` (Keychain + remote env) once the
+/// daemon is healthy — no install sheet or settings action required.
 ///
 /// Independent of push notifications: push only wakes the app for chat
 /// delivery; upgrade still runs from the Agents list even when push is off.
@@ -54,13 +57,18 @@ final class CodeAgentsDaemonUpdateService {
     /// Best-effort background check for servers that own agents in the list.
     /// Does not block UI, does not require push, and respects per-server cooldowns
     /// so opening Agents repeatedly is cheap.
+    /// Also auto-provisions the daemon HTTP bearer when missing (no user action).
     func softEnsureUpToDate(servers: [Server]) async {
         var seen = Set<UUID>()
         for server in servers {
             guard seen.insert(server.id).inserted else { continue }
 
-            // Skip SSH entirely when this server was checked recently.
-            if let last = lastSuccessfulCheckAt[server.id],
+            let needsDaemonToken = !ProxyInstallerService.shared.hasLocalDaemonToken(for: server.id)
+
+            // Skip SSH entirely when this server was checked recently — unless we still
+            // need a local daemon bearer (Keychain empty after auth rollout / new device).
+            if !needsDaemonToken,
+               let last = lastSuccessfulCheckAt[server.id],
                Date().timeIntervalSince(last) < checkCooldown {
                 continue
             }
@@ -106,7 +114,7 @@ final class CodeAgentsDaemonUpdateService {
         }
     }
 
-    /// Ensure the daemon is healthy and not behind GitHub HEAD.
+    /// Ensure the daemon is healthy and not behind the app-pinned revision.
     /// - Parameters:
     ///   - session: Open SSH session (file ops / opencode / proxy install).
     ///   - serverID: Used for per-server throttling.
@@ -146,6 +154,7 @@ final class CodeAgentsDaemonUpdateService {
             let afterRestartRaw = try? await session.execute(CodeAgentsDaemonProvisioning.healthCheckCommand())
             let afterRestart = afterRestartRaw.flatMap { CodeAgentsDaemonProvisioning.parseHealthz($0) }
             if let afterRestart, afterRestart.isHealthy {
+                await ensureDaemonAuthToken(serverID: serverID, session: session)
                 return await finishVersionCheck(
                     session: session,
                     serverID: serverID,
@@ -177,6 +186,9 @@ final class CodeAgentsDaemonUpdateService {
             )
         }
 
+        // Healthy daemon: keep Keychain ↔ remote bearer in sync without user action.
+        await ensureDaemonAuthToken(serverID: serverID, session: session)
+
         // Healthy: throttle expensive HEAD probe / potential install.
         if !force,
            let last = lastSuccessfulCheckAt[serverID],
@@ -195,6 +207,11 @@ final class CodeAgentsDaemonUpdateService {
         )
     }
 
+    /// Provision or adopt `CODEAGENTS_DAEMON_TOKEN` after the daemon is reachable.
+    private func ensureDaemonAuthToken(serverID: UUID, session: SSHSession) async {
+        await ProxyInstallerService.shared.ensureDaemonTokenIfNeeded(for: serverID, using: session)
+    }
+
     // MARK: - Internals
 
     private func finishVersionCheck(
@@ -206,32 +223,7 @@ final class CodeAgentsDaemonUpdateService {
         repaired: Bool,
         log: (String) -> Void
     ) async -> CodeAgentsDaemonUpdateOutcome {
-        let expected: String?
-        do {
-            let probe = try await session.execute(CodeAgentsDaemonProvisioning.remoteHeadProbeCommand())
-            expected = CodeAgentsDaemonProvisioning.parseRemoteHead(probe)
-        } catch {
-            // If we cannot learn HEAD, treat a healthy daemon as good enough.
-            lastSuccessfulCheckAt[serverID] = Date()
-            if repaired {
-                return .repaired(version: installedVersion)
-            }
-            if let installedVersion {
-                return .alreadyCurrent(version: installedVersion)
-            }
-            return .skipped(reason: "Could not probe remote HEAD: \(error.localizedDescription)")
-        }
-
-        guard let expected else {
-            lastSuccessfulCheckAt[serverID] = Date()
-            if repaired {
-                return .repaired(version: installedVersion)
-            }
-            if let installedVersion {
-                return .alreadyCurrent(version: installedVersion)
-            }
-            return .skipped(reason: "Remote HEAD probe returned no SHA")
-        }
+        let expected = CodeAgentsDaemonProvisioning.expectedDaemonVersion
 
         if CodeAgentsDaemonProvisioning.versionsMatch(installed: installedVersion, expected: expected) {
             lastSuccessfulCheckAt[serverID] = Date()
@@ -303,6 +295,9 @@ final class CodeAgentsDaemonUpdateService {
                 ?? "unknown"
 
             lastSuccessfulCheckAt[serverID] = Date()
+            // Auto-install path does not go through ProxyInstallerService.installProxy;
+            // still provision the bearer so task/env HTTP is authenticated without UI.
+            await ensureDaemonAuthToken(serverID: serverID, session: session)
             log("CodeAgents daemon upgraded to \(newVersion)")
             return .upgraded(from: previousVersion, to: newVersion)
         } catch {

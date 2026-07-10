@@ -28,6 +28,7 @@ enum SSHError: LocalizedError {
     case notConnected
     case connectionFailed(String)
     case authenticationFailed
+    case hostKeyMismatch(host: String, expected: String, presented: String)
     case commandFailed(String)
     case fileTransferFailed(String)
     
@@ -39,6 +40,8 @@ enum SSHError: LocalizedError {
             return "Connection failed: \(reason)"
         case .authenticationFailed:
             return "Authentication failed"
+        case .hostKeyMismatch(let host, let expected, let presented):
+            return "SSH host key changed for \(host). Expected \(expected), got \(presented). Remove the server and re-add it only if you trust this host."
         case .commandFailed(let reason):
             return "Command failed: \(reason)"
         case .fileTransferFailed(let reason):
@@ -128,16 +131,29 @@ enum SSHLogLevel: Int {
     case verbose = 5
 }
 
-/// SSH Logger configuration
+/// SSH Logger configuration.
+///
+/// Release builds default to `.warning` and never emit payload/command bodies.
+/// Debug builds default to `.info`. Call sites must not log stdin/stdout/base64.
 struct SSHLogger {
+    #if DEBUG
     static var logLevel: SSHLogLevel = .info
-    
+    #else
+    static var logLevel: SSHLogLevel = .warning
+    #endif
+
+    /// Metadata-only log. Never pass command bodies, file contents, or secrets.
     static func log(_ message: String, level: SSHLogLevel = .info, file: String = #file, function: String = #function, line: Int = #line) {
         guard level.rawValue <= logLevel.rawValue else { return }
-        
+
+        #if !DEBUG
+        // Production: only warning/error reach the console.
+        guard level.rawValue <= SSHLogLevel.warning.rawValue else { return }
+        #endif
+
         let fileName = URL(fileURLWithPath: file).lastPathComponent
         let prefix: String
-        
+
         switch level {
         case .none:
             return
@@ -152,7 +168,7 @@ struct SSHLogger {
         case .verbose:
             prefix = "📝"
         }
-        
+
         print("\(prefix) SSH [\(fileName):\(line)] \(message)")
     }
 }

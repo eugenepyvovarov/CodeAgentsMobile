@@ -331,13 +331,14 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             local: previousState,
             remoteMessages: messages
         )
+        // Compute next anchors but do NOT persist yet — ChatViewModel advances after
+        // successful merge + save so a crash cannot leave anchors ahead of durable messages.
         let storedState = OpenCodeHydrationDiffer.mergedState(
             local: previousState,
             observedMessages: messages,
             mode: mode
         )
         try Task.checkCancellation()
-        project.updateOpenCodeHydrationState(storedState)
         let mapperStart = DispatchTime.now().uptimeNanoseconds
         let hydratedMessages = OpenCodeChatMapper.hydratedMessages(from: selectedMessages)
         ChatRecoveryTiming.log(

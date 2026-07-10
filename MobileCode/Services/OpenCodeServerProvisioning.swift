@@ -266,14 +266,18 @@ enum CodeAgentsDaemonProvisioning {
     static let repositoryOwner = "eugenepyvovarov"
     static let repositoryName = "codeagents-server-cc-proxy"
     static let repositoryURL = "https://github.com/\(repositoryOwner)/\(repositoryName).git"
-    static let installScriptURL = "https://raw.githubusercontent.com/\(repositoryOwner)/\(repositoryName)/HEAD/install.sh"
-    static let remoteHeadAPIURL = "https://api.github.com/repos/\(repositoryOwner)/\(repositoryName)/commits/HEAD"
+    /// Immutable pin — bump intentionally when promoting a known-good daemon revision.
+    static let pinnedInstallCommit = "2b6108daa8bac40dc205b332e10b9bb1c3ff2c24"
+    static let installScriptURL = "https://raw.githubusercontent.com/\(repositoryOwner)/\(repositoryName)/\(pinnedInstallCommit)/install.sh"
+    static let remoteHeadAPIURL = "https://api.github.com/repos/\(repositoryOwner)/\(repositoryName)/commits/\(pinnedInstallCommit)"
     static let serviceName = "codeagents-daemon"
     static let installDirectory = "/opt/codeagents-daemon"
     static let dataDirectory = "/opt/codeagents-daemon/data"
     static let logDirectory = "/var/log/codeagents-daemon"
     static let environmentFilePath = "/etc/codeagents-daemon.env"
     static let legacyEnvironmentFilePath = "/etc/claude-proxy.env"
+    /// Env key for the daemon HTTP bearer (shared with iOS Keychain per server).
+    static let daemonTokenEnvKey = "CODEAGENTS_DAEMON_TOKEN"
 
     /// Parsed `/healthz` payload from the CodeAgents daemon.
     struct HealthSnapshot: Equatable {
@@ -311,23 +315,15 @@ enum CodeAgentsDaemonProvisioning {
         "curl -fsS \(healthURL)"
     }
 
-    /// Probe GitHub for the daemon repo HEAD SHA (full or short).
-    /// Prefers `git ls-remote`; falls back to the GitHub commits API JSON body
-    /// (parsed client-side by `parseRemoteHead`).
+    /// Expected daemon revision for this app build (pinned; not live HEAD).
+    static var expectedDaemonVersion: String { pinnedInstallCommit }
+
+    /// Probe is retained for diagnostics; preferred path uses `expectedDaemonVersion`.
+    /// Still targets the pinned commit object, never mutable HEAD.
     static func remoteHeadProbeCommand() -> String {
         """
         bash -lc 'set -euo pipefail
-        if command -v git >/dev/null 2>&1; then
-          sha=$(git ls-remote \(repositoryURL) HEAD 2>/dev/null | cut -f1 | head -1)
-          if [ -n "$sha" ]; then
-            printf "%s" "$sha"
-            exit 0
-          fi
-        fi
-        curl --connect-timeout 15 --retry 2 --retry-delay 1 -fsSL \
-          -H "Accept: application/vnd.github+json" \
-          -H "User-Agent: CodeAgentsMobile" \
-          \(remoteHeadAPIURL)'
+        printf "%s" "\(pinnedInstallCommit)"'
         """
     }
 

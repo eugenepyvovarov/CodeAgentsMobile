@@ -114,10 +114,14 @@ class FileBrowserViewModel {
     /// Create a new folder in current directory
     /// - Parameter name: Name of the folder
     func createFolder(name: String) async {
-        let folderPath = currentPath.hasSuffix("/") ? "\(currentPath)\(name)" : "\(currentPath)/\(name)"
-        
+        guard let safeName = SSHShellQuoting.sanitizedPathComponent(name) else {
+            print("Failed to create folder: invalid name")
+            return
+        }
+        let folderPath = currentPath.hasSuffix("/") ? "\(currentPath)\(safeName)" : "\(currentPath)/\(safeName)"
+
         do {
-            try await executeCommand("mkdir -p '\(folderPath)'")
+            try await executeCommand("mkdir -p -- \(SSHShellQuoting.quote(folderPath))")
             await loadRemoteFiles()
         } catch {
             print("Failed to create folder: \(error)")
@@ -127,29 +131,26 @@ class FileBrowserViewModel {
     /// Create a new empty file in the current directory.
     /// - Parameter name: File name (relative to the current directory)
     func createFile(name: String) async throws {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw FileBrowserError.invalidName
-        }
-        guard !trimmed.contains("/") else {
+        guard let trimmed = SSHShellQuoting.sanitizedPathComponent(name) else {
             throw FileBrowserError.invalidName
         }
 
         let filePath = currentPath.hasSuffix("/") ? "\(currentPath)\(trimmed)" : "\(currentPath)/\(trimmed)"
 
-        try await executeCommand(": > '\(filePath)'")
+        try await executeCommand(": > \(SSHShellQuoting.quote(filePath))")
         await loadRemoteFiles()
 
         if let createdNode = rootNodes.first(where: { $0.name == trimmed && !$0.isDirectory }) {
             selectedFile = createdNode
         }
     }
-    
+
     /// Delete a file or folder
     /// - Parameter node: The file node to delete
     func deleteNode(_ node: FileNode) async {
-        let command = node.isDirectory ? "rm -rf '\(node.path)'" : "rm '\(node.path)'"
-        
+        let qPath = SSHShellQuoting.quote(node.path)
+        let command = node.isDirectory ? "rm -rf -- \(qPath)" : "rm -- \(qPath)"
+
         do {
             try await executeCommand(command)
             await loadRemoteFiles()
@@ -157,17 +158,23 @@ class FileBrowserViewModel {
             print("Failed to delete node: \(error)")
         }
     }
-    
+
     /// Rename a file or folder
     /// - Parameters:
     ///   - node: The file node to rename
     ///   - newName: The new name
     func renameNode(_ node: FileNode, to newName: String) async {
+        guard let safeName = SSHShellQuoting.sanitizedPathComponent(newName) else {
+            print("Failed to rename node: invalid name")
+            return
+        }
         let parentPath = (node.path as NSString).deletingLastPathComponent
-        let newPath = (parentPath as NSString).appendingPathComponent(newName)
-        
+        let newPath = (parentPath as NSString).appendingPathComponent(safeName)
+
         do {
-            try await executeCommand("mv '\(node.path)' '\(newPath)'")
+            try await executeCommand(
+                "mv -- \(SSHShellQuoting.quote(node.path)) \(SSHShellQuoting.quote(newPath))"
+            )
             await loadRemoteFiles()
         } catch {
             print("Failed to rename node: \(error)")

@@ -9,6 +9,7 @@ import Foundation
 import SwiftData
 
 enum TaskFrequency: String, Codable, CaseIterable {
+    case once
     case minutely
     case hourly
     case daily
@@ -18,6 +19,8 @@ enum TaskFrequency: String, Codable, CaseIterable {
 
     var displayName: String {
         switch self {
+        case .once:
+            return "Once"
         case .minutely:
             return "Minutes"
         case .hourly:
@@ -35,6 +38,8 @@ enum TaskFrequency: String, Codable, CaseIterable {
 
     var unitName: String {
         switch self {
+        case .once:
+            return "time"
         case .minutely:
             return "minute"
         case .hourly:
@@ -49,6 +54,9 @@ enum TaskFrequency: String, Codable, CaseIterable {
             return "year"
         }
     }
+
+    /// One-shot tasks run a single successful time, then the daemon retires them.
+    var isOneShot: Bool { self == .once }
 }
 
 enum TaskMonthlyMode: String, Codable, CaseIterable {

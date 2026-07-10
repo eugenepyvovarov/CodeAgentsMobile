@@ -254,40 +254,34 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         guard let sessionId, !sessionId.isEmpty else { return }
 
         let absolute = max(0, absoluteAssistantCount)
+        let viewing = isViewingChat(for: project)
 
-        if let cursors = AgentsListUnreadCursor.applyingAbsolute(
+        if let cursors = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
             lastKnown: project.lastKnownUnreadCursor,
             lastRead: project.lastReadUnreadCursor,
             unreadConversationId: project.unreadConversationId,
             sessionId: sessionId,
-            absoluteAssistantCount: absolute
+            absoluteAssistantCount: absolute,
+            isViewingChat: viewing
         ) {
             project.lastKnownUnreadCursor = cursors.lastKnown
             project.lastReadUnreadCursor = cursors.lastRead
             project.unreadConversationId = cursors.unreadConversationId
             project.noteLastMessage()
             project.updateLastModified()
-            if let modelContainer {
-                let context = ModelContext(modelContainer)
-                // Project may be from a different context; persist via active store when possible.
-                try? context.save()
-            }
         }
 
-        // If user is staring at this chat, keep counters honest but skip banners.
-        if isViewingChat(for: project) {
-            if project.unreadCount > 0 {
-                // Viewing live stream: treat as read so the agents list stays clean.
-                project.lastReadUnreadCursor = project.lastKnownUnreadCursor
-            }
-            if let modelContainer {
-                UnreadBadgeService.refreshAppIconBadge(using: ModelContext(modelContainer))
-            }
-            return
-        }
+        // Mirror onto the active ProjectContext instance when it is the same agent
+        // (background ModelContext saves do not always refresh the shared reference).
+        syncActiveProjectUnreadCursors(from: project)
 
         if let modelContainer {
             UnreadBadgeService.refreshAppIconBadge(using: ModelContext(modelContainer))
+        }
+
+        // Viewing this chat: counters updated above; skip banners/gateway.
+        if viewing {
+            return
         }
 
         let preview = Self.normalizedPreview(messagePreview)
@@ -451,6 +445,35 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         let prefix = String(trimmed.prefix(10))
         let suffix = String(trimmed.suffix(6))
         return "\(trimmed.count) chars (\(prefix)…\(suffix))"
+    }
+
+    /// Best-effort remote unregister before deleting local push secrets / projects.
+    func unregisterDevice(serverId: UUID, cwd: String? = nil) async {
+        guard let secret = try? KeychainManager.shared.retrievePushSecret(for: serverId)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !secret.isEmpty else {
+            return
+        }
+        let installationId: String
+        do {
+            installationId = try KeychainManager.shared.getOrCreatePushInstallationId()
+        } catch {
+            return
+        }
+        do {
+            try await gatewayClient.unregisterSubscription(
+                secret: secret,
+                payload: UnregisterSubscriptionPayload(installationId: installationId, cwd: cwd)
+            )
+            #if DEBUG
+            SSHLogger.log(
+                "Push subscription unregistered (server=\(serverId.uuidString), cwd=\(cwd ?? "*"))",
+                level: .info
+            )
+            #endif
+        } catch {
+            SSHLogger.log("Push subscription unregister failed: \(error)", level: .warning)
+        }
     }
 
     private func registerStoredSubscriptionIfPossible(serverId: UUID, cwd: String, agentDisplayName: String?) async {
@@ -742,6 +765,23 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         guard let modelContainer else { return }
         let context = ModelContext(modelContainer)
         UnreadBadgeService.refreshAppIconBadge(using: context)
+    }
+
+    /// Copy unread cursors onto the shared active project when IDs match.
+    private func syncActiveProjectUnreadCursors(from project: RemoteProject) {
+        guard let activeProject = ProjectContext.shared.activeProject,
+              activeProject.id == project.id,
+              activeProject !== project else { return }
+
+        if activeProject.unreadConversationId != project.unreadConversationId {
+            activeProject.unreadConversationId = project.unreadConversationId
+        }
+        if activeProject.lastKnownUnreadCursor != project.lastKnownUnreadCursor {
+            activeProject.lastKnownUnreadCursor = project.lastKnownUnreadCursor
+        }
+        if activeProject.lastReadUnreadCursor != project.lastReadUnreadCursor {
+            activeProject.lastReadUnreadCursor = project.lastReadUnreadCursor
+        }
     }
 
     private func syncActiveProjectIfNeeded(from project: RemoteProject, payload: PushPayload) {

@@ -397,23 +397,39 @@ struct OpenCodePromptPart: Encodable {
 struct OpenCodeHydrationState: Equatable {
     let messageIDs: Set<String>
     let partIDs: Set<String>
+    /// Content digests keyed by part ID so finalized/updated text under the same part is re-hydrated.
+    let partDigests: [String: String]
 
-    init(messageIDs: Set<String> = [], partIDs: Set<String> = []) {
+    init(
+        messageIDs: Set<String> = [],
+        partIDs: Set<String> = [],
+        partDigests: [String: String] = [:]
+    ) {
         self.messageIDs = messageIDs
         self.partIDs = partIDs
+        self.partDigests = partDigests
     }
 
     init(messages: [OpenCodeSessionMessage]) {
         messageIDs = Set(messages.map(\.info.id))
-        partIDs = Set(messages.flatMap { message in
-            message.parts.compactMap(\.payload.id)
-        })
+        var digests: [String: String] = [:]
+        var ids = Set<String>()
+        for message in messages {
+            for part in message.parts {
+                guard let partID = part.payload.id else { continue }
+                ids.insert(partID)
+                digests[partID] = OpenCodeHydrationDiffer.partDigest(for: part)
+            }
+        }
+        partIDs = ids
+        partDigests = digests
     }
 
     func merging(_ other: OpenCodeHydrationState) -> OpenCodeHydrationState {
         OpenCodeHydrationState(
             messageIDs: messageIDs.union(other.messageIDs),
-            partIDs: partIDs.union(other.partIDs)
+            partIDs: partIDs.union(other.partIDs),
+            partDigests: partDigests.merging(other.partDigests) { _, new in new }
         )
     }
 }
@@ -503,8 +519,17 @@ enum OpenCodeHydrationDiffer {
                 return true
             }
 
-            let partIDs = Set(message.parts.compactMap(\.payload.id))
-            return !partIDs.subtracting(local.partIDs).isEmpty
+            for part in message.parts {
+                guard let partID = part.payload.id else { continue }
+                if !local.partIDs.contains(partID) {
+                    return true
+                }
+                let remoteDigest = partDigest(for: part)
+                if local.partDigests[partID] != remoteDigest {
+                    return true
+                }
+            }
+            return false
         }
     }
 
@@ -518,6 +543,29 @@ enum OpenCodeHydrationDiffer {
             return observed
         }
         return local.merging(observed)
+    }
+
+    /// Stable, non-sensitive fingerprint of part content for change detection.
+    static func partDigest(for part: OpenCodeMessagePart) -> String {
+        let payload = part.payload
+        let text = payload.text ?? ""
+        let tool = payload.tool ?? ""
+        let stateStatus = payload.state?.status ?? ""
+        let outputLen: Int
+        if let output = payload.output {
+            outputLen = String(describing: output).count
+        } else {
+            outputLen = 0
+        }
+        let errorFlag = payload.error != nil ? "1" : "0"
+        // FNV-1a 64-bit over a compact metadata string (no raw secrets logged).
+        let material = "\(payload.type)|\(tool)|\(stateStatus)|\(text.count)|\(outputLen)|\(errorFlag)|\(text)"
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in material.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(hash, radix: 16)
     }
 }
 

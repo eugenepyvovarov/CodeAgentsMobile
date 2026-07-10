@@ -22,7 +22,8 @@ final class OpenCodeHydrationDiffTests: XCTestCase {
             ("msg_existing", ["prt_existing"]),
             ("msg_new", ["prt_new"])
         ])
-        let local = OpenCodeHydrationState(messageIDs: ["msg_existing"], partIDs: ["prt_existing"])
+        // Local digests match the existing remote part so only the new message is selected.
+        let local = OpenCodeHydrationState(messages: Array(remote.prefix(1)))
 
         let selected = OpenCodeHydrationDiffer.messagesNeedingHydration(local: local, remoteMessages: remote)
 
@@ -33,7 +34,10 @@ final class OpenCodeHydrationDiffTests: XCTestCase {
         let remote = try messages([
             ("msg_existing", ["prt_existing", "prt_new"])
         ])
-        let local = OpenCodeHydrationState(messageIDs: ["msg_existing"], partIDs: ["prt_existing"])
+        let existingOnly = try messages([
+            ("msg_existing", ["prt_existing"])
+        ])
+        let local = OpenCodeHydrationState(messages: existingOnly)
 
         let selected = OpenCodeHydrationDiffer.messagesNeedingHydration(local: local, remoteMessages: remote)
 
@@ -44,7 +48,7 @@ final class OpenCodeHydrationDiffTests: XCTestCase {
         let remote = try messages([
             ("msg_existing", ["prt_existing"])
         ])
-        let local = OpenCodeHydrationState(messageIDs: ["msg_existing"], partIDs: ["prt_existing"])
+        let local = OpenCodeHydrationState(messages: remote)
 
         let selected = OpenCodeHydrationDiffer.messagesNeedingHydration(local: local, remoteMessages: remote)
 

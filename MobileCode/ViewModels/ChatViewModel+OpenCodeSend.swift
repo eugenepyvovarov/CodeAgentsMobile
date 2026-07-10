@@ -21,6 +21,8 @@ extension ChatViewModel {
 
         openCodeSendTask?.cancel()
         openCodeSendTask = nil
+        // Invalidate generation so any lingering stream consumer exits without mutating UI.
+        openCodeSendGeneration = UUID()
 
         do {
             try await runtimeRegistry.runtime(for: .openCode).abort(project: project)
@@ -259,7 +261,37 @@ extension ChatViewModel {
     }
 
     func sendOpenCodeMessage(_ text: String, project: RemoteProject, createUserMessage: Bool = true) async {
+        // Reserve ownership synchronously before any await so concurrent sends cannot both attach.
+        let ownedProjectID = project.id
+        guard projectId == ownedProjectID else {
+            addErrorMessage("Chat is no longer bound to this agent.")
+            return
+        }
+
+        // Soft-steer: session already has a live `/event` consumer. OpenCode's loop will
+        // pick up this new user prompt at the next step boundary — do not dual-attach.
+        if OpenCodeMidAnswerSendPolicy.mode(isEventStreamActive: isOpenCodeEventStreamActive) == .softSteerPromptOnly {
+            if createUserMessage {
+                _ = createMessage(content: text, role: .user)
+            }
+            project.selectedAgentRuntime = .openCode
+            project.updateLastModified()
+            saveChanges()
+            await softSteerOpenCodePrompt(text, project: project)
+            return
+        }
+
+        // Reject a second concurrent full stream for the same chat.
+        if isOpenCodeEventStreamActive {
+            addErrorMessage("A response is already in progress. Stop it or wait before sending again.")
+            return
+        }
+
+        let sendGeneration = UUID()
+        openCodeSendGeneration = sendGeneration
+
         await ensureSendTimeSetup(for: project, includeRules: false)
+        guard ownsOpenCodeWork(projectID: ownedProjectID, generation: sendGeneration, kind: .send) else { return }
 
         if createUserMessage {
             _ = createMessage(content: text, role: .user)
@@ -268,16 +300,7 @@ extension ChatViewModel {
         project.selectedAgentRuntime = .openCode
         project.updateLastModified()
         saveChanges()
-
-        // Soft-steer: session already has a live `/event` consumer. OpenCode's loop will
-        // pick up this new user prompt at the next step boundary — do not dual-attach.
-        switch OpenCodeMidAnswerSendPolicy.mode(isEventStreamActive: isOpenCodeEventStreamActive) {
-        case .softSteerPromptOnly:
-            await softSteerOpenCodePrompt(text, project: project)
-            return
-        case .startStream:
-            break
-        }
+        guard ownsOpenCodeWork(projectID: ownedProjectID, generation: sendGeneration, kind: .send) else { return }
 
         clearStaleOpenCodeStreamingAnchor(on: project)
 
@@ -289,12 +312,15 @@ extension ChatViewModel {
         project.updateLastModified()
         saveChanges()
 
-        let sendTask = Task { @MainActor [weak self] in
-            guard let self else { return }
+        // Strong self: the stream must outlive ChatView so leaving the chat still
+        // finishes the reply, persists messages, and updates unread / notifications.
+        let sendTask = Task { @MainActor in
             await self.consumeOpenCodeSendStream(
                 text: text,
                 project: project,
-                assistantMessage: assistantMessage
+                assistantMessage: assistantMessage,
+                projectID: ownedProjectID,
+                generation: sendGeneration
             )
         }
         openCodeSendTask = sendTask
@@ -352,7 +378,9 @@ extension ChatViewModel {
     private func consumeOpenCodeSendStream(
         text: String,
         project: RemoteProject,
-        assistantMessage: Message
+        assistantMessage: Message,
+        projectID: UUID,
+        generation: UUID
     ) async {
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
@@ -369,6 +397,7 @@ extension ChatViewModel {
 
             for try await chunk in stream {
                 if Task.isCancelled { break }
+                guard ownsOpenCodeWork(projectID: projectID, generation: generation, kind: .send) else { break }
 
                 let chunkType = chunk.metadata?["type"] as? String
 

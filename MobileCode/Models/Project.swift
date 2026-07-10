@@ -79,6 +79,8 @@ final class RemoteProject {
     var openCodeSessionId: String?
     var openCodeLastMessageIds: [String] = []
     var openCodeLastPartIds: [String] = []
+    /// Encoded as `partId=digest` entries for content-change detection during hydration.
+    var openCodeLastPartDigests: [String] = []
 
     // MARK: - Claude → OpenCode Migration
 
@@ -169,15 +171,28 @@ final class RemoteProject {
     }
 
     var openCodeHydrationState: OpenCodeHydrationState {
-        OpenCodeHydrationState(
+        var digests: [String: String] = [:]
+        for entry in openCodeLastPartDigests {
+            guard let separator = entry.firstIndex(of: "=") else { continue }
+            let partID = String(entry[..<separator])
+            let digest = String(entry[entry.index(after: separator)...])
+            if !partID.isEmpty, !digest.isEmpty {
+                digests[partID] = digest
+            }
+        }
+        return OpenCodeHydrationState(
             messageIDs: Set(openCodeLastMessageIds),
-            partIDs: Set(openCodeLastPartIds)
+            partIDs: Set(openCodeLastPartIds),
+            partDigests: digests
         )
     }
 
     func updateOpenCodeHydrationState(_ state: OpenCodeHydrationState) {
         openCodeLastMessageIds = state.messageIDs.sorted()
         openCodeLastPartIds = state.partIDs.sorted()
+        openCodeLastPartDigests = state.partDigests
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
         updateLastModified()
     }
 
@@ -194,6 +209,7 @@ final class RemoteProject {
         openCodeSessionId = sessionId
         openCodeLastMessageIds = []
         openCodeLastPartIds = []
+        openCodeLastPartDigests = []
         updateLastModified()
         return true
     }
@@ -202,6 +218,7 @@ final class RemoteProject {
         openCodeSessionId = nil
         openCodeLastMessageIds = []
         openCodeLastPartIds = []
+        openCodeLastPartDigests = []
         lastSuccessfulRuntimeProviderRawValue = nil
         updateLastModified()
     }

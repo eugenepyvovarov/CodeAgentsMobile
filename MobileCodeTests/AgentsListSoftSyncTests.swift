@@ -148,4 +148,67 @@ final class AgentsListSoftSyncTests: XCTestCase {
         XCTAssertEqual(next?.lastRead, 0)
         XCTAssertEqual(next?.unreadConversationId, "ses_new")
     }
+
+    func testInteractiveReplyFirstBindLeavesOneUnreadWhenNotViewing() {
+        // Soft-poll first-bind baselines known==read; interactive finish must not wipe the badge.
+        let next = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
+            lastKnown: 0,
+            lastRead: 0,
+            unreadConversationId: nil,
+            sessionId: "ses_a",
+            absoluteAssistantCount: 5,
+            isViewingChat: false
+        )
+
+        XCTAssertEqual(next?.lastKnown, 5)
+        XCTAssertEqual(next?.lastRead, 4)
+        XCTAssertEqual(max(0, (next?.lastKnown ?? 0) - (next?.lastRead ?? 0)), 1)
+        XCTAssertEqual(next?.unreadConversationId, "ses_a")
+    }
+
+    func testInteractiveReplyWhileViewingMarksFullyRead() {
+        let next = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
+            lastKnown: 3,
+            lastRead: 3,
+            unreadConversationId: "ses_a",
+            sessionId: "ses_a",
+            absoluteAssistantCount: 5,
+            isViewingChat: true
+        )
+
+        XCTAssertEqual(next?.lastKnown, 5)
+        XCTAssertEqual(next?.lastRead, 5)
+        XCTAssertEqual(max(0, (next?.lastKnown ?? 0) - (next?.lastRead ?? 0)), 0)
+    }
+
+    func testInteractiveReplyBumpsKnownAndKeepsExistingUnreadGap() {
+        let next = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
+            lastKnown: 4,
+            lastRead: 2,
+            unreadConversationId: "ses_a",
+            sessionId: "ses_a",
+            absoluteAssistantCount: 6,
+            isViewingChat: false
+        )
+
+        XCTAssertEqual(next?.lastKnown, 6)
+        XCTAssertEqual(next?.lastRead, 2)
+        XCTAssertEqual(max(0, (next?.lastKnown ?? 0) - (next?.lastRead ?? 0)), 4)
+    }
+
+    func testInteractiveReplyWhenAlreadyCaughtUpLeavesOneUnreadOffscreen() {
+        // absolute equal to known (no raise) but reply finished while away.
+        let next = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
+            lastKnown: 5,
+            lastRead: 5,
+            unreadConversationId: "ses_a",
+            sessionId: "ses_a",
+            absoluteAssistantCount: 5,
+            isViewingChat: false
+        )
+
+        XCTAssertEqual(next?.lastKnown, 5)
+        XCTAssertEqual(next?.lastRead, 4)
+        XCTAssertEqual(max(0, (next?.lastKnown ?? 0) - (next?.lastRead ?? 0)), 1)
+    }
 }

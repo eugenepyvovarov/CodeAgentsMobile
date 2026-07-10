@@ -121,6 +121,65 @@ enum AgentsListUnreadCursor {
             absoluteAssistantCount: proposedAbsolute
         )
     }
+
+    /// Cursor update after an interactive OpenCode reply fully finishes.
+    ///
+    /// Unlike soft-poll first-bind (history is treated as already seen), a finished
+    /// reply while the user is **not** viewing the chat must leave at least the
+    /// latest turn unread so list badges / app-icon counts stay honest.
+    static func applyingInteractiveReplyFinished(
+        lastKnown: Int,
+        lastRead: Int,
+        unreadConversationId: String?,
+        sessionId: String,
+        absoluteAssistantCount: Int,
+        isViewingChat: Bool
+    ) -> (lastKnown: Int, lastRead: Int, unreadConversationId: String)? {
+        let sessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionId.isEmpty else { return nil }
+        let absolute = max(0, absoluteAssistantCount)
+
+        var known = max(0, lastKnown)
+        var read = max(0, lastRead)
+        var conversation = unreadConversationId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if conversation?.isEmpty == true {
+            conversation = nil
+        }
+
+        if let next = applyingAbsolute(
+            lastKnown: known,
+            lastRead: read,
+            unreadConversationId: conversation,
+            sessionId: sessionId,
+            absoluteAssistantCount: absolute
+        ) {
+            known = next.lastKnown
+            read = next.lastRead
+            conversation = next.unreadConversationId
+        } else {
+            // Absolute did not raise known (already at total). Still bind session id.
+            known = max(known, absolute)
+            conversation = conversation ?? sessionId
+        }
+
+        if isViewingChat {
+            // Live viewer: catch up read cursor so this agent does not badge itself.
+            read = known
+        } else {
+            // Off-screen completion: never end at 0 unread when there is history.
+            // First-bind baselining sets known==read; a finished reply must leave a gap.
+            known = max(known, absolute)
+            if known > 0, read >= known {
+                read = known - 1
+            }
+        }
+
+        return (
+            lastKnown: known,
+            lastRead: max(0, min(read, known)),
+            unreadConversationId: conversation ?? sessionId
+        )
+    }
 }
 
 /// Soft-poll OpenCode chats for the Agents list.

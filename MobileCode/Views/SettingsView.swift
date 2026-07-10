@@ -167,14 +167,21 @@ struct SettingsView: View {
     }
     
     private func deleteServer(at offsets: IndexSet) {
-        for index in offsets {
-            let server = servers[index]
-            // Clean up credentials from keychain
-            try? KeychainManager.shared.deletePassword(for: server.id)
-            try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: server.id)
-            try? KeychainManager.shared.deletePushSecret(for: server.id)
-            // Delete from database
+        // Capture ids before delete — model objects may be invalid after context.delete.
+        let serverIds = offsets.map { servers[$0].id }
+        let serversToDelete = offsets.map { servers[$0] }
+        for server in serversToDelete {
             modelContext.delete(server)
+        }
+        Task {
+            for serverId in serverIds {
+                // Must run while Keychain still has CODEAGENTS_PUSH_SECRET.
+                await PushNotificationsManager.shared.unregisterDevice(serverId: serverId)
+                try? KeychainManager.shared.deletePassword(for: serverId)
+                try? KeychainManager.shared.deleteOpenCodeServerCredentials(for: serverId)
+                try? KeychainManager.shared.deleteDaemonToken(for: serverId)
+                try? KeychainManager.shared.deletePushSecret(for: serverId)
+            }
         }
     }
     

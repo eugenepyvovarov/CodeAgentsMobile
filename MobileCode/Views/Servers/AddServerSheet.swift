@@ -230,6 +230,8 @@ struct AddServerSheet: View {
                         errorMessage = "Authentication failed. Check username/password"
                     case .notConnected:
                         errorMessage = "Could not establish connection"
+                    case .hostKeyMismatch(let host, let expected, let presented):
+                        errorMessage = "Host key changed for \(host). Expected \(expected), got \(presented)."
                     case .commandFailed(let reason):
                         errorMessage = "Command failed: \(reason)"
                     case .fileTransferFailed(let reason):

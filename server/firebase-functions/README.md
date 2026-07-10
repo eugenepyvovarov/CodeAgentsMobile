@@ -35,9 +35,14 @@ firebase deploy --only functions,firestore
 
 ## Security model
 
-Both functions require:
+HTTPS functions require:
 
 - `Authorization: Bearer <CODEAGENTS_PUSH_SECRET>`
+- Secret must be **≥ 32 characters** and high-entropy (base64 / base64url charset)
+- Request body capped at **16 KiB**; individual fields are length-limited
+- In-process rate limits per secret hash and client IP; stricter cap on **new** server namespaces
+- `triggerReplyFinished` does **not** create Firestore namespaces (register first)
+- Firestore client rules deny all; only the Admin SDK (functions) can read/write
 
 The secret is stored on each CodeAgents server environment and managed by the iOS app. Legacy installs
 currently keep it in `/etc/claude-proxy.env`; the OpenCode scheduler daemon reads the same
@@ -46,6 +51,23 @@ currently keep it in `/etc/claude-proxy.env`; the OpenCode scheduler daemon read
 The push gateway is not part of foreground OpenCode chat. Foreground chat uses the direct
 `iOS app -> SSH -> opencode serve` path; this gateway only handles offline/background completion
 notifications from the CodeAgents daemon.
+
+### Endpoints
+
+| Function | Caller | Purpose |
+|----------|--------|---------|
+| `registerSubscription` | iOS app | Upsert device FCM token for `(secret, cwd)` |
+| `unregisterSubscription` | iOS app | Delete device (one `cwd` or all agents for secret) |
+| `triggerReplyFinished` | Daemon / iOS | Send completion push to registered devices |
+| `cleanupStalePushRegistrations` | Scheduler (daily) | TTL purge of stale devices/agents/servers (90 days) |
+
+### Notification privacy
+
+By default the lock-screen body is **`Reply ready`** and the title is the agent display name
+(or `CodeAgents`). Path fragments from `cwd` are never used as the title.
+
+To show a sanitized text preview, callers must set `include_preview: true` and send `message_preview`.
+Without that flag, any preview field is ignored.
 
 ## Completion sources
 

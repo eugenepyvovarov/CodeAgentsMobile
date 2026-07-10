@@ -34,6 +34,8 @@ struct RegularTaskEditorView: View {
     @State private var ordinalWeekday: Weekday
     @State private var monthOfYear: Int
     @State private var timeOfDay: Date
+    /// Absolute fire date+time for one-shot tasks (in the task timezone).
+    @State private var runAt: Date
     @State private var timeZoneId: String
 
     @State private var selectedSkillName: String?
@@ -68,12 +70,19 @@ struct RegularTaskEditorView: View {
             initialInterval = min(initialInterval, 60)
         case .hourly:
             initialInterval = min(initialInterval, 24)
-        case .daily, .weekly, .monthly, .yearly:
+        case .once, .daily, .weekly, .monthly, .yearly:
             break
         }
 
         let composed = ComposedPromptParser.parse(task?.prompt ?? "")
         let initialSkillName = composed.skillName ?? composed.skillSlug.map { SkillNameFormatter.displayName(from: $0) }
+
+        let initialRunAt: Date = {
+            if let next = task?.nextRunAt {
+                return next
+            }
+            return timeDate
+        }()
 
         _title = State(initialValue: task?.title ?? "")
         _promptBody = State(initialValue: composed.message)
@@ -87,6 +96,7 @@ struct RegularTaskEditorView: View {
         _ordinalWeekday = State(initialValue: task?.ordinalWeekday ?? Weekday.current(in: calendar))
         _monthOfYear = State(initialValue: task?.monthOfYear ?? calendar.component(.month, from: Date()))
         _timeOfDay = State(initialValue: timeDate)
+        _runAt = State(initialValue: initialRunAt)
         _timeZoneId = State(initialValue: zoneId)
         _selectedSkillName = State(initialValue: initialSkillName)
         _selectedSkillSlug = State(initialValue: composed.skillSlug)
@@ -184,21 +194,34 @@ struct RegularTaskEditorView: View {
                     .pickerStyle(.menu)
                     .accessibilityIdentifier("regular-task-frequency-picker")
 
-                    Stepper(value: $interval, in: intervalRange) {
-                        HStack {
-                            Text("Every")
-                            Spacer()
-                            Text("\(interval) \(interval == 1 ? frequency.unitName : frequency.unitName + "s")")
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                    if frequency.isOneShot {
+                        DatePicker(
+                            "Run at",
+                            selection: $runAt,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                        .accessibilityIdentifier("regular-task-run-at-picker")
 
-                    if usesTimeOfDay {
-                        DatePicker("Time", selection: $timeOfDay, displayedComponents: .hourAndMinute)
-                    } else {
-                        Text("Runs on clock boundaries in the selected time zone.")
+                        Text("Runs once at this time, then disables and deletes itself after a successful run. Failures stay scheduled and retry.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
+                    } else {
+                        Stepper(value: $interval, in: intervalRange) {
+                            HStack {
+                                Text("Every")
+                                Spacer()
+                                Text("\(interval) \(interval == 1 ? frequency.unitName : frequency.unitName + "s")")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        if usesTimeOfDay {
+                            DatePicker("Time", selection: $timeOfDay, displayedComponents: .hourAndMinute)
+                        } else {
+                            Text("Runs on clock boundaries in the selected time zone.")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
                     }
 
                     HStack {
@@ -244,7 +267,11 @@ struct RegularTaskEditorView: View {
                         .disabled(isRunningNow || isSaving || providerMismatch != nil)
                         .accessibilityIdentifier("regular-task-run-now-button")
                     } footer: {
-                        Text("Runs the prompt immediately without changing the next scheduled time.")
+                        if frequency.isOneShot {
+                            Text("Starts immediately. After a successful run the task is removed. Failures keep the task and retry.")
+                        } else {
+                            Text("Runs the prompt immediately without changing the next scheduled time.")
+                        }
                     }
 
                     Section {
@@ -413,24 +440,28 @@ struct RegularTaskEditorView: View {
     }
 
     private var previewTask: AgentScheduledTask {
-        AgentScheduledTask(projectId: projectContext.activeProject?.id ?? UUID(),
+        let onceComponents = onceScheduleComponents
+        return AgentScheduledTask(projectId: projectContext.activeProject?.id ?? UUID(),
                            title: title,
                            prompt: promptBody.isEmpty ? "Untitled" : promptBody,
                            isEnabled: isEnabled,
                            timeZoneId: timeZoneId,
                            frequency: frequency,
-                           interval: interval,
+                           interval: frequency.isOneShot ? 1 : interval,
                            weekdayMask: weekdayMask,
                            monthlyMode: monthlyMode,
-                           dayOfMonth: dayOfMonth,
+                           dayOfMonth: onceComponents.dayOfMonth,
                            ordinalWeek: ordinalWeek,
                            ordinalWeekday: ordinalWeekday,
-                           monthOfYear: monthOfYear,
-                           timeOfDayMinutes: usesTimeOfDay ? TaskScheduleFormatter.minutes(from: timeOfDay, timeZoneId: timeZoneId) : 0)
+                           monthOfYear: onceComponents.monthOfYear,
+                           timeOfDayMinutes: onceComponents.timeOfDayMinutes,
+                           nextRunAt: frequency.isOneShot ? runAt : nil)
     }
 
     private var usesTimeOfDay: Bool {
         switch frequency {
+        case .once:
+            return true
         case .minutely, .hourly:
             return false
         case .daily, .weekly, .monthly, .yearly:
@@ -440,6 +471,8 @@ struct RegularTaskEditorView: View {
 
     private var intervalRange: ClosedRange<Int> {
         switch frequency {
+        case .once:
+            return 1...1
         case .minutely:
             return 1...60
         case .hourly:
@@ -447,6 +480,22 @@ struct RegularTaskEditorView: View {
         case .daily, .weekly, .monthly, .yearly:
             return 1...365
         }
+    }
+
+    /// Month / day / minutes derived from the one-shot date picker (or recurring controls).
+    private var onceScheduleComponents: (dayOfMonth: Int, monthOfYear: Int, timeOfDayMinutes: Int) {
+        if frequency.isOneShot {
+            var calendar = Calendar.current
+            calendar.timeZone = TimeZone(identifier: timeZoneId) ?? .current
+            let day = calendar.component(.day, from: runAt)
+            let month = calendar.component(.month, from: runAt)
+            let minutes = TaskScheduleFormatter.minutes(from: runAt, timeZoneId: timeZoneId, calendar: calendar)
+            return (day, month, minutes)
+        }
+        let minutes = usesTimeOfDay
+            ? TaskScheduleFormatter.minutes(from: timeOfDay, timeZoneId: timeZoneId)
+            : 0
+        return (dayOfMonth, monthOfYear, minutes)
     }
 
     private func clampInterval() {
@@ -682,6 +731,8 @@ struct RegularTaskEditorView: View {
 
         var sanitizedInterval = max(1, interval)
         switch frequency {
+        case .once:
+            sanitizedInterval = 1
         case .minutely:
             sanitizedInterval = min(sanitizedInterval, 60)
         case .hourly:
@@ -689,12 +740,14 @@ struct RegularTaskEditorView: View {
         case .daily, .weekly, .monthly, .yearly:
             break
         }
-        let sanitizedDay = min(max(1, dayOfMonth), 31)
-        let sanitizedMonth = min(max(1, monthOfYear), 12)
-        let minutes = usesTimeOfDay ? TaskScheduleFormatter.minutes(from: timeOfDay, timeZoneId: timeZoneId) : 0
+        let components = onceScheduleComponents
+        let sanitizedDay = min(max(1, components.dayOfMonth), 31)
+        let sanitizedMonth = min(max(1, components.monthOfYear), 12)
+        let minutes = components.timeOfDayMinutes
         let resolvedWeekdayMask = weekdayMask == 0
             ? WeekdayMask.mask(for: Weekday.current(in: Calendar.current))
             : weekdayMask
+        let resolvedNextRunAt: Date? = frequency.isOneShot ? runAt : nil
 
         let localTask: AgentScheduledTask
         if let task {
@@ -711,6 +764,9 @@ struct RegularTaskEditorView: View {
             task.ordinalWeekday = ordinalWeekday
             task.monthOfYear = sanitizedMonth
             task.timeOfDayMinutes = minutes
+            if frequency.isOneShot {
+                task.nextRunAt = resolvedNextRunAt
+            }
             task.markUpdated()
             localTask = task
         } else {
@@ -727,7 +783,8 @@ struct RegularTaskEditorView: View {
                                              ordinalWeek: ordinalWeek,
                                              ordinalWeekday: ordinalWeekday,
                                              monthOfYear: sanitizedMonth,
-                                             timeOfDayMinutes: minutes)
+                                             timeOfDayMinutes: minutes,
+                                             nextRunAt: resolvedNextRunAt)
             modelContext.insert(newTask)
             localTask = newTask
         }

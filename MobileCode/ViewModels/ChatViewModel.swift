@@ -81,6 +81,12 @@ class ChatViewModel {
     /// In-flight OpenCode `/event` consumer for the active send. Soft-steer reuses this instead of dual-attaching.
     var openCodeSendTask: Task<Void, Never>?
 
+    /// Generation token for the active send stream. Invalidated on project switch / clear / stop.
+    var openCodeSendGeneration: UUID = UUID()
+
+    /// Generation token for hydration work. Invalidated on project switch / clear / session replace.
+    var openCodeHydrationGeneration: UUID = UUID()
+
     /// Track if configuration is in progress to prevent race conditions
     var isConfiguring = false
     
@@ -203,7 +209,12 @@ class ChatViewModel {
         sessionCheckTask = nil
         openCodeFullHydrationTask?.cancel()
         openCodeFullHydrationTask = nil
-        
+        // Invalidate in-flight send/hydrate ownership when reconfiguring.
+        openCodeSendTask?.cancel()
+        openCodeSendTask = nil
+        openCodeSendGeneration = UUID()
+        openCodeHydrationGeneration = UUID()
+
         // Reset the flag when project changes
         if self.projectId != projectId {
             cancelDeferredStartup(reason: "projectSwitch", projectID: self.projectId)
@@ -211,6 +222,9 @@ class ChatViewModel {
             // Also reset loading states when switching projects
             isLoadingPreviousSession = false
             showActiveSessionIndicator = false
+            isProcessing = false
+            streamingMessage = nil
+            streamingBlocks = []
             // Clear cached MCP servers when switching projects
             cachedMCPServers = []
             mcpCacheLastFetchedAt = nil
@@ -328,6 +342,19 @@ class ChatViewModel {
     
     /// Clear all messages and start fresh
     func clearChat() {
+        // Cancel ownership of any in-flight send / hydration so they cannot repopulate state.
+        openCodeSendTask?.cancel()
+        openCodeSendTask = nil
+        openCodeSendGeneration = UUID()
+        openCodeFullHydrationTask?.cancel()
+        openCodeFullHydrationTask = nil
+        openCodeHydrationGeneration = UUID()
+        sessionCheckTask?.cancel()
+        sessionCheckTask = nil
+        isProcessing = false
+        streamingMessage = nil
+        streamingBlocks = []
+
         // Delete persisted messages
         if let modelContext = modelContext {
             for message in messages {
@@ -347,7 +374,6 @@ class ChatViewModel {
         }
         providerMismatch = nil
         hasCheckedForPreviousSession = false
-        sessionCheckTask?.cancel()
         isLoadingPreviousSession = false
         print("📝 clearChat: Set isLoadingPreviousSession = false")
         pendingSaveTask?.cancel()
@@ -381,11 +407,39 @@ class ChatViewModel {
         saveChanges()
     }
 
+    /// True when the current chat still owns work for the given project + generation.
+    func ownsOpenCodeWork(projectID: UUID, generation: UUID, kind: OpenCodeWorkOwnershipKind) -> Bool {
+        guard projectId == projectID else { return false }
+        switch kind {
+        case .send:
+            return openCodeSendGeneration == generation
+        case .hydration:
+            return openCodeHydrationGeneration == generation
+        }
+    }
+}
+
+enum OpenCodeWorkOwnershipKind {
+    case send
+    case hydration
+}
+
+// Re-open ChatViewModel for remaining methods that were below clearChat.
+extension ChatViewModel {
+    // MARK: - Unread
+
     func markUnreadAsRead(for project: RemoteProject) {
-        if project.unreadConversationId == nil,
-           let conversationId = project.proxyConversationId?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !conversationId.isEmpty {
-            project.unreadConversationId = conversationId
+        // OpenCode unread is keyed by session id; prefer it over legacy proxy conversation ids
+        // so soft-sync / interactive reply do not treat every poll as a session change.
+        if project.unreadConversationId == nil {
+            if let sessionId = project.openCodeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !sessionId.isEmpty {
+                project.unreadConversationId = sessionId
+            } else if let conversationId = project.proxyConversationId?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !conversationId.isEmpty {
+                project.unreadConversationId = conversationId
+            }
         }
 
         let target = project.lastKnownUnreadCursor
@@ -420,10 +474,18 @@ class ChatViewModel {
     }
 
 
-    /// Clean up resources before view disappears
+    /// Clean up resources before view disappears.
+    ///
+    /// Intentionally keeps an in-flight OpenCode send task alive so a reply that finishes
+    /// after the user leaves chat still updates SwiftData, unread badges, and push.
+    /// Explicit Stop / project switch still cancels via `abortCurrentResponse` / new send.
     func cleanup() {
         sessionCheckTask?.cancel()
         sessionCheckTask = nil
+        openCodeFullHydrationTask?.cancel()
+        openCodeFullHydrationTask = nil
+        // Do not cancel `openCodeSendTask` or rotate `openCodeSendGeneration` here.
+        openCodeHydrationGeneration = UUID()
         cancelDeferredStartup(reason: "cleanup", projectID: projectId)
         saveChanges()
         stopProxyPolling()
@@ -440,7 +502,7 @@ class ChatViewModel {
         pendingOpenCodeQuestions = []
         handledOpenCodeQuestionIds = []
 
-        print("📝 cleanup: Cleaned up all resources")
+        print("📝 cleanup: Cleaned up view resources (send stream may continue in background)")
     }
 
     

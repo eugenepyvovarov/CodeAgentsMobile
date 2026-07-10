@@ -41,11 +41,46 @@ final class PasswordAuthenticationDelegate: NIOSSHClientUserAuthenticationDelega
     }
 }
 
-/// Accept all host keys delegate (for development)
+/// Trust-on-first-use host key verification.
+/// Pins the first accepted key in Keychain; rejects unexpected key changes.
+final class TOFUHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
+    private let host: String
+    private let port: Int
+
+    init(host: String, port: Int) {
+        self.host = host
+        self.port = port
+    }
+
+    func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
+        switch SSHHostKeyStore.verify(hostKey: hostKey, host: host, port: port) {
+        case .matched:
+            validationCompletePromise.succeed(())
+        case .acceptedFirstUse(let fingerprint):
+            SSHLogger.log(
+                "Pinned SSH host key for \(host):\(port) (\(fingerprint))",
+                level: .info
+            )
+            validationCompletePromise.succeed(())
+        case .mismatched(let expected, let presented):
+            SSHLogger.log(
+                "SSH host key mismatch for \(host):\(port) expected=\(expected) presented=\(presented)",
+                level: .error
+            )
+            validationCompletePromise.fail(
+                SSHError.hostKeyMismatch(host: "\(host):\(port)", expected: expected, presented: presented)
+            )
+        }
+    }
+}
+
+/// Legacy alias kept for any residual references; uses TOFU with empty host (do not use).
+@available(*, deprecated, message: "Use TOFUHostKeyDelegate")
 final class AcceptAllHostKeysDelegate: NIOSSHClientServerAuthenticationDelegate {
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
-        // In production, you should verify the host key
-        validationCompletePromise.succeed(())
+        validationCompletePromise.fail(
+            SSHError.connectionFailed("AcceptAllHostKeys is disabled; use TOFUHostKeyDelegate")
+        )
     }
 }
 
@@ -59,34 +94,25 @@ final class SSHChannelDataHandler: ChannelInboundHandler, @unchecked Sendable {
     private var stderrBuffer = ByteBuffer()
     
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        SSHLogger.log("SSHChannelDataHandler channelRead called with data type: \(type(of: data))", level: .verbose)
         let channelData = unwrapInboundIn(data)
-        
+
         switch channelData.data {
         case .byteBuffer(let bytes):
-            // Get string representation without consuming the buffer
-            let receivedString = bytes.getString(at: bytes.readerIndex, length: bytes.readableBytes) ?? ""
+            // Metadata only — never log command output bodies.
             switch channelData.type {
             case .channel:
-                // Standard output
-                SSHLogger.log("Received stdout data (\(bytes.readableBytes) bytes): \(receivedString.prefix(100))...", level: .debug)
                 var mutableBytes = bytes
                 stdoutBuffer.writeBuffer(&mutableBytes)
             case .stdErr:
-                // Standard error
-                SSHLogger.log("Received stderr data (\(bytes.readableBytes) bytes): \(receivedString.prefix(100))...", level: .debug)
                 var mutableBytes = bytes
                 stderrBuffer.writeBuffer(&mutableBytes)
             default:
-                SSHLogger.log("Received other data type: \(channelData.type)", level: .debug)
                 break
             }
-            
+
             // Forward the original ByteBuffer to the next handler (both stdout and stderr)
-            SSHLogger.log("Forwarding \(bytes.readableBytes) bytes to next handler", level: .verbose)
             context.fireChannelRead(NIOAny(bytes))
         case .fileRegion:
-            SSHLogger.log("Received file region data", level: .debug)
             break
         }
     }
@@ -163,9 +189,9 @@ final class CommandExecutionHandler: ChannelInboundHandler, @unchecked Sendable 
     }
     
     func channelActive(context: ChannelHandlerContext) {
-        SSHLogger.log("Command handler channel active, sending exec request", level: .info)
-        SSHLogger.log("Command to execute: \(command)", level: .debug)
-        
+        // Metadata only — never log the command body (may contain paths/secrets).
+        SSHLogger.log("Command handler channel active (bytes=\(command.utf8.count))", level: .debug)
+
         // Send exec request
         let execRequest = SSHChannelRequestEvent.ExecRequest(
             command: command,
@@ -174,7 +200,7 @@ final class CommandExecutionHandler: ChannelInboundHandler, @unchecked Sendable 
         context.triggerUserOutboundEvent(execRequest).whenComplete { result in
             switch result {
             case .success:
-                SSHLogger.log("Exec request sent successfully", level: .info)
+                SSHLogger.log("Exec request sent successfully", level: .debug)
             case .failure(let error):
                 SSHLogger.log("Failed to send exec request: \(error)", level: .error)
                 if !self.hasCompleted {
@@ -185,17 +211,15 @@ final class CommandExecutionHandler: ChannelInboundHandler, @unchecked Sendable 
             }
         }
     }
-    
+
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        SSHLogger.log("Received user inbound event: \(type(of: event))", level: .verbose)
-        
         switch event {
         case is ChannelSuccessEvent:
-            SSHLogger.log("Channel success event received - command accepted", level: .info)
             // Don't close yet, wait for data
-            
+            break
+
         case let event as SSHChannelRequestEvent.ExitStatus:
-            SSHLogger.log("Command completed with exit status: \(event.exitStatus)", level: .info)
+            SSHLogger.log("Command completed with exit status: \(event.exitStatus)", level: .debug)
             // Store the exit status but don't complete yet - wait for channel to close
             self.exitStatus = Int32(event.exitStatus)
             // Schedule channel close after a brief delay to allow data to drain

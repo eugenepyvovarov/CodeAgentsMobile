@@ -38,9 +38,10 @@ extension ChatViewModel {
     func scheduleOpenCodeBackgroundHydration(project: RemoteProject) {
         openCodeFullHydrationTask?.cancel()
         let projectID = project.id
+        let generation = openCodeHydrationGeneration
         openCodeFullHydrationTask = Task { @MainActor in
             guard !Task.isCancelled else { return }
-            guard self.projectId == projectID else { return }
+            guard self.ownsOpenCodeWork(projectID: projectID, generation: generation, kind: .hydration) else { return }
             await self.hydrateOpenCodeMessagesIfNeeded(project: project)
         }
         ChatRecoveryTiming.log(
@@ -59,12 +60,16 @@ extension ChatViewModel {
         guard activeRuntimeKind(for: project) == .openCode else { return }
         guard project.openCodeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
 
+        let ownedProjectID = project.id
+        let generation = openCodeHydrationGeneration
+
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
             let sessionStateStart = DispatchTime.now().uptimeNanoseconds
             let sessionState: CodingAgentRuntimeSessionState
             do {
                 sessionState = try await runtime.sessionState(for: project)
+                guard ownsOpenCodeWork(projectID: ownedProjectID, generation: generation, kind: .hydration) else { return }
                 ChatRecoveryTiming.log(
                     runtime: CodingAgentRuntimeKind.openCode.rawValue,
                     projectID: project.id.uuidString,
@@ -110,6 +115,7 @@ extension ChatViewModel {
             let hydrationResult: OpenCodeHydrationResult
             do {
                 hydrationResult = try await runtime.hydrateMessages(for: project, mode: .initialBounded())
+                guard ownsOpenCodeWork(projectID: ownedProjectID, generation: generation, kind: .hydration) else { return }
                 ChatRecoveryTiming.log(
                     runtime: CodingAgentRuntimeKind.openCode.rawValue,
                     projectID: project.id.uuidString,
@@ -137,6 +143,8 @@ extension ChatViewModel {
                 throw error
             }
             applyOpenCodeHydrationResult(hydrationResult, project: project)
+            // Advance anchors only after merge so a crash mid-apply cannot skip durable recovery.
+            project.updateOpenCodeHydrationState(hydrationResult.storedState)
 
             reconcileOpenCodeSessionState(sessionState, project: project)
             project.updateLastModified()
@@ -163,14 +171,18 @@ extension ChatViewModel {
               initialResult.fetchedCount >= limit else { return }
 
         openCodeFullHydrationTask?.cancel()
+        let ownedProjectID = project.id
+        let generation = openCodeHydrationGeneration
         openCodeFullHydrationTask = Task { @MainActor in
             guard !Task.isCancelled else { return }
-            guard self.projectId == project.id, self.modelContext != nil else { return }
+            guard self.ownsOpenCodeWork(projectID: ownedProjectID, generation: generation, kind: .hydration),
+                  self.modelContext != nil else { return }
             do {
                 let runtime = self.runtimeRegistry.runtime(for: .openCode)
                 let hydrateStart = DispatchTime.now().uptimeNanoseconds
                 let result = try await runtime.hydrateMessages(for: project, mode: .fullRefresh)
                 guard !Task.isCancelled else { return }
+                guard self.ownsOpenCodeWork(projectID: ownedProjectID, generation: generation, kind: .hydration) else { return }
                 ChatRecoveryTiming.log(
                     runtime: CodingAgentRuntimeKind.openCode.rawValue,
                     projectID: project.id.uuidString,
@@ -185,6 +197,7 @@ extension ChatViewModel {
                     ]
                 )
                 self.applyOpenCodeHydrationResult(result, project: project)
+                project.updateOpenCodeHydrationState(result.storedState)
                 self.prefetchCodeAgentsUIMedia(in: project, messages: self.messages)
                 project.updateLastModified()
                 self.saveChanges()

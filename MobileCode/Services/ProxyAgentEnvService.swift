@@ -30,17 +30,39 @@ final class ProxyAgentEnvService {
 
     func fetchEnv(agentId: String, project: RemoteProject) async throws -> [ProxyAgentEnvItem] {
         let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
+        await ensureDaemonTokenIfNeeded(for: project, session: session)
         let path = "/v1/agent/env?agent_id=\(agentId)"
-        let response = try await client.request(session: session, method: "GET", path: path, body: nil)
+        let auth = AgentDaemonTokenService.shared.authorizationHeaderValue(for: project.serverId)
+        let response = try await client.request(
+            session: session,
+            method: "GET",
+            path: path,
+            body: nil,
+            authorizationHeader: auth
+        )
         return try decodeEnvList(from: response.body)
     }
 
     func replaceEnv(agentId: String, env: [ProxyAgentEnvItem], project: RemoteProject) async throws {
         let session = try await sshService.getConnection(for: project, purpose: .agentDaemon)
+        await ensureDaemonTokenIfNeeded(for: project, session: session)
         let payload = ProxyAgentEnvReplaceRequest(agentId: agentId, env: env)
         let data = try JSONEncoder().encode(payload)
         let body = String(data: data, encoding: .utf8) ?? "{}"
-        _ = try await client.request(session: session, method: "PUT", path: "/v1/agent/env", body: body)
+        let auth = AgentDaemonTokenService.shared.authorizationHeaderValue(for: project.serverId)
+        _ = try await client.request(
+            session: session,
+            method: "PUT",
+            path: "/v1/agent/env",
+            body: body,
+            authorizationHeader: auth
+        )
+    }
+
+    /// Best-effort auto-provision when Keychain has no bearer yet.
+    private func ensureDaemonTokenIfNeeded(for project: RemoteProject, session: SSHSession) async {
+        guard !ProxyInstallerService.shared.hasLocalDaemonToken(for: project.serverId) else { return }
+        await ProxyInstallerService.shared.ensureDaemonTokenIfNeeded(for: project.serverId, using: session)
     }
 
     private func decodeEnvList(from body: String) throws -> [ProxyAgentEnvItem] {
@@ -82,13 +104,22 @@ private final class ProxyAgentEnvClient {
         self.port = port
     }
 
-    func request(session: SSHSession,
-                 method: String,
-                 path: String,
-                 body: String?) async throws -> ProxyHTTPResponse {
-        try await withThrowingTaskGroup(of: ProxyHTTPResponse.self) { group in
+    func request(
+        session: SSHSession,
+        method: String,
+        path: String,
+        body: String?,
+        authorizationHeader: String? = nil
+    ) async throws -> ProxyHTTPResponse {
+        return try await withThrowingTaskGroup(of: ProxyHTTPResponse.self) { group in
             group.addTask {
-                try await self.performRequest(session: session, method: method, path: path, body: body)
+                try await self.performRequest(
+                    session: session,
+                    method: method,
+                    path: path,
+                    body: body,
+                    authorizationHeader: authorizationHeader
+                )
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: 15 * 1_000_000_000)
@@ -104,16 +135,24 @@ private final class ProxyAgentEnvClient {
         }
     }
 
-    private func performRequest(session: SSHSession,
-                                method: String,
-                                path: String,
-                                body: String?) async throws -> ProxyHTTPResponse {
+    private func performRequest(
+        session: SSHSession,
+        method: String,
+        path: String,
+        body: String?,
+        authorizationHeader: String?
+    ) async throws -> ProxyHTTPResponse {
         let handle = try await session.openDirectTCPIP(targetHost: host, targetPort: port)
         defer {
             handle.terminate()
         }
 
-        let requestText = buildRequest(method: method, path: path, body: body)
+        let requestText = buildRequest(
+            method: method,
+            path: path,
+            body: body,
+            authorizationHeader: authorizationHeader
+        )
         try await handle.sendInput(requestText)
 
         var state = ProxyHTTPParseState.headers
@@ -224,13 +263,22 @@ private final class ProxyAgentEnvClient {
         return ProxyHTTPResponse(statusCode: finalStatus, headers: headers, body: bodyText)
     }
 
-    private func buildRequest(method: String, path: String, body: String?) -> String {
+    private func buildRequest(
+        method: String,
+        path: String,
+        body: String?,
+        authorizationHeader: String?
+    ) -> String {
         var headers = [
             "\(method) \(path) HTTP/1.1",
             "Host: \(host):\(port)",
             "Accept: application/json",
             "Connection: close"
         ]
+
+        if let auth = authorizationHeader, !auth.isEmpty {
+            headers.append("Authorization: \(auth)")
+        }
 
         let bodyText = body ?? ""
         if !bodyText.isEmpty {

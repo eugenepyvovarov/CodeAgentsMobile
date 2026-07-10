@@ -19,6 +19,13 @@ enum TaskScheduleFormatter {
 
         let withTime: String
         switch task.frequency {
+        case .once:
+            let dateString = onceDateDescription(for: task, calendar: calendar)
+            withTime = "Once on \(dateString) at \(timeString)"
+            if let zoneLabel = timezoneLabelIfNonLocal(task.timeZoneId) {
+                return "\(withTime) (\(zoneLabel))"
+            }
+            return withTime
         case .minutely:
             base = task.interval == 1 ? "Every minute" : "Every \(task.interval) minutes"
             return base
@@ -122,6 +129,28 @@ enum TaskScheduleFormatter {
         formatter.timeStyle = .short
         formatter.timeZone = calendar.timeZone
         return formatter.string(from: time)
+    }
+
+    /// Date label for one-shot tasks (prefers nextRunAt, else month/day in task zone).
+    private static func onceDateDescription(for task: AgentScheduledTask, calendar: Calendar) -> String {
+        let fireDate: Date
+        if let nextRunAt = task.nextRunAt {
+            fireDate = nextRunAt
+        } else {
+            var components = DateComponents()
+            components.year = calendar.component(.year, from: Date())
+            components.month = task.monthOfYear
+            components.day = min(task.dayOfMonth, 28)
+            components.hour = task.timeOfDayMinutes / 60
+            components.minute = task.timeOfDayMinutes % 60
+            fireDate = calendar.date(from: components) ?? Date()
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.timeZone = calendar.timeZone
+        return formatter.string(from: fireDate)
     }
 
     private static func weekdayList(mask: Int, calendar: Calendar) -> String {

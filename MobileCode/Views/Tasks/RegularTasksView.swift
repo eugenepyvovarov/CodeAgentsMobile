@@ -37,7 +37,7 @@ struct RegularTasksView: View {
                         ContentUnavailableView {
                             Label("No Tasks Yet", systemImage: "clock.badge.checkmark")
                         } description: {
-                            Text("Create a task to send a prompt on a schedule.")
+                            Text("Create a recurring or one-time task to send a prompt.")
                         } actions: {
                             PrimaryGlassButton(action: { showingNewTask = true }) {
                                 Label("Add Task", systemImage: "plus")
@@ -279,6 +279,17 @@ struct RegularTasksView: View {
         }
 
         var didMutate = false
+        let remoteIds = Set(remoteTasks.map(\.id))
+
+        // Drop local copies of remote tasks that disappeared (e.g. one-shots retired after success).
+        for task in tasks {
+            guard let remoteId = task.remoteId, !remoteId.isEmpty else { continue }
+            if !remoteIds.contains(remoteId) {
+                modelContext.delete(task)
+                didMutate = true
+            }
+        }
+
         for remote in remoteTasks {
             if let local = localByRemoteId[remote.id] {
                 updateLocalTask(local, from: remote)

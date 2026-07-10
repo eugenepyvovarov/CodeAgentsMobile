@@ -28,6 +28,11 @@ final class ProxyInstallerService {
     private let legacyProxyEnvPath = CodeAgentsDaemonProvisioning.legacyEnvironmentFilePath
     private let managedHeader = "# Managed by CodeAgentsMobile"
 
+    /// Avoid re-reading/writing the remote env on every daemon health check.
+    private var lastDaemonTokenEnsureAt: [UUID: Date] = [:]
+    /// When Keychain already has a token, re-verify server env at most this often.
+    var daemonTokenEnsureCooldown: TimeInterval = 15 * 60
+
     private init() {}
 
     func installProxy(on server: Server, onOutput: @escaping (String) -> Void) async throws {
@@ -72,6 +77,15 @@ final class ProxyInstallerService {
             throw ProxyInstallerError.healthCheckFailed(error.localizedDescription)
         }
 
+        // Always provision a daemon bearer token (even without model credentials).
+        onOutput("Provisioning daemon auth token...")
+        do {
+            try await ensureDaemonToken(for: server.id, using: session)
+            onOutput("Daemon auth token ready.")
+        } catch {
+            throw ProxyInstallerError.credentialSyncFailed(error.localizedDescription)
+        }
+
         let providerConfiguration = ClaudeProviderConfigurationStore.load()
         let provider = providerConfiguration.selectedProvider
         let authMethod = await activeAuthMethod(for: provider)
@@ -85,6 +99,108 @@ final class ProxyInstallerService {
             }
         }
     }
+
+    /// Whether this device already has a daemon bearer for the server (Keychain).
+    func hasLocalDaemonToken(for serverId: UUID) -> Bool {
+        guard let token = try? KeychainManager.shared.retrieveDaemonToken(for: serverId) else {
+            return false
+        }
+        return !token.isEmpty
+    }
+
+    /// Best-effort auto-provision used by background daemon ensure paths.
+    /// No UI: generates or adopts a token, writes remote env when needed, restarts daemon.
+    /// Skips work when Keychain already has a token and we recently verified the server.
+    func ensureDaemonTokenIfNeeded(for serverId: UUID, using session: SSHSession) async {
+        if hasLocalDaemonToken(for: serverId),
+           let last = lastDaemonTokenEnsureAt[serverId],
+           Date().timeIntervalSince(last) < daemonTokenEnsureCooldown {
+            return
+        }
+        do {
+            try await ensureDaemonToken(for: serverId, using: session)
+            lastDaemonTokenEnsureAt[serverId] = Date()
+        } catch {
+            SSHLogger.log(
+                "Automatic daemon token provision failed for \(serverId.uuidString): \(error.localizedDescription)",
+                level: .warning
+            )
+        }
+    }
+
+    /// Resolve Keychain ↔ remote `CODEAGENTS_DAEMON_TOKEN` and write/restart if out of sync.
+    ///
+    /// Policy (server is source of truth when both exist):
+    /// - Server has token, local missing/different → adopt server into Keychain (no restart).
+    /// - Server missing token → mint/push local token and restart daemon.
+    /// Preferring server avoids thrashing when the phone has a stale Keychain value after
+    /// a remote reinstall/upgrade while still letting first-time provision write the token.
+    func ensureDaemonToken(for serverId: UUID, using session: SSHSession) async throws {
+        let existing = try await fetchProxyEnvFile(using: session)
+        let parsed = parseEnvValues(from: existing)
+        let serverToken = parsed[CodeAgentsDaemonProvisioning.daemonTokenEnvKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let serverToken, !serverToken.isEmpty {
+            let local = try? KeychainManager.shared.retrieveDaemonToken(for: serverId)
+            if local != serverToken {
+                try KeychainManager.shared.storeDaemonToken(serverToken, for: serverId)
+                SSHLogger.log(
+                    "Adopted server CODEAGENTS_DAEMON_TOKEN for \(serverId.uuidString)",
+                    level: .info
+                )
+            }
+            lastDaemonTokenEnsureAt[serverId] = Date()
+            return
+        }
+
+        // Server has no token — mint (or keep local) and push (restarts daemon).
+        let token = try AgentDaemonTokenService.shared.resolveToken(
+            for: serverId,
+            serverSide: nil
+        )
+        let merged = mergeEnvFile(
+            existing: existing,
+            upserts: [CodeAgentsDaemonProvisioning.daemonTokenEnvKey: token],
+            removals: []
+        )
+        try await writeProxyEnvFile(
+            merged,
+            verifyKeys: [CodeAgentsDaemonProvisioning.daemonTokenEnvKey],
+            using: session
+        )
+        lastDaemonTokenEnsureAt[serverId] = Date()
+    }
+
+    /// After HTTP 401: prefer the server env token (override stale Keychain) so task sync recovers.
+    /// If the server has no token, generate one and write it.
+    func resyncDaemonTokenAfterUnauthorized(for serverId: UUID, using session: SSHSession) async throws {
+        lastDaemonTokenEnsureAt.removeValue(forKey: serverId)
+        let existing = try await fetchProxyEnvFile(using: session)
+        let parsed = parseEnvValues(from: existing)
+        let serverToken = parsed[CodeAgentsDaemonProvisioning.daemonTokenEnvKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let serverToken, !serverToken.isEmpty {
+            try KeychainManager.shared.storeDaemonToken(serverToken, for: serverId)
+            lastDaemonTokenEnsureAt[serverId] = Date()
+            SSHLogger.log(
+                "Adopted server daemon token after 401 for \(serverId.uuidString)",
+                level: .info
+            )
+            return
+        }
+
+        // Server has no token — mint one and push (restarts daemon).
+        try KeychainManager.shared.deleteDaemonToken(for: serverId)
+        try await ensureDaemonToken(for: serverId, using: session)
+    }
+
+    #if DEBUG
+    func resetDaemonTokenEnsureThrottleForTesting() {
+        lastDaemonTokenEnsureAt.removeAll()
+    }
+    #endif
 
     func syncProxyCredentials(on servers: [Server]) async {
         await syncProxyConfiguration(on: servers)
@@ -156,8 +272,34 @@ final class ProxyInstallerService {
 
         let run = { (activeSession: SSHSession) async throws in
             let existing = try await self.fetchProxyEnvFile(using: activeSession)
-            let merged = self.mergeEnvFile(existing: existing, upserts: delta.upserts, removals: delta.removals)
-            try await self.writeProxyEnvFile(merged, verifyKeys: delta.verifyKeys, using: activeSession)
+            let parsed = self.parseEnvValues(from: existing)
+            let serverToken = parsed[CodeAgentsDaemonProvisioning.daemonTokenEnvKey]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Server wins when present; only mint when remote env has no bearer yet.
+            let daemonToken: String
+            if let serverToken, !serverToken.isEmpty {
+                daemonToken = serverToken
+                try KeychainManager.shared.storeDaemonToken(serverToken, for: server.id)
+            } else {
+                daemonToken = try AgentDaemonTokenService.shared.resolveToken(
+                    for: server.id,
+                    serverSide: nil
+                )
+            }
+            var upserts = delta.upserts
+            upserts[CodeAgentsDaemonProvisioning.daemonTokenEnvKey] = daemonToken
+            var verifyKeys = delta.verifyKeys
+            if !verifyKeys.contains(CodeAgentsDaemonProvisioning.daemonTokenEnvKey) {
+                verifyKeys.append(CodeAgentsDaemonProvisioning.daemonTokenEnvKey)
+            }
+            let merged = self.mergeEnvFile(existing: existing, upserts: upserts, removals: delta.removals)
+            // Skip rewrite/restart when only the daemon token would change and already matches.
+            if serverToken == daemonToken,
+               delta.upserts.isEmpty,
+               delta.removals.isEmpty {
+                return
+            }
+            try await self.writeProxyEnvFile(merged, verifyKeys: verifyKeys, using: activeSession)
         }
 
         if let session {
@@ -206,18 +348,42 @@ final class ProxyInstallerService {
             source = .createdNewSecret
         }
 
-        if serverSecret != pushSecret || existingGatewayBaseURL != gatewayBaseURL {
+        // Ensure a daemon HTTP bearer exists on both the server env and local Keychain.
+        // Server token wins when present (same policy as ensureDaemonToken).
+        let existingDaemonToken = parsed[CodeAgentsDaemonProvisioning.daemonTokenEnvKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonToken: String
+        if let existingDaemonToken, !existingDaemonToken.isEmpty {
+            daemonToken = existingDaemonToken
+            try KeychainManager.shared.storeDaemonToken(existingDaemonToken, for: server.id)
+        } else {
+            daemonToken = try AgentDaemonTokenService.shared.resolveToken(
+                for: server.id,
+                serverSide: nil
+            )
+        }
+
+        let upserts: [String: String] = [
+            "CODEAGENTS_PUSH_SECRET": pushSecret,
+            "CODEAGENTS_PUSH_GATEWAY_BASE_URL": gatewayBaseURL,
+            CodeAgentsDaemonProvisioning.daemonTokenEnvKey: daemonToken
+        ]
+
+        if serverSecret != pushSecret
+            || existingGatewayBaseURL != gatewayBaseURL
+            || existingDaemonToken != daemonToken {
             let merged = mergeEnvFile(
                 existing: existing,
-                upserts: [
-                    "CODEAGENTS_PUSH_SECRET": pushSecret,
-                    "CODEAGENTS_PUSH_GATEWAY_BASE_URL": gatewayBaseURL
-                ],
+                upserts: upserts,
                 removals: []
             )
             try await writeProxyEnvFile(
                 merged,
-                verifyKeys: ["CODEAGENTS_PUSH_SECRET", "CODEAGENTS_PUSH_GATEWAY_BASE_URL"],
+                verifyKeys: [
+                    "CODEAGENTS_PUSH_SECRET",
+                    "CODEAGENTS_PUSH_GATEWAY_BASE_URL",
+                    CodeAgentsDaemonProvisioning.daemonTokenEnvKey
+                ],
                 using: session
             )
         }
