@@ -254,6 +254,9 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         guard let sessionId, !sessionId.isEmpty else { return }
 
         let absolute = max(0, absoluteAssistantCount)
+        // Unread: only mark fully read when the user is actively watching this chat.
+        // Push delivery is independent (see below) so a mis-detected "viewing" state
+        // cannot swallow the gateway call after the user left the app.
         let viewing = isViewingChat(for: project)
 
         if let cursors = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
@@ -279,12 +282,11 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             UnreadBadgeService.refreshAppIconBadge(using: ModelContext(modelContainer))
         }
 
-        // Viewing this chat: counters updated above; skip banners/gateway.
-        if viewing {
-            return
-        }
-
         let preview = Self.normalizedPreview(messagePreview)
+
+        // Always hit the gateway so FCM can surface the reply when the app is
+        // backgrounded/suspended. Foreground banner for the open chat is suppressed in
+        // `willPresent` via `shouldSuppressForegroundNotification`.
         var gatewaySucceeded = false
         if let server,
            let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id)
@@ -305,7 +307,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
                 gatewaySucceeded = true
                 #if DEBUG
                 SSHLogger.log(
-                    "Interactive reply_finished gateway ok for \(project.displayTitle)",
+                    "Interactive reply_finished gateway ok for \(project.displayTitle) viewing=\(viewing) appState=\(UIApplication.shared.applicationState.rawValue)",
                     level: .info
                 )
                 #endif
@@ -317,9 +319,9 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             }
         }
 
-        // Local banner only when the gateway did not deliver (missing secret / network).
-        // Successful gateway sends real FCM like scheduled jobs.
-        if !gatewaySucceeded {
+        // Local banner only when the gateway did not deliver (missing secret / network)
+        // and the user is not actively watching this chat.
+        if !gatewaySucceeded, !viewing {
             await postLocalReplyFinishedNotification(
                 project: project,
                 server: server,
@@ -356,13 +358,31 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    /// True when the user is on Chat for this agent (suppress banners for that chat only).
+    /// True when the user is actively watching this agent's chat (suppress banners / mark-read).
+    ///
+    /// Requires the app to be **foreground-active**. Leaving the app (home, app switcher,
+    /// another app) keeps Chat tab + active agent selection, but the user is no longer
+    /// watching — so replies must still push and leave an unread badge.
     private func isViewingChat(for project: RemoteProject) -> Bool {
-        guard AppNavigationState.shared.selectedTab == .chat,
-              let active = ProjectContext.shared.activeProject else {
-            return false
-        }
-        return active.id == project.id
+        Self.isActivelyViewingChat(
+            projectId: project.id,
+            selectedTab: AppNavigationState.shared.selectedTab,
+            activeProjectId: ProjectContext.shared.activeProject?.id,
+            applicationState: UIApplication.shared.applicationState
+        )
+    }
+
+    /// Pure visibility rule used by interactive reply-finished + local banner suppress.
+    nonisolated static func isActivelyViewingChat(
+        projectId: UUID,
+        selectedTab: AppTab,
+        activeProjectId: UUID?,
+        applicationState: UIApplication.State
+    ) -> Bool {
+        // Background / inactive: not watching, even if Chat is still the selected tab.
+        guard applicationState == .active else { return false }
+        guard selectedTab == .chat, let activeProjectId else { return false }
+        return activeProjectId == projectId
     }
 
     private func agentDisplayName(for project: RemoteProject, server: Server?) -> String {
@@ -1048,6 +1068,11 @@ extension PushNotificationsManager: @preconcurrency UNUserNotificationCenterDele
     /// Suppress the system banner only for the agent chat the user is currently viewing.
     /// Background / other agents always surface banners + sound while the app is foregrounded.
     private func shouldSuppressForegroundNotification(payload: PushPayload) -> Bool {
+        // If the app is not active, let the system present (lock screen / banners).
+        guard UIApplication.shared.applicationState == .active else {
+            return false
+        }
+
         // Must be on the Chat tab of a live agent.
         guard AppNavigationState.shared.selectedTab == .chat,
               let activeProject = ProjectContext.shared.activeProject,

@@ -314,7 +314,11 @@ extension ChatViewModel {
 
         // Strong self: the stream must outlive ChatView so leaving the chat still
         // finishes the reply, persists messages, and updates unread / notifications.
+        // Background task: without this, iOS freezes the process when the user switches
+        // apps and the reply never completes → no push.
+        beginOpenCodeSendBackgroundExecution()
         let sendTask = Task { @MainActor in
+            defer { self.endOpenCodeSendBackgroundExecution() }
             await self.consumeOpenCodeSendStream(
                 text: text,
                 project: project,

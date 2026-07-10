@@ -8,6 +8,7 @@
 import SwiftUI
 import Observation
 import SwiftData
+import UIKit
 
 /// ViewModel for the chat interface.
 /// Handles message display, streaming, and persistence (OpenCode-only).
@@ -39,6 +40,10 @@ class ChatViewModel {
     /// Monotonic revision for message updates that don't change `messages.count`.
     /// Used to drive auto-scroll while streaming.
     var messagesRevision = 0
+
+    /// Keeps the process alive long enough for an in-flight OpenCode reply to finish
+    /// after the user backgrounds the app, so we can still fire the completion push.
+    var openCodeSendBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     
     /// Model context for persistence
     var modelContext: ModelContext?
@@ -485,6 +490,7 @@ extension ChatViewModel {
         openCodeFullHydrationTask?.cancel()
         openCodeFullHydrationTask = nil
         // Do not cancel `openCodeSendTask` or rotate `openCodeSendGeneration` here.
+        // Do not end the OpenCode send background task — stream may still be finishing.
         openCodeHydrationGeneration = UUID()
         cancelDeferredStartup(reason: "cleanup", projectID: projectId)
         saveChanges()
@@ -503,6 +509,29 @@ extension ChatViewModel {
         handledOpenCodeQuestionIds = []
 
         print("📝 cleanup: Cleaned up view resources (send stream may continue in background)")
+    }
+
+    /// Request extra runtime so an OpenCode reply can finish after the user leaves the app.
+    func beginOpenCodeSendBackgroundExecution() {
+        endOpenCodeSendBackgroundExecution()
+        var taskId = UIBackgroundTaskIdentifier.invalid
+        taskId = UIApplication.shared.beginBackgroundTask(withName: "opencode-send-stream") {
+            // Expiration handler: end immediately (required by UIKit).
+            UIApplication.shared.endBackgroundTask(taskId)
+            Task { @MainActor [weak self] in
+                if self?.openCodeSendBackgroundTaskID == taskId {
+                    self?.openCodeSendBackgroundTaskID = .invalid
+                }
+            }
+        }
+        openCodeSendBackgroundTaskID = taskId
+    }
+
+    func endOpenCodeSendBackgroundExecution() {
+        let taskId = openCodeSendBackgroundTaskID
+        guard taskId != .invalid else { return }
+        openCodeSendBackgroundTaskID = .invalid
+        UIApplication.shared.endBackgroundTask(taskId)
     }
 
     

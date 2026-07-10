@@ -68,6 +68,8 @@ struct ContentView: View {
                 cloudInitMonitor.stopAllMonitoring()
                 // Keep icon badge accurate from last known cursors before suspend.
                 UnreadBadgeService.refreshAppIconBadge(using: modelContext)
+                // OpenCode send already holds a UIBackgroundTask for the stream lifetime
+                // (see ChatViewModel.beginOpenCodeSendBackgroundExecution).
             @unknown default:
                 break
             }
