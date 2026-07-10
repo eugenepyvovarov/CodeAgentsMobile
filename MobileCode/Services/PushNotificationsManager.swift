@@ -297,7 +297,9 @@ final class PushNotificationsManager: NSObject, ObservableObject {
                         cwd: project.path,
                         conversationId: sessionId,
                         messagePreview: preview,
-                        renderableAssistantCount: absolute
+                        renderableAssistantCount: absolute,
+                        // Gateway ignores message_preview unless this is true (lock-screen default is "Reply ready").
+                        includePreview: preview != nil
                     )
                 )
                 gatewaySucceeded = true
