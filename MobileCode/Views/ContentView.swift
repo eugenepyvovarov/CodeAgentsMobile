@@ -32,6 +32,12 @@ struct ContentView: View {
                             Label("Chat", systemImage: "message")
                         }
                         .tag(AppTab.chat)
+
+                    AgentAbilitiesView()
+                        .tabItem {
+                            Label("Abilities", systemImage: "sparkles")
+                        }
+                        .tag(AppTab.abilities)
                     
                     FileBrowserView()
                         .tabItem {

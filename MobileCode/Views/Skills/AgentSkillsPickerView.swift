@@ -9,6 +9,9 @@ import SwiftUI
 import SwiftData
 
 struct AgentSkillsPickerView: View {
+    /// When false, embed in a parent `NavigationStack` (Abilities tab) and hide Done.
+    var embedsInNavigationStack: Bool = true
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @StateObject private var projectContext = ProjectContext.shared
@@ -43,105 +46,115 @@ struct AgentSkillsPickerView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if project == nil {
-                    ContentUnavailableView {
-                        Label("No Active Agent", systemImage: "person.crop.circle.badge.xmark")
-                    } description: {
-                        Text("Select an agent before adding skills.")
-                    }
-                } else if skills.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Skills Installed", systemImage: "sparkles")
-                    } description: {
-                        Text("Add a skill from a marketplace or GitHub to get started.")
-                    } actions: {
-                        addButtons
-                    }
-                } else {
-                    List {
-                        Section {
-                            GlassInfoCard(title: "Agent Skills",
-                                          subtitle: "Toggle global skills on or off for this agent.",
-                                          systemImage: "wand.and.stars")
-                                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                                .listRowBackground(Color.clear)
-                        }
-
-                        Section("Installed Skills") {
-                            if installedSkills.isEmpty {
-                                Text("No skills enabled for this agent yet.")
-                                    .foregroundColor(.secondary)
-                            } else {
-                                ForEach(installedSkills) { skill in
-                                    AgentSkillToggleRow(skill: skill,
-                                                        isSyncing: syncingSlug == skill.slug,
-                                                        isEnabled: binding(for: skill))
-                                }
-                            }
-                        }
-
-                        Section("Global Skills") {
-                            if availableSkills.isEmpty {
-                                Text("All global skills are already enabled.")
-                                    .foregroundColor(.secondary)
-                            } else {
-                                ForEach(availableSkills) { skill in
-                                    AgentSkillAddRow(skill: skill,
-                                                     isSyncing: syncingSlug == skill.slug) {
-                                        addSkillToAgent(skill)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .listStyle(.insetGrouped)
-                }
+        Group {
+            if embedsInNavigationStack {
+                NavigationStack { rootContent }
+            } else {
+                rootContent
             }
-            .navigationTitle("Agent Skills")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+        }
+    }
+
+    private var rootContent: some View {
+        Group {
+            if project == nil {
+                ContentUnavailableView {
+                    Label("No Active Agent", systemImage: "person.crop.circle.badge.xmark")
+                } description: {
+                    Text("Select an agent before adding skills.")
+                }
+            } else if skills.isEmpty {
+                ContentUnavailableView {
+                    Label("No Skills Installed", systemImage: "sparkles")
+                } description: {
+                    Text("Add a skill from a marketplace or GitHub to get started.")
+                } actions: {
+                    addButtons
+                }
+            } else {
+                List {
+                    Section {
+                        GlassInfoCard(title: "Agent Skills",
+                                      subtitle: "Toggle global skills on or off for this agent.",
+                                      systemImage: "wand.and.stars")
+                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                            .listRowBackground(Color.clear)
+                    }
+
+                    Section("Installed Skills") {
+                        if installedSkills.isEmpty {
+                            Text("No skills enabled for this agent yet.")
+                                .foregroundColor(.secondary)
+                        } else {
+                            ForEach(installedSkills) { skill in
+                                AgentSkillToggleRow(skill: skill,
+                                                    isSyncing: syncingSlug == skill.slug,
+                                                    isEnabled: binding(for: skill))
+                            }
+                        }
+                    }
+
+                    Section("Global Skills") {
+                        if availableSkills.isEmpty {
+                            Text("All global skills are already enabled.")
+                                .foregroundColor(.secondary)
+                        } else {
+                            ForEach(availableSkills) { skill in
+                                AgentSkillAddRow(skill: skill,
+                                                 isSyncing: syncingSlug == skill.slug) {
+                                    addSkillToAgent(skill)
+                                }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.insetGrouped)
+            }
+        }
+        .navigationTitle("Agent Skills")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if embedsInNavigationStack {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                         .accessibilityIdentifier("agent-skills-picker-done-button")
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button {
-                            showingMarketplaceInstall = true
-                        } label: {
-                            Label("Add from Marketplace", systemImage: "cart")
-                        }
-                        .accessibilityIdentifier("agent-skills-picker-add-marketplace-button")
-                        Button {
-                            showingGitHubInstall = true
-                        } label: {
-                            Label("Add from GitHub URL", systemImage: "link")
-                        }
-                        .accessibilityIdentifier("agent-skills-picker-add-github-button")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button {
+                        showingMarketplaceInstall = true
                     } label: {
-                        Image(systemName: "plus")
+                        Label("Add from Marketplace", systemImage: "cart")
                     }
-                    .disabled(project == nil)
-                    .accessibilityIdentifier("agent-skills-picker-add-menu-button")
+                    .accessibilityIdentifier("agent-skills-picker-add-marketplace-button")
+                    Button {
+                        showingGitHubInstall = true
+                    } label: {
+                        Label("Add from GitHub URL", systemImage: "link")
+                    }
+                    .accessibilityIdentifier("agent-skills-picker-add-github-button")
+                } label: {
+                    Image(systemName: "plus")
                 }
+                .disabled(project == nil)
+                .accessibilityIdentifier("agent-skills-picker-add-menu-button")
             }
-            .sheet(isPresented: $showingMarketplaceInstall) {
-                SkillMarketplaceInstallSheet { skill in
-                    addSkillToAgent(skill)
-                }
+        }
+        .sheet(isPresented: $showingMarketplaceInstall) {
+            SkillMarketplaceInstallSheet { skill in
+                addSkillToAgent(skill)
             }
-            .sheet(isPresented: $showingGitHubInstall) {
-                SkillAddFromGitHubSheet { skill in
-                    addSkillToAgent(skill)
-                }
+        }
+        .sheet(isPresented: $showingGitHubInstall) {
+            SkillAddFromGitHubSheet { skill in
+                addSkillToAgent(skill)
             }
-            .alert("Error", isPresented: $showError) {
-                Button("OK") { }
-            } message: {
-                Text(errorMessage)
-            }
+        }
+        .alert("Error", isPresented: $showError) {
+            Button("OK") { }
+        } message: {
+            Text(errorMessage)
         }
     }
 

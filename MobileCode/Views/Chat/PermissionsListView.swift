@@ -8,53 +8,21 @@
 import SwiftUI
 
 struct PermissionsListView: View {
+    /// When false, embed in a parent `NavigationStack` (Abilities tab).
+    var embedsInNavigationStack: Bool = true
+
     @StateObject private var projectContext = ProjectContext.shared
     @State private var tools: [String] = []
 
     @ObservedObject private var approvalStore = ToolApprovalStore.shared
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    GlassInfoCard(
-                        title: "Tool Permissions",
-                        subtitle: permissionsSubtitle,
-                        systemImage: "checkmark.shield"
-                    )
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                    .listRowBackground(Color.clear)
-                }
-
-                if tools.isEmpty {
-                    ContentUnavailableView(
-                        "No Tools Yet",
-                        systemImage: "checkmark.shield",
-                        description: Text("Tool approvals will appear after they are used or requested.")
-                    )
-                } else {
-                    ForEach(tools, id: \.self) { tool in
-                        ToolPermissionRow(
-                            toolName: tool,
-                            record: record(for: tool),
-                            onDecisionChange: { decision in
-                                updateDecision(for: tool, decision: decision)
-                            }
-                        )
-                        // Full-swipe gestures conflict with the horizontal drag gesture on the switch.
-                        // Keep swipe-to-reset, but require an explicit tap.
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button("Reset to Ask") {
-                                resetDecision(for: tool)
-                            }
-                            .tint(.gray)
-                        }
-                    }
-                }
-
+        Group {
+            if embedsInNavigationStack {
+                NavigationStack { rootContent }
+            } else {
+                rootContent
             }
-            .navigationTitle("Permissions")
-            .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
             refreshTools()
@@ -62,6 +30,48 @@ struct PermissionsListView: View {
         .onChange(of: projectContext.activeProject?.id) { _, _ in
             refreshTools()
         }
+    }
+
+    private var rootContent: some View {
+        List {
+            Section {
+                GlassInfoCard(
+                    title: "Tool Permissions",
+                    subtitle: permissionsSubtitle,
+                    systemImage: "checkmark.shield"
+                )
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                .listRowBackground(Color.clear)
+            }
+
+            if tools.isEmpty {
+                ContentUnavailableView(
+                    "No Tools Yet",
+                    systemImage: "checkmark.shield",
+                    description: Text("Tool approvals will appear after they are used or requested.")
+                )
+            } else {
+                ForEach(tools, id: \.self) { tool in
+                    ToolPermissionRow(
+                        toolName: tool,
+                        record: record(for: tool),
+                        onDecisionChange: { decision in
+                            updateDecision(for: tool, decision: decision)
+                        }
+                    )
+                    // Full-swipe gestures conflict with the horizontal drag gesture on the switch.
+                    // Keep swipe-to-reset, but require an explicit tap.
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button("Reset to Ask") {
+                            resetDecision(for: tool)
+                        }
+                        .tint(.gray)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Permissions")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func refreshTools() {

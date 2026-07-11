@@ -9,6 +9,9 @@ import SwiftUI
 import SwiftData
 
 struct AgentEnvironmentVariablesView: View {
+    /// When false, embed in a parent `NavigationStack` (Abilities tab) and hide Done.
+    var embedsInNavigationStack: Bool = true
+
     @StateObject private var projectContext = ProjectContext.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -23,66 +26,76 @@ struct AgentEnvironmentVariablesView: View {
     @State private var showError = false
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if projectContext.activeProject == nil {
-                    ContentUnavailableView {
-                        Label("No Active Agent", systemImage: "person.crop.circle.badge.xmark")
-                    } description: {
-                        Text("Select an agent to edit environment variables.")
-                    }
-                } else {
-                    List {
-                        statusSection
-                        variablesSection
-                    }
-                    .listStyle(.insetGrouped)
-                    .refreshable {
-                        await refreshFromServer()
-                    }
+        Group {
+            if embedsInNavigationStack {
+                NavigationStack { rootContent }
+            } else {
+                rootContent
+            }
+        }
+    }
+
+    private var rootContent: some View {
+        Group {
+            if projectContext.activeProject == nil {
+                ContentUnavailableView {
+                    Label("No Active Agent", systemImage: "person.crop.circle.badge.xmark")
+                } description: {
+                    Text("Select an agent to edit environment variables.")
+                }
+            } else {
+                List {
+                    statusSection
+                    variablesSection
+                }
+                .listStyle(.insetGrouped)
+                .refreshable {
+                    await refreshFromServer()
                 }
             }
-            .navigationTitle("Environment")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+        }
+        .navigationTitle("Environment")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if embedsInNavigationStack {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingAdd = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .disabled(projectContext.activeProject == nil)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingAdd = true
+                } label: {
+                    Image(systemName: "plus")
                 }
+                .disabled(projectContext.activeProject == nil)
             }
-            .sheet(isPresented: $showingAdd) {
-                AgentEnvironmentVariableEditorView(
-                    projectId: projectContext.activeProject?.id,
-                    existingKeys: Set(variables.map { $0.key }),
-                    variable: nil
-                ) {
-                    Task { await syncToServer() }
-                }
+        }
+        .sheet(isPresented: $showingAdd) {
+            AgentEnvironmentVariableEditorView(
+                projectId: projectContext.activeProject?.id,
+                existingKeys: Set(variables.map { $0.key }),
+                variable: nil
+            ) {
+                Task { await syncToServer() }
             }
-            .sheet(item: $editingVariable) { variable in
-                AgentEnvironmentVariableEditorView(
-                    projectId: projectContext.activeProject?.id,
-                    existingKeys: Set(variables.filter { $0.id != variable.id }.map { $0.key }),
-                    variable: variable
-                ) {
-                    Task { await syncToServer() }
-                }
+        }
+        .sheet(item: $editingVariable) { variable in
+            AgentEnvironmentVariableEditorView(
+                projectId: projectContext.activeProject?.id,
+                existingKeys: Set(variables.filter { $0.id != variable.id }.map { $0.key }),
+                variable: variable
+            ) {
+                Task { await syncToServer() }
             }
-            .alert("Error", isPresented: $showError) {
-                Button("OK") {}
-            } message: {
-                Text(errorMessage ?? "An error occurred")
-            }
-            .task(id: projectContext.activeProject?.id) {
-                await refreshFromServer()
-            }
+        }
+        .alert("Error", isPresented: $showError) {
+            Button("OK") {}
+        } message: {
+            Text(errorMessage ?? "An error occurred")
+        }
+        .task(id: projectContext.activeProject?.id) {
+            await refreshFromServer()
         }
     }
 

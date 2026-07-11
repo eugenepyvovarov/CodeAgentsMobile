@@ -654,17 +654,19 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
     }
 
     private func verifyOpenCodeMCPAndSkillsSettings() throws {
-        let chatTab = app.tabBars.buttons["Chat"].firstMatch
-        XCTAssertTrue(chatTab.waitForExistence(timeout: 20))
-        chatTab.tap()
+        let abilitiesTab = app.tabBars.buttons["Abilities"].firstMatch
+        XCTAssertTrue(abilitiesTab.waitForExistence(timeout: 20), "Abilities tab did not appear.")
+        abilitiesTab.tap()
 
-        let menuButton = app.buttons["chat-more-menu-button"].firstMatch
-        XCTAssertTrue(menuButton.waitForExistence(timeout: 20))
-        menuButton.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["agent-abilities-root"].waitForExistence(timeout: 20)
+                || app.navigationBars["Abilities"].waitForExistence(timeout: 20),
+            "Abilities hub did not load."
+        )
 
-        let mcpButton = app.descendants(matching: .any)["chat-mcp-servers-button"].firstMatch
-        XCTAssertTrue(mcpButton.waitForExistence(timeout: 10), "MCP menu item did not appear for OpenCode chat.")
-        tapElement(mcpButton)
+        let mcpLink = app.descendants(matching: .any)["abilities-mcp-link"].firstMatch
+        XCTAssertTrue(mcpLink.waitForExistence(timeout: 15), "MCP link missing on Abilities tab.")
+        tapElement(mcpLink)
 
         XCTAssertTrue(app.navigationBars["MCP Servers"].waitForExistence(timeout: 30))
         XCTAssertTrue(
@@ -673,34 +675,21 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
                 || app.descendants(matching: .any)["mcp-server-row-codeagents-scheduled-tasks"].waitForExistence(timeout: 20),
             "OpenCode MCP settings did not load an actionable state."
         )
-        dismissPresentedSheetIfNeeded()
+        // Pushed from Abilities — back to hub.
+        if app.navigationBars["MCP Servers"].buttons.firstMatch.waitForExistence(timeout: 3) {
+            app.navigationBars["MCP Servers"].buttons.firstMatch.tap()
+        } else {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
         XCTAssertTrue(
-            app.navigationBars["MCP Servers"].waitForNonExistence(timeout: 10),
-            "MCP Servers sheet did not dismiss."
+            app.navigationBars["Abilities"].waitForExistence(timeout: 10)
+                || app.descendants(matching: .any)["abilities-skills-link"].waitForExistence(timeout: 10),
+            "Did not return to Abilities hub from MCP Servers."
         )
 
-        XCTAssertTrue(chatTab.waitForExistence(timeout: 20))
-        chatTab.tap()
-        RunLoop.current.run(until: Date().addingTimeInterval(1))
-        let menuButtonAgain = app.buttons["chat-more-menu-button"].firstMatch
-        XCTAssertTrue(menuButtonAgain.waitForExistence(timeout: 20))
-
-        let skillsButton = app.descendants(matching: .any)["chat-agent-skills-button"].firstMatch
-        // Menu presentation is flaky after dismissing MCP; reopen until skills appears.
-        let skillsMenuDeadline = Date().addingTimeInterval(20)
-        while !skillsButton.exists && Date() < skillsMenuDeadline {
-            if menuButtonAgain.isHittable {
-                menuButtonAgain.tap()
-            } else {
-                tapElement(menuButtonAgain)
-            }
-            if skillsButton.waitForExistence(timeout: 3) { break }
-            // Dismiss a half-open menu and try again.
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
-            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-        }
-        XCTAssertTrue(skillsButton.waitForExistence(timeout: 5), "Agent Skills menu item did not appear for OpenCode chat.")
-        tapElement(skillsButton)
+        let skillsLink = app.descendants(matching: .any)["abilities-skills-link"].firstMatch
+        XCTAssertTrue(skillsLink.waitForExistence(timeout: 15), "Skills link missing on Abilities tab.")
+        tapElement(skillsLink)
 
         XCTAssertTrue(app.navigationBars["Agent Skills"].waitForExistence(timeout: 20))
         XCTAssertTrue(
@@ -708,7 +697,11 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
                 || app.buttons["agent-skills-browse-marketplaces-button"].waitForExistence(timeout: 10),
             "OpenCode agent skills settings did not show install/add controls."
         )
-        dismissPresentedSheetIfNeeded()
+        if app.navigationBars["Agent Skills"].buttons.firstMatch.waitForExistence(timeout: 3) {
+            app.navigationBars["Agent Skills"].buttons.firstMatch.tap()
+        } else {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
     }
 
     /// Create a minutely scheduled task on the live daemon and verify it syncs + preferably fires.

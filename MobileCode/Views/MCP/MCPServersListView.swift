@@ -8,6 +8,9 @@
 import SwiftUI
 
 struct MCPServersListView: View {
+    /// When false, embed in a parent `NavigationStack` (Abilities tab) and hide Done.
+    var embedsInNavigationStack: Bool = true
+
     @Environment(\.dismiss) private var dismiss
     @StateObject private var projectContext = ProjectContext.shared
     @StateObject private var mcpService = CodingAgentMCPService.shared
@@ -35,140 +38,150 @@ struct MCPServersListView: View {
     }
     
     var body: some View {
-        NavigationStack {
-            Group {
-                if isLoading && servers.isEmpty {
-                    // Initial loading state
-                    VStack(spacing: 20) {
-                        ProgressView()
-                        Text("Loading MCP servers...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+        Group {
+            if embedsInNavigationStack {
+                NavigationStack { rootContent }
+            } else {
+                rootContent
+            }
+        }
+    }
+
+    private var rootContent: some View {
+        Group {
+            if isLoading && servers.isEmpty {
+                // Initial loading state
+                VStack(spacing: 20) {
+                    ProgressView()
+                    Text("Loading MCP servers...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if servers.isEmpty {
+                // Empty state
+                VStack(spacing: 20) {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 60))
+                        .foregroundColor(.secondary)
+                    
+                    Text("No MCP Servers")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    
+                    Text("MCP servers extend the agent with tools and data sources")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    
+                    Button {
+                        showingAddServer = true
+                    } label: {
+                        Label("Add MCP Server", systemImage: "plus.circle.fill")
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if servers.isEmpty {
-                    // Empty state
-                    VStack(spacing: 20) {
-                        Image(systemName: "server.rack")
-                            .font(.system(size: 60))
-                            .foregroundColor(.secondary)
-                        
-                        Text("No MCP Servers")
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                        
-                        Text("MCP servers extend the agent with tools and data sources")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
-                        
-                        Button {
-                            showingAddServer = true
-                        } label: {
-                            Label("Add MCP Server", systemImage: "plus.circle.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("mcp-add-server-empty-button")
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    // Server list
-                    List {
-                        if isLoading {
-                            Section {
-                                HStack {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text("Refreshing servers...")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                }
-                                .padding(.vertical, 8)
-                            }
-                        }
-                        
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("mcp-add-server-empty-button")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                // Server list
+                List {
+                    if isLoading {
                         Section {
-                            ForEach(servers) { server in
-                                MCPServerRow(server: server)
-                                    .accessibilityIdentifier("mcp-server-row-\(server.name.cloudAccessibilityIdentifierFragment)")
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        if server.isManagedSchedulerServer {
-                                            errorMessage = "The managed MCP server is required and cannot be edited."
-                                            showError = true
-                                        } else {
-                                            editingServer = server
-                                        }
-                                    }
-                            }
-                            .onDelete(perform: deleteServers)
-                        } header: {
                             HStack {
-                                Text("Configured Servers")
-                                Spacer()
-                                Text(statusSummary)
-                                    .font(.caption)
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Refreshing servers...")
+                                    .font(.subheadline)
                                     .foregroundColor(.secondary)
+                                Spacer()
                             }
+                            .padding(.vertical, 8)
                         }
                     }
-                    .listStyle(InsetGroupedListStyle())
-                    .refreshable {
-                        await loadServers()
+                    
+                    Section {
+                        ForEach(servers) { server in
+                            MCPServerRow(server: server)
+                                .accessibilityIdentifier("mcp-server-row-\(server.name.cloudAccessibilityIdentifierFragment)")
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if server.isManagedSchedulerServer {
+                                        errorMessage = "The managed MCP server is required and cannot be edited."
+                                        showError = true
+                                    } else {
+                                        editingServer = server
+                                    }
+                                }
+                        }
+                        .onDelete(perform: deleteServers)
+                    } header: {
+                        HStack {
+                            Text("Configured Servers")
+                            Spacer()
+                            Text(statusSummary)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
+                .listStyle(InsetGroupedListStyle())
+                .refreshable {
+                    await loadServers()
+                }
             }
-            .navigationTitle("MCP Servers")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+        }
+        .navigationTitle("MCP Servers")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if embedsInNavigationStack {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                         .accessibilityIdentifier("mcp-servers-done-button")
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingAddServer = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .disabled(project == nil)
-                    .accessibilityIdentifier("mcp-add-server-button")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingAddServer = true
+                } label: {
+                    Image(systemName: "plus")
                 }
+                .disabled(project == nil)
+                .accessibilityIdentifier("mcp-add-server-button")
             }
-            .task {
-                await loadServers()
-            }
-            .sheet(isPresented: $showingAddServer) {
-                if let project = project {
-                    AddMCPServerSheet(project: project) {
-                        // Refresh list after adding
-                        Task {
-                            await loadServers()
-                            // Notify chat view to refresh MCP cache
-                            NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
-                        }
-                    }
-                }
-            }
-            .sheet(item: $editingServer) { server in
-                if let project = project {
-                    EditMCPServerSheet(project: project, server: server) {
-                        // Refresh list after editing
-                        Task {
-                            await loadServers()
-                            // Notify chat view to refresh MCP cache
-                            NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
-                        }
+        }
+        .task {
+            await loadServers()
+        }
+        .sheet(isPresented: $showingAddServer) {
+            if let project = project {
+                AddMCPServerSheet(project: project) {
+                    // Refresh list after adding
+                    Task {
+                        await loadServers()
+                        // Notify chat view to refresh MCP cache
+                        NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
                     }
                 }
             }
-            .alert("Error", isPresented: $showError) {
-                Button("OK") { }
-            } message: {
-                Text(errorMessage ?? "An error occurred")
+        }
+        .sheet(item: $editingServer) { server in
+            if let project = project {
+                EditMCPServerSheet(project: project, server: server) {
+                    // Refresh list after editing
+                    Task {
+                        await loadServers()
+                        // Notify chat view to refresh MCP cache
+                        NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
+                    }
+                }
             }
+        }
+        .alert("Error", isPresented: $showError) {
+            Button("OK") { }
+        } message: {
+            Text(errorMessage ?? "An error occurred")
         }
     }
     

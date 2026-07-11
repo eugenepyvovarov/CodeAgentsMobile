@@ -41,12 +41,8 @@ struct ChatView: View {
 
     @State private var viewModel = ChatViewModel()
     @StateObject private var projectContext = ProjectContext.shared
+    @StateObject private var navigationState = AppNavigationState.shared
     @Environment(\.modelContext) private var modelContext
-    @State private var showingMCPServers = false
-    @State private var showingAgentSkills = false
-    @State private var showingPermissions = false
-    @State private var showingRules = false
-    @State private var showingEnvironment = false
     @State private var showingServerSettings = false
     @State private var showingModelChange = false
     /// Bumps when the model sheet closes so the overflow menu summary reloads from the store.
@@ -103,36 +99,11 @@ struct ChatView: View {
                         }
 
                         Button {
-                            showingMCPServers = true
+                            navigationState.selectedTab = .abilities
                         } label: {
-                            Label("MCP Servers", systemImage: "server.rack")
+                            Label("Open Abilities", systemImage: "sparkles")
                         }
-                        .accessibilityIdentifier("chat-mcp-servers-button")
-
-                        Button {
-                            showingAgentSkills = true
-                        } label: {
-                            Label("Agent Skills", systemImage: "sparkles")
-                        }
-                        .accessibilityIdentifier("chat-agent-skills-button")
-
-                        Button {
-                            showingPermissions = true
-                        } label: {
-                            Label("Permissions", systemImage: "checkmark.shield")
-                        }
-
-                        Button {
-                            showingRules = true
-                        } label: {
-                            Label("Rules", systemImage: "doc.text")
-                        }
-
-                        Button {
-                            showingEnvironment = true
-                        } label: {
-                            Label("Environment", systemImage: "terminal")
-                        }
+                        .accessibilityIdentifier("chat-open-abilities-button")
 
                         if viewModel.isProcessing {
                             Divider()
@@ -220,27 +191,6 @@ struct ChatView: View {
             Task {
                 await viewModel.refreshProxyEvents(conversationId: conversationId)
             }
-        }
-        .sheet(isPresented: $showingMCPServers) {
-            MCPServersListView()
-                .onDisappear {
-                    // Refresh MCP servers when sheet is dismissed
-                    Task {
-                        await viewModel.refreshMCPServers()
-                    }
-                }
-        }
-        .sheet(isPresented: $showingAgentSkills) {
-            AgentSkillsPickerView()
-        }
-        .sheet(isPresented: $showingPermissions) {
-            PermissionsListView()
-        }
-        .sheet(isPresented: $showingRules) {
-            AgentRulesView()
-        }
-        .sheet(isPresented: $showingEnvironment) {
-            AgentEnvironmentVariablesView()
         }
         .sheet(isPresented: $showingModelChange, onDismiss: {
             modelSummaryEpoch += 1

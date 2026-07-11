@@ -9,6 +9,7 @@ import Foundation
 
 enum AppTab: Hashable {
     case chat
+    case abilities
     case files
     case tasks
 }
