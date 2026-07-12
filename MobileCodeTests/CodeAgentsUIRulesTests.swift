@@ -12,6 +12,29 @@ final class CodeAgentsUIRulesTests: XCTestCase {
         XCTAssertTrue(session.commands[0].contains("/workspace/app/AGENTS.md"))
         XCTAssertFalse(session.commands[0].contains(".claude/rules"))
     }
+
+    func testEnsureRulesFileWhenPresentBuildsValidBashIfThen() async throws {
+        let session = RulesFakeSSHSession(outputs: [""])
+        let project = RemoteProject(name: "XforY", serverId: UUID(), basePath: "/home/codeagent/projects")
+
+        try await CodeAgentsUIRules.ensureRulesFile(session: session, project: project, onlyIfMissing: false)
+
+        XCTAssertEqual(session.commands.count, 1)
+        let command = session.commands[0]
+        XCTAssertTrue(command.contains("/home/codeagent/projects/XforY/AGENTS.md"))
+        // mkdir must be chained with && before the if (not bare space, not `; then;`).
+        XCTAssertTrue(
+            command.hasPrefix("mkdir -p '/home/codeagent/projects/XforY' && if [ -f"),
+            "expected mkdir && if: \(command)"
+        )
+        // Regression: `then;` / `then :;;` from joining if/then pieces with "; ".
+        XCTAssertFalse(command.contains("then;"), "empty command after then is invalid: \(command)")
+        XCTAssertFalse(command.contains("then :;;"), "double semicolon after then : is invalid: \(command)")
+        XCTAssertFalse(command.contains("fi;;"), "double semicolon after fi is invalid: \(command)")
+        XCTAssertTrue(command.contains("]; then if grep -q"))
+        XCTAssertTrue(command.contains("codeagents-ui is NOT a tool"))
+        XCTAssertTrue(command.hasSuffix("; fi") || command.hasSuffix("fi"))
+    }
 }
 
 private final class RulesFakeSSHSession: SSHSession {

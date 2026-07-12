@@ -27,7 +27,9 @@ struct MCPServer: Identifiable, Equatable {
 
     static let managedSchedulerServerName = "codeagents-scheduled-tasks"
     static let managedSchedulerDisplayName = "Task Scheduler"
-    
+    static let managedAvatarServerName = "codeagents-avatar"
+    static let managedAvatarDisplayName = "Agent Avatar"
+
     /// Expected built-in MCP server that powers scheduled-task tooling.
     /// Update this value if the proxy exposes scheduler tools through a different
     /// command or URL in your deployment.
@@ -39,16 +41,28 @@ struct MCPServer: Identifiable, Equatable {
         url: "http://127.0.0.1:8787/mcp",
         headers: nil
     )
-    
+
+    /// Whether this server is any app-managed MCP (scheduler, avatar, …).
+    var isManagedServer: Bool {
+        Self.isManagedServer(name)
+    }
+
     /// Whether this server is the managed scheduler MCP server required by the app.
     var isManagedSchedulerServer: Bool {
         return name == MCPServer.managedSchedulerServerName
+    }
+
+    var isManagedAvatarServer: Bool {
+        return name == MCPServer.managedAvatarServerName
     }
 
     /// Display name used in the UI.
     var displayName: String {
         if isManagedSchedulerServer {
             return MCPServer.managedSchedulerDisplayName
+        }
+        if isManagedAvatarServer {
+            return MCPServer.managedAvatarDisplayName
         }
         return name
     }
@@ -211,6 +225,14 @@ struct MCPServer: Identifiable, Equatable {
 extension MCPServer {
     static func isManagedSchedulerServer(_ name: String) -> Bool {
         return name == managedSchedulerServerName
+    }
+
+    static func isManagedAvatarServer(_ name: String) -> Bool {
+        return name == managedAvatarServerName
+    }
+
+    static func isManagedServer(_ name: String) -> Bool {
+        isManagedSchedulerServer(name) || isManagedAvatarServer(name)
     }
 
     /// Configuration structure matching .mcp.json format

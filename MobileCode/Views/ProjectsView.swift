@@ -27,6 +27,7 @@ struct ProjectsView: View {
     @State private var showingAddProject = false
     @State private var projectToDelete: RemoteProject?
     @State private var projectToEdit: RemoteProject?
+    @State private var projectToDuplicate: RemoteProject?
     @State private var deleteFromServer = false
     @State private var editMode: EditMode = .inactive
 
@@ -66,6 +67,11 @@ struct ProjectsView: View {
                 }
                 .sheet(item: $projectToEdit) { project in
                     EditProjectSheet(project: project)
+                }
+                .sheet(item: $projectToDuplicate) { project in
+                    DuplicateAgentSheet(source: project) { finish in
+                        handleDuplicateFinished(finish)
+                    }
                 }
                 .sheet(item: $projectToDelete) { project in
                     DeleteProjectConfirmationSheet(
@@ -122,6 +128,7 @@ struct ProjectsView: View {
                                 project: project,
                                 isEditing: true,
                                 onEdit: { projectToEdit = project },
+                                onDuplicate: { projectToDuplicate = project },
                                 onDelete: { projectToDelete = project }
                             )
                         } else {
@@ -135,11 +142,36 @@ struct ProjectsView: View {
                                     .tint(.blue)
 
                                     Button {
+                                        projectToDuplicate = project
+                                    } label: {
+                                        Label("Duplicate", systemImage: "plus.square.on.square")
+                                    }
+                                    .tint(.indigo)
+                                    .accessibilityIdentifier("agent-duplicate-button")
+
+                                    Button {
                                         projectToDelete = project
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
                                     .tint(.red)
+                                }
+                                .contextMenu {
+                                    Button {
+                                        projectToEdit = project
+                                    } label: {
+                                        Label("Rename", systemImage: "pencil")
+                                    }
+                                    Button {
+                                        projectToDuplicate = project
+                                    } label: {
+                                        Label("Duplicate Agent…", systemImage: "plus.square.on.square")
+                                    }
+                                    Button(role: .destructive) {
+                                        projectToDelete = project
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                 }
                         }
                     }
@@ -237,6 +269,15 @@ struct ProjectsView: View {
             modelContext: modelContext
         )
 
+        // Refresh avatar cache (remote identity) so MCP/user changes show on the list.
+        await withTaskGroup(of: Void.self) { group in
+            for project in projects.prefix(12) {
+                group.addTask { @MainActor in
+                    await AgentAvatarService.shared.refresh(for: project, modelContext: modelContext)
+                }
+            }
+        }
+
         var seen = Set<UUID>()
         var targets: [Server] = []
         for project in projects {
@@ -260,6 +301,26 @@ struct ProjectsView: View {
         await CodeAgentsDaemonUpdateService.shared.softEnsureUpToDate(servers: targets)
     }
     
+    // MARK: - Duplicate
+
+    private func handleDuplicateFinished(_ finish: DuplicateAgentFinish) {
+        projectToDuplicate = nil
+        guard finish.shouldOpen else { return }
+        let cloneId = finish.projectId
+        if let project = projectsUnsorted.first(where: { $0.id == cloneId }) {
+            ProjectContext.shared.setActiveProject(project)
+            return
+        }
+        let descriptor = FetchDescriptor<RemoteProject>(
+            predicate: #Predicate { project in
+                project.id == cloneId
+            }
+        )
+        if let project = try? modelContext.fetch(descriptor).first {
+            ProjectContext.shared.setActiveProject(project)
+        }
+    }
+
     // MARK: - Delete Methods
     
     private func performDeletion(of project: RemoteProject) async {

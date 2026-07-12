@@ -98,13 +98,13 @@ struct EditMCPServerSheet: View {
     }
 
     private var isManagedServer: Bool {
-        MCPServer.isManagedSchedulerServer(originalName)
+        MCPServer.isManagedServer(originalName)
     }
     
     private var isValid: Bool {
         let normalizedName = serverName.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        if MCPServer.isManagedSchedulerServer(normalizedName) && normalizedName != originalName {
+        if MCPServer.isManagedServer(normalizedName) && normalizedName != originalName {
             return false
         }
         
@@ -116,7 +116,7 @@ struct EditMCPServerSheet: View {
     }
 
     private var isReservedNameCollision: Bool {
-        MCPServer.isManagedSchedulerServer(serverName.trimmingCharacters(in: .whitespacesAndNewlines))
+        MCPServer.isManagedServer(serverName.trimmingCharacters(in: .whitespacesAndNewlines))
             && serverName.trimmingCharacters(in: .whitespacesAndNewlines) != originalName
     }
     

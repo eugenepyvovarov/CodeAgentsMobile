@@ -75,7 +75,7 @@ struct AddMCPServerSheet: View {
     }
 
     private var managedNameConflict: Bool {
-        MCPServer.isManagedSchedulerServer(serverName.trimmingCharacters(in: .whitespacesAndNewlines))
+        MCPServer.isManagedServer(serverName.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     
     private var generatedCommand: String {

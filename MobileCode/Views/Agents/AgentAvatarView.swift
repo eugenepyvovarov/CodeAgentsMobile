@@ -2,17 +2,49 @@
 //  AgentAvatarView.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Circular monogram avatar for Agents chat list rows.
+//  Purpose: Circular avatar for Agents list / Abilities (monogram, emoji, or image).
 //
 
 import SwiftUI
+import UIKit
 
-/// Messages/Telegram-style circular avatar built from the agent title.
+/// Messages/Telegram-style circular avatar: monogram, emoji, or cached image.
 struct AgentAvatarView: View {
     let title: String
     let seed: UUID
     var hasUnread: Bool = false
     var size: CGFloat = 52
+    var kind: AgentAvatarKind = .none
+    var emoji: String? = nil
+    var localImagePath: String? = nil
+
+    init(
+        title: String,
+        seed: UUID,
+        hasUnread: Bool = false,
+        size: CGFloat = 52,
+        kind: AgentAvatarKind = .none,
+        emoji: String? = nil,
+        localImagePath: String? = nil
+    ) {
+        self.title = title
+        self.seed = seed
+        self.hasUnread = hasUnread
+        self.size = size
+        self.kind = kind
+        self.emoji = emoji
+        self.localImagePath = localImagePath
+    }
+
+    init(project: RemoteProject, hasUnread: Bool = false, size: CGFloat = 52) {
+        self.title = project.displayTitle
+        self.seed = project.id
+        self.hasUnread = hasUnread
+        self.size = size
+        self.kind = project.avatarKind
+        self.emoji = project.avatarEmoji
+        self.localImagePath = project.avatarLocalImagePath
+    }
 
     private var monogram: String {
         Self.monogram(from: title)
@@ -24,15 +56,10 @@ struct AgentAvatarView: View {
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(tint.gradient)
-            Text(monogram)
-                .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-                .minimumScaleFactor(0.5)
-                .lineLimit(1)
+            content
         }
         .frame(width: size, height: size)
+        .clipShape(Circle())
         .overlay(alignment: .bottomTrailing) {
             if hasUnread {
                 Circle()
@@ -47,6 +74,45 @@ struct AgentAvatarView: View {
             }
         }
         .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch kind {
+        case .emoji:
+            if let emoji, !emoji.isEmpty {
+                Circle()
+                    .fill(Color(.secondarySystemFill))
+                Text(emoji)
+                    .font(.system(size: size * 0.52))
+                    .minimumScaleFactor(0.5)
+            } else {
+                monogramContent
+            }
+        case .image:
+            if let localImagePath,
+               let uiImage = UIImage(contentsOfFile: localImagePath) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                monogramContent
+            }
+        case .none:
+            monogramContent
+        }
+    }
+
+    private var monogramContent: some View {
+        ZStack {
+            Circle()
+                .fill(tint.gradient)
+            Text(monogram)
+                .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+        }
     }
 
     // MARK: - Pure helpers
@@ -84,7 +150,7 @@ struct AgentAvatarView: View {
 #Preview {
     HStack(spacing: 16) {
         AgentAvatarView(title: "Ops Bot", seed: UUID(), hasUnread: true)
-        AgentAvatarView(title: "mobile-code", seed: UUID(), hasUnread: false)
+        AgentAvatarView(title: "mobile-code", seed: UUID(), kind: .emoji, emoji: "🚀")
         AgentAvatarView(title: "A", seed: UUID())
     }
     .padding()

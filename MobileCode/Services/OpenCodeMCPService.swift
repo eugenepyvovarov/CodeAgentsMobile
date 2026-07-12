@@ -39,7 +39,8 @@ final class OpenCodeMCPService: ObservableObject {
         _ server: MCPServer,
         scope: MCPServer.MCPScope = .project,
         for project: RemoteProject,
-        allowManaged: Bool = false
+        allowManaged: Bool = false,
+        enabled: Bool? = nil
     ) async throws {
         try validateManagedServerWrite(server.name, server: server, allowManaged: allowManaged)
 
@@ -47,12 +48,40 @@ final class OpenCodeMCPService: ObservableObject {
         var loaded = try await loadConfiguration(for: project, scope: scope, session: session)
         let previousJSON = try loaded.document.toJSONString()
         let previousEnabled = loaded.document.serverConfigurations()[server.name]?.enabled
-        guard let configuration = OpenCodeMCPServerConfiguration(server: server, enabled: previousEnabled ?? true) else {
+        let resolvedEnabled = enabled ?? previousEnabled ?? true
+        guard let configuration = OpenCodeMCPServerConfiguration(server: server, enabled: resolvedEnabled) else {
             throw MCPServiceError.invalidConfiguration("Cannot convert MCP server to OpenCode configuration")
         }
         try loaded.document.setServer(named: server.name, configuration: configuration)
         try await writeConfigurationIfChanged(loaded.document, previousJSON: previousJSON, to: loaded.path, session: session)
         await addLiveServer(name: server.name, configuration: configuration, for: project)
+    }
+
+    /// Write a full project MCP configuration (preserves `oauth`, `timeout`, and other fields lost by `MCPServer` round-trip).
+    func addServerConfiguration(
+        named name: String,
+        configuration: OpenCodeMCPServerConfiguration,
+        scope: MCPServer.MCPScope = .project,
+        for project: RemoteProject,
+        allowManaged: Bool = false
+    ) async throws {
+        let synthetic = MCPServer(name: name, openCodeConfiguration: configuration)
+            ?? MCPServer(name: name, command: nil, args: nil, env: nil, url: configuration.url, headers: configuration.headers)
+        try validateManagedServerWrite(name, server: synthetic, allowManaged: allowManaged)
+
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        var loaded = try await loadConfiguration(for: project, scope: scope, session: session)
+        let previousJSON = try loaded.document.toJSONString()
+        try loaded.document.setServer(named: name, configuration: configuration)
+        try await writeConfigurationIfChanged(loaded.document, previousJSON: previousJSON, to: loaded.path, session: session)
+        await addLiveServer(name: name, configuration: configuration, for: project)
+    }
+
+    /// Project-scope MCP server configurations including `enabled` (for accurate clone).
+    func projectServerConfigurations(for project: RemoteProject) async throws -> [String: OpenCodeMCPServerConfiguration] {
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        let loaded = try await loadConfiguration(for: project, scope: .project, session: session)
+        return loaded.document.serverConfigurations()
     }
 
     func removeServer(
@@ -61,7 +90,7 @@ final class OpenCodeMCPService: ObservableObject {
         for project: RemoteProject,
         allowManaged: Bool = false
     ) async throws {
-        guard allowManaged || !MCPServer.isManagedSchedulerServer(name) else {
+        guard allowManaged || !MCPServer.isManagedServer(name) else {
             throw MCPServiceError.managedServerNotModifiable
         }
 
@@ -80,7 +109,7 @@ final class OpenCodeMCPService: ObservableObject {
         for project: RemoteProject,
         allowManaged: Bool = false
     ) async throws {
-        guard allowManaged || !MCPServer.isManagedSchedulerServer(oldName) else {
+        guard allowManaged || !MCPServer.isManagedServer(oldName) else {
             throw MCPServiceError.managedServerNotModifiable
         }
         try validateManagedServerWrite(newServer.name, server: newServer, allowManaged: allowManaged)
@@ -220,15 +249,14 @@ final class OpenCodeMCPService: ObservableObject {
     }
 
     private func validateManagedServerWrite(_ name: String, server: MCPServer, allowManaged: Bool) throws {
-        guard !MCPServer.isManagedSchedulerServer(name) else {
-            if allowManaged {
-                return
-            }
-            if !server.matchesManagedSchedulerDefinition() {
-                throw MCPServiceError.managedServerNotModifiable
-            }
+        guard MCPServer.isManagedServer(name) else { return }
+        if allowManaged {
+            return
+        }
+        if MCPServer.isManagedSchedulerServer(name), server.matchesManagedSchedulerDefinition() {
             throw MCPServiceError.managedServerNotModifiable
         }
+        throw MCPServiceError.managedServerNotModifiable
     }
 
     private func liveStatuses(for project: RemoteProject) async -> [String: OpenCodeMCPStatus] {

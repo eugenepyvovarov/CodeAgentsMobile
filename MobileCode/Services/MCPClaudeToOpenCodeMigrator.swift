@@ -41,7 +41,7 @@ enum MCPClaudeToOpenCodeMigrator {
 
     /// Whether a Claude MCP server can be expressed as OpenCode local/remote config.
     static func isImportable(_ server: MCPServer) -> Bool {
-        if MCPServer.isManagedSchedulerServer(server.name) {
+        if MCPServer.isManagedServer(server.name) {
             return false
         }
         return OpenCodeMCPServerConfiguration(server: server.normalizedForOpenCodeImport()) != nil
@@ -64,7 +64,7 @@ enum MCPClaudeToOpenCodeMigrator {
                 continue
             }
 
-            if MCPServer.isManagedSchedulerServer(name) {
+            if MCPServer.isManagedServer(name) {
                 report.skippedManaged.append(name)
                 continue
             }

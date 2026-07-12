@@ -13,8 +13,10 @@ final class CodingAgentMCPService: ObservableObject {
 
     private let openCodeService: OpenCodeMCPService
     private let schedulerProvisionService: MCPTaskSchedulerProvisionService
+    private let avatarProvisionService: MCPAgentAvatarProvisionService
     private let runtimeSelectionStore: CodingAgentRuntimeSelectionStore
     private var schedulerProvisionTasks: [UUID: Task<Void, Error>] = [:]
+    private var avatarProvisionTasks: [UUID: Task<Void, Error>] = [:]
 
     /// Retained for Claude CLI fallback during one-time Path D migration only.
     private let claudeService: MCPService
@@ -23,11 +25,13 @@ final class CodingAgentMCPService: ObservableObject {
         claudeService: MCPService? = nil,
         openCodeService: OpenCodeMCPService? = nil,
         schedulerProvisionService: MCPTaskSchedulerProvisionService? = nil,
+        avatarProvisionService: MCPAgentAvatarProvisionService? = nil,
         runtimeSelectionStore: CodingAgentRuntimeSelectionStore = CodingAgentRuntimeSelectionStore()
     ) {
         self.claudeService = claudeService ?? .shared
         self.openCodeService = openCodeService ?? .shared
         self.schedulerProvisionService = schedulerProvisionService ?? .shared
+        self.avatarProvisionService = avatarProvisionService ?? .shared
         self.runtimeSelectionStore = runtimeSelectionStore
     }
 
@@ -39,9 +43,37 @@ final class CodingAgentMCPService: ObservableObject {
         _ server: MCPServer,
         scope: MCPServer.MCPScope = .project,
         for project: RemoteProject,
+        allowManaged: Bool = false,
+        enabled: Bool? = nil
+    ) async throws {
+        try await openCodeService.addServer(
+            server,
+            scope: scope,
+            for: project,
+            allowManaged: allowManaged,
+            enabled: enabled
+        )
+    }
+
+    /// Write a full project MCP configuration (preserves `oauth`, `timeout`, etc.).
+    func addServerConfiguration(
+        named name: String,
+        configuration: OpenCodeMCPServerConfiguration,
+        scope: MCPServer.MCPScope = .project,
+        for project: RemoteProject,
         allowManaged: Bool = false
     ) async throws {
-        try await openCodeService.addServer(server, scope: scope, for: project, allowManaged: allowManaged)
+        try await openCodeService.addServerConfiguration(
+            named: name,
+            configuration: configuration,
+            scope: scope,
+            for: project,
+            allowManaged: allowManaged
+        )
+    }
+
+    func projectServerConfigurations(for project: RemoteProject) async throws -> [String: OpenCodeMCPServerConfiguration] {
+        try await openCodeService.projectServerConfigurations(for: project)
     }
 
     func removeServer(
@@ -93,6 +125,22 @@ final class CodingAgentMCPService: ObservableObject {
         schedulerProvisionTasks[project.id] = task
         defer {
             schedulerProvisionTasks.removeValue(forKey: project.id)
+        }
+        try await task.value
+    }
+
+    func ensureManagedAvatarServerIfNeeded(for project: RemoteProject) async throws {
+        if let existingTask = avatarProvisionTasks[project.id] {
+            try await existingTask.value
+            return
+        }
+
+        let task = Task { @MainActor in
+            try await avatarProvisionService.ensureManagedAvatarServer(for: project)
+        }
+        avatarProvisionTasks[project.id] = task
+        defer {
+            avatarProvisionTasks.removeValue(forKey: project.id)
         }
         try await task.value
     }

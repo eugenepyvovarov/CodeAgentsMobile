@@ -108,7 +108,28 @@ final class RemoteProject {
 
     /// Cursor value considered "read" (advanced when the user views the chat and scrolls to bottom).
     var lastReadUnreadCursor: Int = 0
-    
+
+    // MARK: - Avatar cache (remote identity is source of truth)
+
+    /// `AgentAvatarKind.rawValue` last applied from remote identity.
+    var avatarKindRawValue: String?
+    /// Emoji string when kind is emoji.
+    var avatarEmoji: String?
+    /// Absolute local file URL path for cached image thumbnail (device only).
+    var avatarLocalImagePath: String?
+    /// Remote `updated_at` when cache was last applied.
+    var avatarRemoteUpdatedAt: Date?
+
+    var avatarKind: AgentAvatarKind {
+        get {
+            guard let avatarKindRawValue, let kind = AgentAvatarKind(rawValue: avatarKindRawValue) else {
+                return .none
+            }
+            return kind
+        }
+        set { avatarKindRawValue = newValue.rawValue }
+    }
+
     init(name: String, displayName: String? = nil, serverId: UUID, basePath: String = "/root/projects") {
         self.id = UUID()
         self.name = name

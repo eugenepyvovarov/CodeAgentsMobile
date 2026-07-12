@@ -197,6 +197,64 @@ final class ToolApprovalStore: ObservableObject {
         bumpRevision()
     }
 
+    /// Copy agent-scoped approvals (allow/deny/known/policy/defaultsApplied) to another agent id.
+    /// Does not touch global allow/deny. Policy is applied last so it is not cleared by per-tool writes.
+    func copyAgentApprovals(from sourceAgentId: UUID, to destinationAgentId: UUID) {
+        guard sourceAgentId != destinationAgentId else { return }
+
+        let allow = loadAgentToolSet(key: agentAllowKey, agentId: sourceAgentId)
+        let deny = loadAgentToolSet(key: agentDenyKey, agentId: sourceAgentId)
+        let known = loadAgentKnownTools(agentId: sourceAgentId)
+        let policy = agentPolicy(for: sourceAgentId)
+        let defaultsVersionApplied = appliedDefaultsVersion(agentId: sourceAgentId)
+
+        saveAgentToolSet(key: agentAllowKey, agentId: destinationAgentId, tools: allow)
+        saveAgentToolSet(key: agentDenyKey, agentId: destinationAgentId, tools: deny)
+        saveAgentKnownTools(agentId: destinationAgentId, tools: known)
+
+        if let defaultsVersionApplied {
+            var map = defaults.dictionary(forKey: agentDefaultsKey) ?? [:]
+            map[destinationAgentId.uuidString] = defaultsVersionApplied
+            defaults.set(map, forKey: agentDefaultsKey)
+        } else {
+            // Source never applied defaults; leave destination unmarked so ensureDefaults can run.
+            var map = defaults.dictionary(forKey: agentDefaultsKey) ?? [:]
+            map.removeValue(forKey: destinationAgentId.uuidString)
+            defaults.set(map, forKey: agentDefaultsKey)
+        }
+
+        // Policy last — setDecision would clear it.
+        setAgentPolicy(policy, agentId: destinationAgentId)
+        bumpRevision()
+    }
+
+    /// Remove all agent-scoped approval state for `agentId` (used when a failed duplicate rolls back).
+    func removeAgentApprovals(for agentId: UUID) {
+        removeAgentMapEntry(key: agentAllowKey, agentId: agentId)
+        removeAgentMapEntry(key: agentDenyKey, agentId: agentId)
+        removeAgentMapEntry(key: agentKnownKey, agentId: agentId)
+        removeAgentMapEntry(key: agentDefaultsKey, agentId: agentId)
+        setAgentPolicy(nil, agentId: agentId)
+        bumpRevision()
+    }
+
+    private func removeAgentMapEntry(key: String, agentId: UUID) {
+        var map = defaults.dictionary(forKey: key) ?? [:]
+        map.removeValue(forKey: agentId.uuidString)
+        defaults.set(map, forKey: key)
+    }
+
+    private func appliedDefaultsVersion(agentId: UUID) -> Int? {
+        let map = defaults.dictionary(forKey: agentDefaultsKey) ?? [:]
+        if let version = map[agentId.uuidString] as? Int {
+            return version
+        }
+        if let applied = map[agentId.uuidString] as? Bool, applied {
+            return 1
+        }
+        return nil
+    }
+
     static func normalizeToolName(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }

@@ -107,7 +107,7 @@ struct MCPServersListView: View {
                                 .accessibilityIdentifier("mcp-server-row-\(server.name.cloudAccessibilityIdentifierFragment)")
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    if server.isManagedSchedulerServer {
+                                    if server.isManagedServer {
                                         errorMessage = "The managed MCP server is required and cannot be edited."
                                         showError = true
                                     } else {
@@ -244,13 +244,13 @@ struct MCPServersListView: View {
     private func deleteServers(at offsets: IndexSet) {
         guard let project = project else { return }
         
-        let managedIndexes = offsets.filter { servers[$0].isManagedSchedulerServer }
+        let managedIndexes = offsets.filter { servers[$0].isManagedServer }
         if !managedIndexes.isEmpty {
             errorMessage = "The managed MCP server is required and cannot be removed."
             showError = true
         }
         
-        let deletableIndexes = offsets.filter { !servers[$0].isManagedSchedulerServer }
+        let deletableIndexes = offsets.filter { !servers[$0].isManagedServer }
         if deletableIndexes.isEmpty {
             return
         }

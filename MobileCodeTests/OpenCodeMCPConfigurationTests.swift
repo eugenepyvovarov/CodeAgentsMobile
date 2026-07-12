@@ -211,4 +211,50 @@ final class OpenCodeMCPConfigurationTests: XCTestCase {
         let updated = try OpenCodeMCPConfigDocument(jsonString: document.toJSONString())
         XCTAssertEqual(updated.serverConfigurations()["context7"]?.oauth, .init(false))
     }
+
+    /// Duplicate Agent must write full configurations so oauth/timeout survive (no MCPServer round-trip).
+    func testSetServerNamedPreservesOAuthAndTimeoutOnNewDocument() throws {
+        let sourceJSON = """
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "mcp": {
+            "sentry": {
+              "type": "remote",
+              "url": "https://mcp.sentry.dev/mcp",
+              "timeout": 120000,
+              "oauth": {
+                "clientId": "{env:SENTRY_CLIENT_ID}",
+                "scope": "tools:read"
+              },
+              "enabled": true
+            }
+          }
+        }
+        """
+        let source = try OpenCodeMCPConfigDocument(jsonString: sourceJSON)
+        guard let configuration = source.serverConfigurations()["sentry"] else {
+            return XCTFail("missing sentry config")
+        }
+
+        // Round-trip through MCPServer loses oauth/timeout (the bug path).
+        let viaMCPServer = OpenCodeMCPServerConfiguration(
+            server: MCPServer(name: "sentry", openCodeConfiguration: configuration)!,
+            enabled: configuration.enabled ?? true
+        )
+        XCTAssertNil(viaMCPServer?.oauth)
+        XCTAssertNil(viaMCPServer?.timeout)
+
+        // Full configuration write preserves both.
+        var destination = OpenCodeMCPConfigDocument()
+        try destination.setServer(named: "sentry", configuration: configuration)
+        let written = try OpenCodeMCPConfigDocument(jsonString: destination.toJSONString())
+        let restored = written.serverConfigurations()["sentry"]
+        XCTAssertEqual(restored?.timeout, 120_000)
+        XCTAssertEqual(restored?.oauth, .init([
+            "clientId": "{env:SENTRY_CLIENT_ID}",
+            "scope": "tools:read"
+        ]))
+        XCTAssertEqual(restored?.enabled, true)
+        XCTAssertEqual(restored?.url, "https://mcp.sentry.dev/mcp")
+    }
 }

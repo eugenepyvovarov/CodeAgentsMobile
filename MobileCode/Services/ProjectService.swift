@@ -34,18 +34,42 @@ class ProjectService {
     ///   - server: Server to create the agent on
     ///   - customPath: Optional custom path for the agent (if nil, uses server default)
     func createProject(name: String, on server: Server, customPath: String? = nil) async throws {
-        guard let safeName = SSHShellQuoting.sanitizedPathComponent(name) else {
+        _ = try await createAgentDirectory(
+            folderName: name,
+            parentPath: customPath,
+            on: server,
+            allowFallback: true,
+            failIfExists: false
+        )
+    }
+
+    /// Create an agent directory and return the path that was actually created.
+    /// - Parameters:
+    ///   - folderName: Single path component (sanitized)
+    ///   - parentPath: Parent directory; when nil, uses server default projects path
+    ///   - server: Target server
+    ///   - allowFallback: When true and parent is not writable, may create under `/root/projects`
+    ///     (legacy create-agent behavior). Duplicate Agent should pass `false`.
+    ///   - failIfExists: When true, refuse if the target directory already exists
+    /// - Returns: Absolute remote path of the new directory
+    @discardableResult
+    func createAgentDirectory(
+        folderName: String,
+        parentPath: String?,
+        on server: Server,
+        allowFallback: Bool = true,
+        failIfExists: Bool = false
+    ) async throws -> String {
+        guard let safeName = SSHShellQuoting.sanitizedPathComponent(folderName) else {
             throw ProjectServiceError.invalidName
         }
         SSHLogger.log("Creating agent on server \(server.name)", level: .info)
 
-        // Get a direct connection to the server
         let session = try await sshService.connect(to: server)
 
-        // Use custom path if provided, otherwise ensure the server has a default projects path
         let basePath: String
-        if let customPath = customPath {
-            basePath = customPath
+        if let parentPath, !parentPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            basePath = parentPath.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             if let swiftSHSession = session as? SwiftSHSession {
                 try await swiftSHSession.ensureDefaultProjectsPath()
@@ -53,54 +77,88 @@ class ProjectService {
             basePath = server.defaultProjectsPath ?? "/root/projects"
         }
 
-        let projectPath = "\(basePath)/\(safeName)"
+        let projectPath = AgentDuplicationPath.join(parent: basePath, folderName: safeName)
         let qBase = SSHShellQuoting.quote(basePath)
         let qProject = SSHShellQuoting.quote(projectPath)
 
         SSHLogger.log("Creating agent directory", level: .info)
 
-        // First, ensure the base projects directory exists and check permissions
         _ = try await session.execute("mkdir -p -- \(qBase)")
 
-        // Validate write permissions on the base directory
         let canWrite = try await validateWritePermission(at: basePath, using: session)
-
         if !canWrite {
             SSHLogger.log("No write permission at base path, trying fallback", level: .warning)
-            // If we can't write to the default location, try the fallback
-            if basePath != "/root/projects" {
-                let fallbackPath = "/root/projects/\(safeName)"
+            if allowFallback, basePath != "/root/projects" {
+                let fallbackPath = AgentDuplicationPath.join(parent: "/root/projects", folderName: safeName)
                 let qFallbackRoot = SSHShellQuoting.quote("/root/projects")
                 let qFallback = SSHShellQuoting.quote(fallbackPath)
                 _ = try await session.execute("mkdir -p -- \(qFallbackRoot)")
 
                 if try await validateWritePermission(at: "/root/projects", using: session) {
                     SSHLogger.log("Using fallback path", level: .info)
-                    _ = try await session.execute("mkdir -p -- \(qFallback)")
-
-                    // Verify creation
-                    let checkFallback = try await session.execute("test -d \(qFallback) && echo 'EXISTS'")
-                    guard checkFallback.trimmingCharacters(in: .whitespacesAndNewlines) == "EXISTS" else {
-                        throw ProjectServiceError.failedToCreateDirectory
-                    }
-
+                    try await createLeafDirectory(at: fallbackPath, exclusive: failIfExists, using: session)
                     SSHLogger.log("Successfully created agent at fallback", level: .info)
-                    return
+                    return fallbackPath
                 }
             }
             throw ProjectServiceError.noWritePermission
         }
 
-        // Create the project directory
-        _ = try await session.execute("mkdir -p -- \(qProject)")
+        try await createLeafDirectory(at: projectPath, exclusive: failIfExists, using: session)
 
-        // Check if directory was created successfully
+        SSHLogger.log("Successfully created agent directory", level: .info)
+        return projectPath
+    }
+
+    /// Create the agent leaf directory.
+    /// - When `exclusive` is true, uses plain `mkdir` (no `-p`) so concurrent creators cannot both claim the same path;
+    ///   existing directory → `directoryAlreadyExists`. Parent must already exist.
+    /// - When `exclusive` is false, uses `mkdir -p` (legacy create-agent behavior).
+    private func createLeafDirectory(
+        at projectPath: String,
+        exclusive: Bool,
+        using session: SSHSession
+    ) async throws {
+        let qProject = SSHShellQuoting.quote(projectPath)
+        if exclusive {
+            // Atomic create of the leaf: only one concurrent caller wins; EEXIST → collision.
+            let script = [
+                "if mkdir -- \(qProject) 2>/dev/null; then",
+                "echo CREATED;",
+                "elif [ -d \(qProject) ]; then",
+                "echo EXISTS;",
+                "else",
+                "echo FAILED;",
+                "fi",
+            ].joined(separator: " ")
+            let result = try await session.execute(script)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            switch result {
+            case "CREATED":
+                return
+            case "EXISTS":
+                throw ProjectServiceError.directoryAlreadyExists
+            default:
+                throw ProjectServiceError.failedToCreateDirectory
+            }
+        }
+
+        _ = try await session.execute("mkdir -p -- \(qProject)")
         let checkResult = try await session.execute("test -d \(qProject) && echo 'EXISTS'")
         guard checkResult.trimmingCharacters(in: .whitespacesAndNewlines) == "EXISTS" else {
             throw ProjectServiceError.failedToCreateDirectory
         }
+    }
 
-        SSHLogger.log("Successfully created agent directory", level: .info)
+    /// Best-effort remove of a remote agent directory (used when local insert fails after mkdir).
+    func removeAgentDirectory(at path: String, on server: Server) async throws {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "/", !trimmed.contains("..") else {
+            throw ProjectServiceError.invalidName
+        }
+        let session = try await sshService.connect(to: server)
+        let qPath = SSHShellQuoting.quote(trimmed)
+        _ = try await session.execute("rm -rf -- \(qPath)")
     }
     
     /// Delete an agent directory from the server
@@ -153,6 +211,7 @@ enum ProjectServiceError: LocalizedError {
     case failedToCreateDirectory
     case noWritePermission
     case invalidName
+    case directoryAlreadyExists
 
     var errorDescription: String? {
         switch self {
@@ -166,6 +225,8 @@ enum ProjectServiceError: LocalizedError {
             return "Failed to create agent directory"
         case .noWritePermission:
             return "No write permission in the selected directory"
+        case .directoryAlreadyExists:
+            return "A folder with this name already exists on the server."
         }
     }
 }

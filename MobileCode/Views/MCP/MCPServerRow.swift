@@ -80,7 +80,7 @@ struct MCPServerRow: View {
                             .frame(width: 9, height: 9)
                     }
 
-                    if server.isManagedSchedulerServer {
+                    if server.isManagedServer {
                         Image(systemName: "lock.fill")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -94,7 +94,7 @@ struct MCPServerRow: View {
                 }
             }
 
-            if !server.isManagedSchedulerServer {
+            if !server.isManagedServer {
                 // Edit indicator
                 Image(systemName: "chevron.right")
                     .font(.caption)

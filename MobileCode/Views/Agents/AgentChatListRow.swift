@@ -15,6 +15,7 @@ struct AgentChatListRow: View {
     let project: RemoteProject
     var isEditing: Bool = false
     var onEdit: (() -> Void)?
+    var onDuplicate: (() -> Void)?
     var onDelete: (() -> Void)?
 
     // MARK: - Environment / state
@@ -99,10 +100,8 @@ struct AgentChatListRow: View {
     private var rowContent: some View {
         HStack(alignment: .center, spacing: 12) {
             AgentAvatarView(
-                title: project.displayTitle,
-                seed: project.id,
+                project: project,
                 hasUnread: hasUnread
-                // Default 52pt avatar — original size was fine.
             )
 
             VStack(alignment: .leading, spacing: 2) {
@@ -186,6 +185,16 @@ struct AgentChatListRow: View {
                         .frame(width: 36, height: 36)
                 }
                 .accessibilityLabel("Edit Agent")
+                .modifier(AgentListGlassIconButtonModifier())
+            }
+            if let onDuplicate {
+                Button(action: onDuplicate) {
+                    Image(systemName: "plus.square.on.square")
+                        .font(.body.weight(.medium))
+                        .frame(width: 36, height: 36)
+                }
+                .accessibilityLabel("Duplicate Agent")
+                .accessibilityIdentifier("agent-duplicate-button")
                 .modifier(AgentListGlassIconButtonModifier())
             }
             if let onDelete {

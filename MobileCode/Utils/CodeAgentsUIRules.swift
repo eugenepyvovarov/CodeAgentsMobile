@@ -114,15 +114,16 @@ Never output invalid JSON inside a codeagents-ui fence.
                 return
             }
         } else {
+            // One well-formed bash line — do not array-join if/then fragments (`;` after `then` is invalid).
             let base64Guard = Data(toolCallGuardMarkdown.utf8).base64EncodedString()
+            let base64Rules = Data(rulesMarkdown.utf8).base64EncodedString()
             let guardNeedle = shellEscaped("codeagents-ui is NOT a tool")
-            let ensureCommand = [
-                "mkdir -p \(rulesDirectory)",
-                "if [ -f \(rulesPath) ]; then",
-                "if grep -q \(guardNeedle) \(rulesPath); then :;",
-                "else printf '\\n\\n' >> \(rulesPath) && printf '%s' '\(base64Guard)' | base64 -d >> \(rulesPath); fi;",
-                "else printf '%s' '\(Data(rulesMarkdown.utf8).base64EncodedString())' | base64 -d > \(rulesPath); fi"
-            ].joined(separator: " ")
+            let ensureCommand =
+                "mkdir -p \(rulesDirectory) && " +
+                "if [ -f \(rulesPath) ]; then " +
+                "if grep -q \(guardNeedle) \(rulesPath); then :; " +
+                "else printf '\\n\\n' >> \(rulesPath) && printf '%s' '\(base64Guard)' | base64 -d >> \(rulesPath); fi; " +
+                "else printf '%s' '\(base64Rules)' | base64 -d > \(rulesPath); fi"
             _ = try await session.execute(ensureCommand)
             return
         }

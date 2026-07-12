@@ -79,6 +79,11 @@ enum AgentProjectFileLayout {
     static let identityRelativePath = ".codeagents/codeagents.json"
     static let legacyIdentityRelativePath = ".claude/codeagents.json"
 
+    /// Default image blob for agent avatars (metadata lives in `codeagents.json`).
+    static let avatarImageRelativePath = ".codeagents/avatar.png"
+    /// Managed local MCP server script for avatar tools.
+    static let avatarMCPScriptRelativePath = ".codeagents/mcp/codeagents_avatar_mcp.py"
+
     static let rulesReadCandidates: [AgentRulesFileCandidate] = [
         AgentRulesFileCandidate(kind: .agents, relativePath: rulesPrimaryRelativePath),
         AgentRulesFileCandidate(kind: .legacyClaudeDirectory, relativePath: legacyClaudeDirectoryRulesRelativePath),
