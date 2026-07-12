@@ -35,7 +35,15 @@ struct GlobalMCPServersListView: View {
 
     var body: some View {
         Group {
-            if isLoading && servers.isEmpty {
+            if project == nil {
+                // Settings is often opened from the Agents list with no active project.
+                // Global MCP still needs a server context (SSH) via an open agent.
+                ContentUnavailableView {
+                    Label("No Active Agent", systemImage: "person.crop.circle.badge.xmark")
+                } description: {
+                    Text("Open an agent first. Global MCP servers are stored on that agent’s server.")
+                }
+            } else if isLoading && servers.isEmpty {
                 VStack(spacing: 20) {
                     ProgressView()
                     Text("Loading global MCP servers...")
@@ -130,11 +138,25 @@ struct GlobalMCPServersListView: View {
             await loadServers()
         }
         .sheet(isPresented: $showingAddServer) {
+            // Non-empty sheet content required — empty `if let` sheets can present blank.
             if let project = project {
                 AddMCPServerSheet(project: project, initialScope: .global) {
                     Task {
                         await loadServers()
                         NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
+                    }
+                }
+            } else {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "No Active Agent",
+                        systemImage: "person.crop.circle.badge.xmark",
+                        description: Text("Open an agent before adding global MCP servers.")
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { showingAddServer = false }
+                        }
                     }
                 }
             }
@@ -145,6 +167,19 @@ struct GlobalMCPServersListView: View {
                     Task {
                         await loadServers()
                         NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
+                    }
+                }
+            } else {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "No Active Agent",
+                        systemImage: "person.crop.circle.badge.xmark",
+                        description: Text("Open an agent before editing global MCP servers.")
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { editingServer = nil }
+                        }
                     }
                 }
             }

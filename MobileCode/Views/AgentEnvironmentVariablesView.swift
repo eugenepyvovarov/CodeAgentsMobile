@@ -2,7 +2,7 @@
 //  AgentEnvironmentVariablesView.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Per-agent environment variable editor (proxy-only)
+//  Purpose: Per-agent environment variable editor (CodeAgents daemon /v1/agent/env)
 //
 
 import SwiftUI

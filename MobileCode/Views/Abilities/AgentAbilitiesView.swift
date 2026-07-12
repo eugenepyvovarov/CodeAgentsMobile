@@ -71,8 +71,25 @@ struct AgentAbilitiesView: View {
             .sheet(isPresented: $showingModelChange, onDismiss: {
                 modelSummaryEpoch += 1
             }) {
+                // Same sheet as chat: edits the *effective* profile (global or server override).
+                // Full Server AI locks Change while "Use Global Defaults" is on — bad for Abilities.
+                // OpenCodeChatModelChangeSheet also links to Providers & connection for OAuth/setup.
                 if let server = projectContext.activeServer {
                     OpenCodeChatModelChangeSheet(server: server)
+                } else {
+                    NavigationStack {
+                        ContentUnavailableView(
+                            "No Server",
+                            systemImage: "server.rack",
+                            description: Text("Select an agent with a connected server to change the model.")
+                        )
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Close") { showingModelChange = false }
+                                    .accessibilityIdentifier("abilities-model-close-button")
+                            }
+                        }
+                    }
                 }
             }
         }

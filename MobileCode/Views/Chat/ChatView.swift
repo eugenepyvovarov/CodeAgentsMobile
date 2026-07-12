@@ -195,8 +195,22 @@ struct ChatView: View {
         .sheet(isPresented: $showingModelChange, onDismiss: {
             modelSummaryEpoch += 1
         }) {
+            // Always provide non-empty sheet content — empty `if let` sheets can stick blank in SwiftUI.
             if let server = projectContext.activeServer {
                 OpenCodeChatModelChangeSheet(server: server)
+            } else {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "No Server",
+                        systemImage: "server.rack",
+                        description: Text("Select an agent with a connected server to change the model.")
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { showingModelChange = false }
+                        }
+                    }
+                }
             }
         }
         .sheet(isPresented: $showingServerSettings, onDismiss: {
@@ -209,6 +223,19 @@ struct ChatView: View {
         }) {
             if let server = projectContext.activeServer {
                 EditServerSheet(server: server)
+            } else {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "No Server",
+                        systemImage: "server.rack",
+                        description: Text("Select an agent with a connected server to edit server settings.")
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { showingServerSettings = false }
+                        }
+                    }
+                }
             }
         }
     }

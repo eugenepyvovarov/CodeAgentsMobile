@@ -155,6 +155,7 @@ struct MCPServersListView: View {
             await loadServers()
         }
         .sheet(isPresented: $showingAddServer) {
+            // Non-empty sheet content required — empty `if let` sheets can present blank.
             if let project = project {
                 AddMCPServerSheet(project: project) {
                     // Refresh list after adding
@@ -162,6 +163,19 @@ struct MCPServersListView: View {
                         await loadServers()
                         // Notify chat view to refresh MCP cache
                         NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
+                    }
+                }
+            } else {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "No Active Agent",
+                        systemImage: "person.crop.circle.badge.xmark",
+                        description: Text("Select an agent before adding MCP servers.")
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { showingAddServer = false }
+                        }
                     }
                 }
             }
@@ -174,6 +188,19 @@ struct MCPServersListView: View {
                         await loadServers()
                         // Notify chat view to refresh MCP cache
                         NotificationCenter.default.post(name: .mcpConfigurationChanged, object: nil)
+                    }
+                }
+            } else {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "No Active Agent",
+                        systemImage: "person.crop.circle.badge.xmark",
+                        description: Text("Select an agent before editing MCP servers.")
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { editingServer = nil }
+                        }
                     }
                 }
             }

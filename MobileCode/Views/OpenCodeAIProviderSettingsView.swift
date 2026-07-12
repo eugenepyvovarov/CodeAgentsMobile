@@ -242,9 +242,7 @@ struct OpenCodeAIProviderSettingsView: View {
 
     var selectedModelChoice: OpenCodeModelChoice? {
         guard let modelID = profile.resolvedModelID else { return nil }
-        return selectedProviderModelChoices.first {
-            $0.id.caseInsensitiveCompare(modelID) == .orderedSame
-        }
+        return selectedProviderModelChoices.first { $0.matches(storedModelID: modelID) }
     }
 
     var thinkingChoices: [OpenCodeThinkingChoice] {
@@ -290,9 +288,7 @@ struct OpenCodeAIProviderSettingsView: View {
               !selectedProviderModelChoices.isEmpty else {
             return false
         }
-        return selectedProviderModelChoices.contains { choice in
-            choice.id.caseInsensitiveCompare(modelID) == .orderedSame
-        } == false
+        return selectedModelChoice == nil
     }
 
     var selectedProviderName: String {
@@ -411,7 +407,7 @@ struct OpenCodeAIProviderSettingsView: View {
     var selectedModelSubtitle: String {
         let countText = "\(selectedProviderModelChoices.count) model\(selectedProviderModelChoices.count == 1 ? "" : "s")"
         guard let modelID = profile.resolvedModelID,
-              let choice = selectedProviderModelChoices.first(where: { $0.id.caseInsensitiveCompare(modelID) == .orderedSame }) else {
+              let choice = selectedProviderModelChoices.first(where: { $0.matches(storedModelID: modelID) }) else {
             return countText
         }
         var parts: [String] = []
@@ -875,10 +871,14 @@ struct OpenCodeAIProviderSettingsView: View {
             return
         }
 
-        let currentModelIsAvailable = selectedProviderModelChoices.contains { choice in
-            choice.id.caseInsensitiveCompare(currentModelID) == .orderedSame
+        // Normalize bare model ids (`gpt-5.5`) to catalog full ids (`openai/gpt-5.5`).
+        // Older profiles and some OpenCode defaults only store the bare id.
+        if let match = selectedProviderModelChoices.first(where: { $0.matches(storedModelID: currentModelID) }) {
+            if match.id.caseInsensitiveCompare(currentModelID) != .orderedSame {
+                profile.modelID = match.id
+            }
+            return
         }
-        guard !currentModelIsAvailable else { return }
 
         let suggestedModelID = OpenCodeProviderConnectionDefaults.suggestedModelID(
             providerID: profile.normalizedProviderID,
@@ -886,8 +886,8 @@ struct OpenCodeAIProviderSettingsView: View {
         )?.trimmedOpenCodeValue
 
         if let suggestedModelID,
-           selectedProviderModelChoices.contains(where: { $0.id.caseInsensitiveCompare(suggestedModelID) == .orderedSame }) {
-            profile.modelID = suggestedModelID
+           let suggested = selectedProviderModelChoices.first(where: { $0.matches(storedModelID: suggestedModelID) }) {
+            profile.modelID = suggested.id
         } else {
             profile.modelID = ""
         }
@@ -1025,13 +1025,20 @@ struct OpenCodeAIProviderSettingsView: View {
         }
 
         if let server {
-            try settingsStore.saveServerOverride(
-                OpenCodeServerAIProviderOverride(
-                    usesGlobalDefaults: useGlobalDefaults,
-                    profile: normalized
-                ),
-                for: server.id
-            )
+            if useGlobalDefaults {
+                // Following global: write the global profile, keep the server flag.
+                // (Do not only stash on the override — effectiveProfile reads global when the flag is on.)
+                try settingsStore.saveGlobalProfile(normalized)
+                try settingsStore.saveServerOverride(
+                    OpenCodeServerAIProviderOverride(usesGlobalDefaults: true, profile: normalized),
+                    for: server.id
+                )
+            } else {
+                try settingsStore.saveServerOverride(
+                    OpenCodeServerAIProviderOverride(usesGlobalDefaults: false, profile: normalized),
+                    for: server.id
+                )
+            }
         } else {
             try settingsStore.saveGlobalProfile(normalized)
         }
@@ -1055,20 +1062,19 @@ struct OpenCodeAIProviderSettingsView: View {
         do {
             let normalized = try persistSelection()
             let apiKeyToApply = apiKey.trimmedOpenCodeValue.nilIfEmpty
-            let profileToApply: OpenCodeAIProviderProfile
+            // Always apply the profile we just persisted (not a stale re-read of global).
+            let profileToApply = normalized
             if let targetServer = server {
-                profileToApply = useGlobalDefaults
-                    ? settingsStore.globalProfile()
-                    : normalized
                 try await providerService.applyAIProviderProfile(
                     profileToApply,
                     apiKey: apiKeyToApply,
                     to: targetServer
                 )
                 apiKey = ""
-                statusMessage = "Saved on \(targetServer.name)."
+                statusMessage = useGlobalDefaults
+                    ? "Saved global defaults on \(targetServer.name)."
+                    : "Saved on \(targetServer.name)."
             } else {
-                profileToApply = normalized
                 for targetServer in servers {
                     try await providerService.applyAIProviderProfile(
                         profileToApply,

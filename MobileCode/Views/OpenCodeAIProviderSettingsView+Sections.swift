@@ -717,7 +717,8 @@ extension OpenCodeAIProviderSettingsView {
                     .foregroundStyle(.orange)
             }
 
-            if choice.id.caseInsensitiveCompare(profile.modelID) == .orderedSame {
+            if choice.matches(storedModelID: profile.modelID)
+                || (profile.resolvedModelID.map { choice.matches(storedModelID: $0) } ?? false) {
                 Image(systemName: isApplying ? "arrow.triangle.2.circlepath" : "checkmark")
                     .foregroundStyle(.tint)
             }

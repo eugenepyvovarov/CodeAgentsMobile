@@ -409,10 +409,7 @@ struct OpenCodeChatModelChangeSheet: View {
 
     private var selectedModelChoice: OpenCodeModelChoice? {
         guard let modelID = profile.resolvedModelID else { return nil }
-        return modelChoices.first {
-            $0.id.caseInsensitiveCompare(modelID) == .orderedSame
-                || $0.modelID.caseInsensitiveCompare(modelID) == .orderedSame
-        }
+        return modelChoices.first { $0.matches(storedModelID: modelID) }
     }
 
     private var thinkingChoices: [OpenCodeThinkingChoice] {
@@ -453,8 +450,13 @@ struct OpenCodeChatModelChangeSheet: View {
     }
 
     private func isSelectedModel(_ choice: OpenCodeModelChoice) -> Bool {
-        choice.id.caseInsensitiveCompare(profile.modelID) == .orderedSame
-            || (profile.resolvedModelID.map { choice.id.caseInsensitiveCompare($0) == .orderedSame } ?? false)
+        if choice.matches(storedModelID: profile.modelID) {
+            return true
+        }
+        if let resolved = profile.resolvedModelID {
+            return choice.matches(storedModelID: resolved)
+        }
+        return false
     }
 
     private func modelChoiceSubtitle(_ choice: OpenCodeModelChoice) -> String {

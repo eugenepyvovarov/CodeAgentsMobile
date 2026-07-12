@@ -143,9 +143,14 @@ struct OpenCodeProviderStatus: Codable, Equatable {
     }
 
     func hasModel(providerID: String, modelID: String) -> Bool {
-        modelChoices(for: providerID).contains { choice in
-            choice.modelID.caseInsensitiveCompare(modelID) == .orderedSame
-        }
+        modelChoice(for: providerID, modelID: modelID) != nil
+    }
+
+    /// Resolve a stored model id that may be either bare (`gpt-5.5`) or full (`openai/gpt-5.5`).
+    func modelChoice(for providerID: String, modelID: String) -> OpenCodeModelChoice? {
+        let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return modelChoices(for: providerID).first { $0.matches(storedModelID: trimmed) }
     }
 
     private func modelChoices(from provider: OpenCodeProvider) -> [OpenCodeModelChoice] {
@@ -175,12 +180,7 @@ struct OpenCodeProviderStatus: Codable, Equatable {
     }
 
     func thinkingChoices(for providerID: String, modelID: String) -> [OpenCodeThinkingChoice] {
-        let choices = modelChoices(for: providerID)
-        let bareModelID = OpenCodePromptModel(fullID: modelID)?.modelID ?? modelID
-        if let match = choices.first(where: {
-            $0.modelID.caseInsensitiveCompare(bareModelID) == .orderedSame
-                || $0.id.caseInsensitiveCompare(modelID) == .orderedSame
-        }) {
+        if let match = modelChoice(for: providerID, modelID: modelID) {
             return OpenCodeThinkingSupport.choices(for: match, providerID: providerID)
         }
         return OpenCodeThinkingSupport.fallbackChoices(providerID: providerID, supportsReasoning: false)
@@ -281,6 +281,23 @@ struct OpenCodeModelChoice: Identifiable, Hashable {
 
     var label: String {
         "\(providerName) · \(modelName)"
+    }
+
+    /// Match stored profile values that may be bare model ids or `provider/model` composites.
+    func matches(storedModelID: String) -> Bool {
+        let trimmed = storedModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if id.caseInsensitiveCompare(trimmed) == .orderedSame {
+            return true
+        }
+        if modelID.caseInsensitiveCompare(trimmed) == .orderedSame {
+            return true
+        }
+        if let parsed = OpenCodePromptModel(fullID: trimmed) {
+            return parsed.providerID.caseInsensitiveCompare(providerID) == .orderedSame
+                && parsed.modelID.caseInsensitiveCompare(modelID) == .orderedSame
+        }
+        return false
     }
 }
 

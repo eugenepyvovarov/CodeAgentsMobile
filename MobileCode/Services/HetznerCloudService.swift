@@ -49,7 +49,7 @@ class HetznerCloudService: CloudProviderProtocol {
     // MARK: - Server Management
     
     func listServers() async throws -> [CloudServer] {
-        let url = URL(string: "\(baseURL)/servers")!
+        let url = URL(string: "\(baseURL)/servers?per_page=50")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -63,19 +63,7 @@ class HetznerCloudService: CloudProviderProtocol {
                 decoder.keyDecodingStrategy = .convertFromSnakeCase
                 let serversResponse = try decoder.decode(HCServersResponse.self, from: data)
                 
-                return serversResponse.servers.map { server in
-                    CloudServer(
-                        id: String(server.id),
-                        name: server.name,
-                        status: server.status,
-                        publicIP: server.publicNet.ipv4?.ip,
-                        privateIP: server.privateNet.first?.ip,
-                        region: server.datacenter.location.name,
-                        imageInfo: server.image.name ?? server.image.description ?? "Image \(server.image.id)",
-                        sizeInfo: server.serverType.name,
-                        providerType: providerType
-                    )
-                }
+                return serversResponse.servers.map { mapServer($0) }
             case 401:
                 throw CloudProviderError.invalidToken
             case 403:
@@ -104,19 +92,7 @@ class HetznerCloudService: CloudProviderProtocol {
                 let decoder = JSONDecoder()
                 decoder.keyDecodingStrategy = .convertFromSnakeCase
                 let serverResponse = try decoder.decode(HCServerResponse.self, from: data)
-                let server = serverResponse.server
-                
-                return CloudServer(
-                    id: String(server.id),
-                    name: server.name,
-                    status: server.status,
-                    publicIP: server.publicNet.ipv4?.ip,
-                    privateIP: server.privateNet.first?.ip,
-                    region: server.datacenter.location.name,
-                    imageInfo: server.image.name ?? server.image.description ?? "Image \(server.image.id)",
-                    sizeInfo: server.serverType.name,
-                    providerType: providerType
-                )
+                return mapServer(serverResponse.server)
             case 404:
                 return nil
             case 401:
@@ -134,7 +110,7 @@ class HetznerCloudService: CloudProviderProtocol {
     // MARK: - SSH Key Management
     
     func listSSHKeys() async throws -> [CloudSSHKey] {
-        let url = URL(string: "\(baseURL)/ssh_keys")!
+        let url = URL(string: "\(baseURL)/ssh_keys?per_page=50")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -311,19 +287,7 @@ class HetznerCloudService: CloudProviderProtocol {
                 let decoder = JSONDecoder()
                 decoder.keyDecodingStrategy = .convertFromSnakeCase
                 let serverResponse = try decoder.decode(HCServerResponse.self, from: data)
-                let server = serverResponse.server
-                
-                return CloudServer(
-                    id: String(server.id),
-                    name: server.name,
-                    status: server.status,
-                    publicIP: server.publicNet.ipv4?.ip,
-                    privateIP: server.privateNet.first?.ip,
-                    region: server.datacenter.location.name,
-                    imageInfo: server.image.name ?? server.image.description ?? "Image \(server.image.id)",
-                    sizeInfo: server.serverType.name,
-                    providerType: providerType
-                )
+                return mapServer(serverResponse.server)
             case 401:
                 throw CloudProviderError.invalidToken
             case 403:
@@ -397,13 +361,16 @@ class HetznerCloudService: CloudProviderProtocol {
                 
                 return typesResponse.serverTypes
                     .filter { type in
-                        // Filter out deprecated server types
+                        // Legacy top-level deprecation (phased out in favor of per-location data).
                         if type.deprecated == true {
                             return false
                         }
-                        // Also check if deprecation is set (even if deprecated flag is not)
                         if type.deprecation != nil {
                             return false
+                        }
+                        // Prefer types still orderable in at least one location when locations are present.
+                        if let locations = type.locations, !locations.isEmpty {
+                            return locations.contains { $0.available }
                         }
                         return true
                     }
@@ -454,27 +421,81 @@ class HetznerCloudService: CloudProviderProtocol {
         
         throw CloudProviderError.unknownError
     }
+
+    // MARK: - Mapping
+
+    private func mapServer(_ server: HCServer) -> CloudServer {
+        CloudServer(
+            id: String(server.id),
+            name: server.name,
+            status: server.status,
+            publicIP: server.publicNet.ipv4?.ip,
+            privateIP: server.privateNet.first?.ip,
+            region: server.regionName,
+            imageInfo: server.imageDisplayName,
+            sizeInfo: server.serverType.name,
+            providerType: providerType
+        )
+    }
 }
 
 // MARK: - Hetzner Cloud API Response Models
 
-private struct HCServersResponse: Codable {
+private struct HCServersResponse: Decodable {
     let servers: [HCServer]
 }
 
-private struct HCServerResponse: Codable {
+private struct HCServerResponse: Decodable {
     let server: HCServer
 }
 
-private struct HCServer: Codable {
+/// Matches current Hetzner Cloud Server schema (post July 2026 datacenter removal).
+/// - `location` is the supported region field.
+/// - `datacenter` may still appear on older cached payloads; treat as optional.
+/// - `image` is nullable (volume/restore/rescue cases).
+/// - `private_net` may be omitted or empty.
+private struct HCServer: Decodable {
     let id: Int
     let name: String
     let status: String
     let publicNet: HCPublicNet
     let privateNet: [HCPrivateNet]
-    let datacenter: HCDatacenter
-    let image: HCImage
+    let location: HCLocation?
+    let datacenter: HCDatacenter?
+    let image: HCImage?
     let serverType: HCServerType
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, status, publicNet, privateNet, location, datacenter, image, serverType
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        status = try container.decode(String.self, forKey: .status)
+        publicNet = try container.decode(HCPublicNet.self, forKey: .publicNet)
+        privateNet = try container.decodeIfPresent([HCPrivateNet].self, forKey: .privateNet) ?? []
+        location = try container.decodeIfPresent(HCLocation.self, forKey: .location)
+        datacenter = try container.decodeIfPresent(HCDatacenter.self, forKey: .datacenter)
+        image = try container.decodeIfPresent(HCImage.self, forKey: .image)
+        serverType = try container.decode(HCServerType.self, forKey: .serverType)
+    }
+
+    var regionName: String {
+        if let location {
+            return location.name
+        }
+        if let datacenter {
+            return datacenter.location.name
+        }
+        return "Unknown"
+    }
+
+    var imageDisplayName: String {
+        guard let image else { return "Unknown image" }
+        return image.name ?? image.description ?? "Image \(image.id)"
+    }
 }
 
 private struct HCPublicNet: Codable {
@@ -548,7 +569,19 @@ private struct HCServerTypeDetail: Codable {
     let memory: Double
     let disk: Int
     let prices: [HCPrice]
+    /// Legacy global deprecation flag (being phased out).
     let deprecated: Bool?
+    /// Legacy global deprecation object (being phased out).
+    let deprecation: HCDeprecation?
+    /// Per-location availability/deprecation (preferred since Sep 2025).
+    let locations: [HCServerTypeLocation]?
+}
+
+private struct HCServerTypeLocation: Codable {
+    let id: Int?
+    let name: String?
+    let available: Bool
+    let recommended: Bool?
     let deprecation: HCDeprecation?
 }
 

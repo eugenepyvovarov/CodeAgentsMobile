@@ -204,6 +204,39 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertFalse(status.hasModel(providerID: "openai", modelID: "gpt-5.4-mini"))
     }
 
+    func testModelChoiceMatchesBareAndFullStoredModelIDs() {
+        let choice = OpenCodeModelChoice(
+            providerID: "openai",
+            providerName: "OpenAI",
+            modelID: "gpt-5.5",
+            modelName: "GPT-5.5"
+        )
+
+        XCTAssertTrue(choice.matches(storedModelID: "openai/gpt-5.5"))
+        XCTAssertTrue(choice.matches(storedModelID: "gpt-5.5"))
+        XCTAssertTrue(choice.matches(storedModelID: "OpenAI/GPT-5.5"))
+        XCTAssertFalse(choice.matches(storedModelID: "anthropic/claude-sonnet"))
+        XCTAssertFalse(choice.matches(storedModelID: "gpt-5.4-mini"))
+
+        let provider = OpenCodeProvider(
+            id: "openai",
+            name: "OpenAI",
+            source: nil,
+            models: ["gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5")]
+        )
+        let status = OpenCodeProviderStatus(
+            providers: [provider],
+            defaultModels: [:],
+            connectedProviderIDs: ["openai"],
+            authMethods: [:]
+        )
+
+        XCTAssertTrue(status.hasModel(providerID: "openai", modelID: "gpt-5.5"))
+        XCTAssertTrue(status.hasModel(providerID: "openai", modelID: "openai/gpt-5.5"))
+        XCTAssertEqual(status.modelChoice(for: "openai", modelID: "gpt-5.5")?.id, "openai/gpt-5.5")
+        XCTAssertEqual(status.modelChoice(for: "openai", modelID: "openai/gpt-5.5")?.id, "openai/gpt-5.5")
+    }
+
     func testProviderStatusSeparatesConfiguredProviderFromAuthCredential() {
         let openAI = OpenCodeProvider(
             id: "openai",

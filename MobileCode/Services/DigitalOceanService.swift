@@ -49,7 +49,8 @@ class DigitalOceanService: CloudProviderProtocol {
     // MARK: - Server Management
     
     func listServers() async throws -> [CloudServer] {
-        let url = URL(string: "\(baseURL)/droplets")!
+        // Default page size is 20; request a full page so larger accounts still list.
+        let url = URL(string: "\(baseURL)/droplets?per_page=200")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -71,7 +72,7 @@ class DigitalOceanService: CloudProviderProtocol {
                         publicIP: droplet.networks.v4.first { $0.type == "public" }?.ipAddress,
                         privateIP: droplet.networks.v4.first { $0.type == "private" }?.ipAddress,
                         region: droplet.region.name,
-                        imageInfo: droplet.image.name ?? droplet.image.slug,
+                        imageInfo: droplet.image.name ?? droplet.image.slug ?? "Unknown image",
                         sizeInfo: droplet.size.slug,
                         providerType: providerType
                     )
@@ -113,7 +114,7 @@ class DigitalOceanService: CloudProviderProtocol {
                     publicIP: droplet.networks.v4.first { $0.type == "public" }?.ipAddress,
                     privateIP: droplet.networks.v4.first { $0.type == "private" }?.ipAddress,
                     region: droplet.region.name,
-                    imageInfo: droplet.image.name ?? droplet.image.slug,
+                    imageInfo: droplet.image.name ?? droplet.image.slug ?? "Unknown image",
                     sizeInfo: droplet.size.slug,
                     providerType: providerType
                 )
@@ -134,7 +135,7 @@ class DigitalOceanService: CloudProviderProtocol {
     // MARK: - SSH Key Management
     
     func listSSHKeys() async throws -> [CloudSSHKey] {
-        let url = URL(string: "\(baseURL)/account/keys")!
+        let url = URL(string: "\(baseURL)/account/keys?per_page=200")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -320,7 +321,7 @@ class DigitalOceanService: CloudProviderProtocol {
                     publicIP: droplet.networks.v4.first { $0.type == "public" }?.ipAddress,
                     privateIP: droplet.networks.v4.first { $0.type == "private" }?.ipAddress,
                     region: droplet.region.name,
-                    imageInfo: droplet.image.name ?? droplet.image.slug,
+                    imageInfo: droplet.image.name ?? droplet.image.slug ?? "Unknown image",
                     sizeInfo: droplet.size.slug,
                     providerType: providerType
                 )
@@ -415,7 +416,8 @@ class DigitalOceanService: CloudProviderProtocol {
     }
     
     func listSizes() async throws -> [(id: String, name: String, description: String)] {
-        let url = URL(string: "\(baseURL)/sizes")!
+        // Match listSizesWithRegions: DO defaults to 20 sizes without per_page.
+        let url = URL(string: "\(baseURL)/sizes?per_page=200")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -469,7 +471,10 @@ class DigitalOceanService: CloudProviderProtocol {
                 
                 let availableImages = imagesResponse.images
                     .filter { $0.status == "available" }
-                    .map { (id: $0.slug, name: $0.name) }
+                    .compactMap { image -> (id: String, name: String)? in
+                        guard let slug = image.slug, !slug.isEmpty else { return nil }
+                        return (id: slug, name: image.name)
+                    }
                 
                 print("🔍 DigitalOcean API returned \(imagesResponse.images.count) images, \(availableImages.count) available")
                 
@@ -520,7 +525,17 @@ private struct DODroplet: Codable {
 }
 
 private struct DONetworks: Codable {
+    /// DO may omit `v4` when only IPv6 is present.
     let v4: [DONetwork]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        v4 = try container.decodeIfPresent([DONetwork].self, forKey: .v4) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case v4
+    }
 }
 
 private struct DONetwork: Codable {
@@ -536,7 +551,8 @@ private struct DORegion: Codable {
 
 private struct DOImage: Codable {
     let name: String?
-    let slug: String
+    /// Custom / snapshot / retired base images often return `slug: null` from DO.
+    let slug: String?
 }
 
 private struct DOSize: Codable {
@@ -583,7 +599,8 @@ private struct DOImagesResponse: Codable {
 }
 
 private struct DOImageDetail: Codable {
-    let slug: String
+    /// Some distribution rows can omit or null `slug`; skip those when listing.
+    let slug: String?
     let name: String
     let status: String
 }
