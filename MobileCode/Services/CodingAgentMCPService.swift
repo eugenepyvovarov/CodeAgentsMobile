@@ -76,6 +76,37 @@ final class CodingAgentMCPService: ObservableObject {
         try await openCodeService.projectServerConfigurations(for: project)
     }
 
+    /// Batch-write project MCP servers (one `opencode.json` write). See `OpenCodeMCPService`.
+    func writeProjectServerConfigurations(
+        _ configurations: [String: OpenCodeMCPServerConfiguration],
+        for project: RemoteProject,
+        activateLive: Bool = false
+    ) async throws {
+        try await openCodeService.writeProjectServerConfigurations(
+            configurations,
+            for: project,
+            activateLive: activateLive
+        )
+    }
+
+    /// OpenCode configuration for managed scheduler headers (clone-specific paths/ids).
+    func managedSchedulerConfiguration(for project: RemoteProject) -> OpenCodeMCPServerConfiguration? {
+        OpenCodeMCPServerConfiguration(
+            server: schedulerProvisionService.managedSchedulerServer(for: project),
+            enabled: true
+        )
+    }
+
+    /// OpenCode configuration for managed avatar MCP (clone-specific script path).
+    func managedAvatarConfiguration(for project: RemoteProject) -> OpenCodeMCPServerConfiguration {
+        avatarProvisionService.managedAvatarServerConfiguration(for: project)
+    }
+
+    /// Upload avatar MCP script only (config is written via batch MCP).
+    func deployManagedAvatarScript(for project: RemoteProject) async throws {
+        try await avatarProvisionService.deployManagedAvatarScript(for: project)
+    }
+
     func removeServer(
         named name: String,
         scope: MCPServer.MCPScope? = nil,

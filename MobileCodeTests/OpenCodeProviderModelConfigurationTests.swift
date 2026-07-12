@@ -170,7 +170,7 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
         XCTAssertEqual(status.apiKeyProviderChoices.filter { $0.id == "anthropic" }.count, 1)
     }
 
-    func testProviderStatusUsesConfiguredModelsWhenAvailable() {
+    func testProviderStatusPrefersCatalogOverConfiguredModels() {
         let catalogOpenAI = OpenCodeProvider(
             id: "openai",
             name: "OpenAI",
@@ -182,6 +182,7 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
                 "gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5")
             ]
         )
+        // Config may be a stale/partial subset or include free-text fakes — catalog wins.
         let configuredOpenAI = OpenCodeProvider(
             id: "openai",
             name: "OpenAI",
@@ -189,7 +190,8 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
             env: [],
             key: nil,
             models: [
-                "gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5")
+                "gpt-5.5": OpenCodeProviderModel(id: "gpt-5.5", name: "GPT-5.5"),
+                "gpt-5.6-luna": OpenCodeProviderModel(id: "gpt-5.6-luna", name: "GPT-5.6 Luna")
             ]
         )
         let status = OpenCodeProviderStatus(
@@ -200,8 +202,35 @@ final class OpenCodeProviderModelConfigurationTests: XCTestCase {
             authMethods: [:]
         )
 
-        XCTAssertEqual(status.modelChoices(for: "openai").map(\.id), ["openai/gpt-5.5"])
-        XCTAssertFalse(status.hasModel(providerID: "openai", modelID: "gpt-5.4-mini"))
+        XCTAssertEqual(
+            status.modelChoices(for: "openai").map(\.id),
+            ["openai/gpt-5.4-mini", "openai/gpt-5.5"]
+        )
+        XCTAssertTrue(status.hasModel(providerID: "openai", modelID: "gpt-5.4-mini"))
+        XCTAssertFalse(status.hasModel(providerID: "openai", modelID: "gpt-5.6-luna"))
+    }
+
+    func testProviderStatusFallsBackToConfiguredModelsWhenCatalogEmpty() {
+        let customProvider = OpenCodeProvider(
+            id: "my-proxy",
+            name: "My Proxy",
+            source: "config",
+            env: [],
+            key: nil,
+            models: [
+                "qwen3-coder": OpenCodeProviderModel(id: "qwen3-coder", name: "Qwen Coder")
+            ]
+        )
+        let status = OpenCodeProviderStatus(
+            providers: [],
+            configuredProviders: [customProvider],
+            defaultModels: [:],
+            connectedProviderIDs: ["my-proxy"],
+            authMethods: [:]
+        )
+
+        XCTAssertEqual(status.modelChoices(for: "my-proxy").map(\.id), ["my-proxy/qwen3-coder"])
+        XCTAssertTrue(status.hasModel(providerID: "my-proxy", modelID: "qwen3-coder"))
     }
 
     func testModelChoiceMatchesBareAndFullStoredModelIDs() {

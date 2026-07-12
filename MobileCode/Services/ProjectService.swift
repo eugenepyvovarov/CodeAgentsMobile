@@ -65,7 +65,8 @@ class ProjectService {
         }
         SSHLogger.log("Creating agent on server \(server.name)", level: .info)
 
-        let session = try await sshService.connect(to: server)
+        // Pooled server session — avoid a fresh SSH login per create.
+        let session = try await sshService.getConnection(for: server, purpose: .fileOperations)
 
         let basePath: String
         if let parentPath, !parentPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -79,7 +80,6 @@ class ProjectService {
 
         let projectPath = AgentDuplicationPath.join(parent: basePath, folderName: safeName)
         let qBase = SSHShellQuoting.quote(basePath)
-        let qProject = SSHShellQuoting.quote(projectPath)
 
         SSHLogger.log("Creating agent directory", level: .info)
 
@@ -91,7 +91,6 @@ class ProjectService {
             if allowFallback, basePath != "/root/projects" {
                 let fallbackPath = AgentDuplicationPath.join(parent: "/root/projects", folderName: safeName)
                 let qFallbackRoot = SSHShellQuoting.quote("/root/projects")
-                let qFallback = SSHShellQuoting.quote(fallbackPath)
                 _ = try await session.execute("mkdir -p -- \(qFallbackRoot)")
 
                 if try await validateWritePermission(at: "/root/projects", using: session) {
@@ -152,41 +151,65 @@ class ProjectService {
 
     /// Best-effort remove of a remote agent directory (used when local insert fails after mkdir).
     func removeAgentDirectory(at path: String, on server: Server) async throws {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "/", !trimmed.contains("..") else {
-            throw ProjectServiceError.invalidName
-        }
         let session = try await sshService.connect(to: server)
-        let qPath = SSHShellQuoting.quote(trimmed)
-        _ = try await session.execute("rm -rf -- \(qPath)")
+        defer { session.disconnect() }
+        try await removeRemotePathIfPresent(path, using: session)
     }
     
-    /// Delete an agent directory from the server
+    /// Delete an agent directory from the server.
+    /// Idempotent: if the path is already gone, succeeds so local cleanup can proceed.
+    /// Verifies the path is gone after `rm` so a partial failure cannot leave a folder that
+    /// later blocks Duplicate/Create with “folder already exists”.
     /// - Parameter project: Agent to delete
     func deleteProject(_ project: RemoteProject) async throws {
         guard let server = ServerManager.shared.server(withId: project.serverId) else {
             throw ProjectServiceError.serverNotFound
         }
-        
-        SSHLogger.log("Deleting agent from server \(server.name)", level: .info)
 
-        // Get a connection for this project
-        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        let qPath = SSHShellQuoting.quote(project.path)
-
-        // Confirm the directory exists before deletion
-        let checkResult = try await session.execute("test -d \(qPath) && echo 'EXISTS'")
-        guard checkResult.trimmingCharacters(in: .whitespacesAndNewlines) == "EXISTS" else {
-            throw ProjectServiceError.projectNotFound
+        let path = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, path != "/", !path.contains("..") else {
+            throw ProjectServiceError.invalidName
         }
 
-        // Delete the project directory (-- ends option parsing)
-        _ = try await session.execute("rm -rf -- \(qPath)")
+        SSHLogger.log("Deleting agent directory on server \(server.name) path=\(path)", level: .info)
 
-        // Close all connections for this project
+        // Drop pooled sessions first so nothing holds the tree open for file ops / OpenCode.
         sshService.closeConnections(projectId: project.id)
 
+        // Server-scoped connection (not project retainer) — project path may vanish mid-call.
+        let session = try await sshService.connect(to: server)
+        defer { session.disconnect() }
+
+        try await removeRemotePathIfPresent(path, using: session)
+
         SSHLogger.log("Successfully deleted agent directory", level: .info)
+    }
+
+    /// Remove a remote path when present; no-op if already missing. Throws if it remains after `rm`.
+    func removeRemotePathIfPresent(_ path: String, using session: SSHSession) async throws {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "/", !trimmed.contains("..") else {
+            throw ProjectServiceError.invalidName
+        }
+        let qPath = SSHShellQuoting.quote(trimmed)
+
+        let before = try await session.execute("if [ -e \(qPath) ]; then echo EXISTS; else echo GONE; fi")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if before == "GONE" {
+            SSHLogger.log("Agent directory already absent; treating delete as success", level: .info)
+            return
+        }
+
+        // Best-effort chmod so root-owned leftovers under the tree are less likely to block rm.
+        _ = try? await session.execute("chmod -R u+w -- \(qPath) 2>/dev/null || true")
+        _ = try await session.execute("rm -rf -- \(qPath)")
+
+        let after = try await session.execute("if [ -e \(qPath) ]; then echo EXISTS; else echo GONE; fi")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard after == "GONE" else {
+            SSHLogger.log("Agent directory still present after rm -rf: \(trimmed)", level: .error)
+            throw ProjectServiceError.failedToDeleteDirectory
+        }
     }
 
     // MARK: - Private Methods
@@ -209,6 +232,7 @@ enum ProjectServiceError: LocalizedError {
     case serverNotFound
     case projectNotFound
     case failedToCreateDirectory
+    case failedToDeleteDirectory
     case noWritePermission
     case invalidName
     case directoryAlreadyExists
@@ -223,6 +247,8 @@ enum ProjectServiceError: LocalizedError {
             return "Agent directory not found on server"
         case .failedToCreateDirectory:
             return "Failed to create agent directory"
+        case .failedToDeleteDirectory:
+            return "Could not delete the agent folder on the server. Check permissions and try again."
         case .noWritePermission:
             return "No write permission in the selected directory"
         case .directoryAlreadyExists:

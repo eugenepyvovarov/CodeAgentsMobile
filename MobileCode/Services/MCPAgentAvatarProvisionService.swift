@@ -30,6 +30,12 @@ final class MCPAgentAvatarProvisionService {
         )
     }
 
+    /// Deploy the managed avatar MCP Python script without touching OpenCode config.
+    func deployManagedAvatarScript(for project: RemoteProject) async throws {
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        try await deployScriptIfNeeded(for: project, session: session)
+    }
+
     func managedAvatarServer(for project: RemoteProject) -> MCPServer {
         let scriptPath = AgentProjectFileLayout.remotePath(
             projectPath: project.path,

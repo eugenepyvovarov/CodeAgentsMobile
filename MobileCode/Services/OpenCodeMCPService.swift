@@ -84,6 +84,45 @@ final class OpenCodeMCPService: ObservableObject {
         return loaded.document.serverConfigurations()
     }
 
+    /// Write many project MCP servers in **one** load/write of `opencode.json`.
+    /// - Parameter activateLive: When true, also POSTs each server to a live OpenCode process (slow).
+    ///   Duplicate Agent leaves this false — OpenCode picks up config on next session open.
+    func writeProjectServerConfigurations(
+        _ configurations: [String: OpenCodeMCPServerConfiguration],
+        for project: RemoteProject,
+        activateLive: Bool = false
+    ) async throws {
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        var loaded = try await loadConfiguration(for: project, scope: .project, session: session)
+        let previousJSON = try loaded.document.toJSONString()
+
+        for (name, configuration) in configurations {
+            let synthetic = MCPServer(name: name, openCodeConfiguration: configuration)
+                ?? MCPServer(
+                    name: name,
+                    command: nil,
+                    args: nil,
+                    env: nil,
+                    url: configuration.url,
+                    headers: configuration.headers
+                )
+            try validateManagedServerWrite(name, server: synthetic, allowManaged: MCPServer.isManagedServer(name))
+            try loaded.document.setServer(named: name, configuration: configuration)
+        }
+
+        try await writeConfigurationIfChanged(
+            loaded.document,
+            previousJSON: previousJSON,
+            to: loaded.path,
+            session: session
+        )
+
+        guard activateLive else { return }
+        for (name, configuration) in configurations.sorted(by: { $0.key < $1.key }) {
+            await addLiveServer(name: name, configuration: configuration, for: project)
+        }
+    }
+
     func removeServer(
         named name: String,
         scope: MCPServer.MCPScope? = nil,

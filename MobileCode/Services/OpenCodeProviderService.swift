@@ -126,20 +126,23 @@ struct OpenCodeProviderStatus: Codable, Equatable {
         let normalizedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedProviderID.isEmpty else { return [] }
 
-        let configuredProvider = configuredProviders.first { provider in
+        // Prefer OpenCode's live catalog (`/provider`). Configured provider.models from
+        // opencode.json can include free-text / stale ids that are not real provider models.
+        // Only fall back to configured models when the catalog has nothing for this provider
+        // (custom OpenAI-compatible endpoints, empty catalog, etc.).
+        if let catalogProvider = providers.first(where: { provider in
             provider.id.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        }), !catalogProvider.models.isEmpty {
+            return modelChoices(from: catalogProvider)
         }
-        if let configuredProvider, !configuredProvider.models.isEmpty {
+
+        if let configuredProvider = configuredProviders.first(where: { provider in
+            provider.id.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
+        }), !configuredProvider.models.isEmpty {
             return modelChoices(from: configuredProvider)
         }
 
-        guard let provider = providers.first(where: { provider in
-            provider.id.caseInsensitiveCompare(normalizedProviderID) == .orderedSame
-        }) else {
-            return []
-        }
-
-        return modelChoices(from: provider)
+        return []
     }
 
     func hasModel(providerID: String, modelID: String) -> Bool {
@@ -992,13 +995,7 @@ private extension OpenCodeProviderService {
         session: SSHSession,
         directory: String?
     ) async throws {
-        let configured = try await client.configuredProviders(sshSession: session, directory: directory)
-        guard configured.providers.contains(where: { provider in
-            provider.id.caseInsensitiveCompare(model.providerID) == .orderedSame
-                && provider.models.values.contains { $0.id.caseInsensitiveCompare(model.modelID) == .orderedSame }
-        }) else {
-            throw OpenCodeProviderServiceError.modelNotConfigured(model.fullID)
-        }
+        try await ensureModelKnownToOpenCode(model, client: client, session: session, directory: directory)
 
         let created = try await client.createSession(
             sshSession: session,
@@ -1036,6 +1033,37 @@ private extension OpenCodeProviderService {
             model: model,
             eventIterator: eventIterator
         )
+    }
+
+    /// Prefer live catalog (`/provider`). Only fall back to `/config/providers` when the catalog
+    /// has no models for the provider (custom endpoints). Config-only free-text ids on catalog
+    /// providers are rejected so stale opencode.json entries cannot pass validation.
+    func ensureModelKnownToOpenCode(
+        _ model: OpenCodePromptModel,
+        client: OpenCodeClient,
+        session: SSHSession,
+        directory: String?
+    ) async throws {
+        let catalog = try? await client.providerList(sshSession: session, directory: directory)
+        if let catalogProvider = catalog?.all.first(where: {
+            $0.id.caseInsensitiveCompare(model.providerID) == .orderedSame
+        }), !catalogProvider.models.isEmpty {
+            let known = catalogProvider.models.values.contains {
+                $0.id.caseInsensitiveCompare(model.modelID) == .orderedSame
+            }
+            guard known else {
+                throw OpenCodeProviderServiceError.modelNotConfigured(model.fullID)
+            }
+            return
+        }
+
+        let configured = try await client.configuredProviders(sshSession: session, directory: directory)
+        guard configured.providers.contains(where: { provider in
+            provider.id.caseInsensitiveCompare(model.providerID) == .orderedSame
+                && provider.models.values.contains { $0.id.caseInsensitiveCompare(model.modelID) == .orderedSame }
+        }) else {
+            throw OpenCodeProviderServiceError.modelNotConfigured(model.fullID)
+        }
     }
 
     func waitForValidationReply(

@@ -73,6 +73,69 @@ final class AgentDuplicationTests: XCTestCase {
         XCTAssertEqual(AgentDuplicationPath.nextFolderNameCandidate(base: "blog-copy", attempt: 3), "blog-copy-3")
     }
 
+    // MARK: - Remote bootstrap (fast path)
+
+    func testBootstrapScriptIncludesExclusiveMkdirAndServerLocalCopies() {
+        let script = AgentDuplicationRemoteBootstrap.shellScript(
+            sourcePath: "/home/codeagent/projects/X",
+            clonePath: "/home/codeagent/projects/X-Copy",
+            copyRules: true,
+            copySkills: true,
+            copyAvatarImage: true
+        )
+        XCTAssertTrue(script.contains("mkdir -- \"$DST\""))
+        XCTAssertTrue(script.contains(AgentDuplicationRemoteBootstrap.existsMarker))
+        XCTAssertTrue(script.contains(AgentDuplicationRemoteBootstrap.okMarker))
+        XCTAssertTrue(script.contains("cp -a --"))
+        XCTAssertTrue(script.contains(".opencode/skills"))
+        XCTAssertTrue(script.contains("AGENTS.md"))
+        XCTAssertTrue(script.contains(".codeagents/avatar.png"))
+        // Must not scp/upload from phone — only remote paths.
+        XCTAssertFalse(script.contains("scp "))
+    }
+
+    func testBootstrapScriptOmitsOptionalSections() {
+        let script = AgentDuplicationRemoteBootstrap.shellScript(
+            sourcePath: "/a/src",
+            clonePath: "/a/dst",
+            copyRules: false,
+            copySkills: false,
+            copyAvatarImage: false
+        )
+        XCTAssertFalse(script.contains("AGENTS.md"))
+        XCTAssertFalse(script.contains(".opencode/skills"))
+        XCTAssertFalse(script.contains("avatar.png"))
+        XCTAssertTrue(script.contains(AgentDuplicationRemoteBootstrap.okMarker))
+    }
+
+    func testBootstrapOutputInterpretation() {
+        XCTAssertNoThrow(
+            try AgentDuplicationRemoteBootstrap.interpretOutput("noise\nDUPLICATE_OK\n").get()
+        )
+        if case .failure(let error) = AgentDuplicationRemoteBootstrap.interpretOutput("DUPLICATE_EXISTS") {
+            XCTAssertEqual(error, .directoryAlreadyExists)
+        } else {
+            XCTFail("expected directoryAlreadyExists")
+        }
+        if case .failure(let error) = AgentDuplicationRemoteBootstrap.interpretOutput("DUPLICATE_MKDIR_FAILED") {
+            XCTAssertEqual(error, .failedToCreateDirectory)
+        } else {
+            XCTFail("expected failedToCreateDirectory")
+        }
+    }
+
+    func testProgressLabelsAreNonEmpty() {
+        for phase in [
+            DuplicateAgentProgress.preparing,
+            .creatingFolder,
+            .copyingWorkspace,
+            .configuringTools,
+            .finishing
+        ] {
+            XCTAssertFalse(phase.userLabel.isEmpty)
+        }
+    }
+
     func testEnvCopyModes() {
         XCTAssertEqual(AgentEnvCopyMode.off.rawValue, "off")
         XCTAssertEqual(AgentEnvCopyMode.keysOnly.rawValue, "keysOnly")

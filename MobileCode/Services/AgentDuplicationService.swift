@@ -75,7 +75,6 @@ final class AgentDuplicationService {
     private let projectService: ProjectService
     private let sshService: SSHService
     private let mcpService: CodingAgentMCPService
-    private let skillSyncService: AgentSkillSyncService
     private let approvalStore: ToolApprovalStore
     private let pushManager: PushNotificationsManager
 
@@ -83,24 +82,30 @@ final class AgentDuplicationService {
         projectService: ProjectService? = nil,
         sshService: SSHService? = nil,
         mcpService: CodingAgentMCPService? = nil,
-        skillSyncService: AgentSkillSyncService? = nil,
+        skillSyncService _: AgentSkillSyncService? = nil,
         approvalStore: ToolApprovalStore? = nil,
         pushManager: PushNotificationsManager? = nil
     ) {
         self.projectService = projectService ?? ServiceManager.shared.projectService
         self.sshService = sshService ?? ServiceManager.shared.sshService
         self.mcpService = mcpService ?? .shared
-        self.skillSyncService = skillSyncService ?? .shared
         self.approvalStore = approvalStore ?? .shared
         self.pushManager = pushManager ?? .shared
     }
 
     /// Duplicate `source` into a new agent. Does **not** change the active project.
+    ///
+    /// Fast path: one remote bootstrap script (mkdir + server-local `cp` for rules/skills/avatar),
+    /// one batched `opencode.json` write for MCP, then local SwiftData. Push registration runs after return.
     func duplicate(
         source: RemoteProject,
         request: DuplicateAgentRequest,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        onProgress: ((DuplicateAgentProgress) -> Void)? = nil
     ) async throws -> DuplicateAgentResult {
+        let progress = onProgress ?? { _ in }
+        progress(.preparing)
+
         if let fieldError = AgentDuplicationPath.validateRequestFields(
             displayName: request.displayName,
             folderName: request.folderName
@@ -127,13 +132,27 @@ final class AgentDuplicationService {
 
         var createdRemotePath: String?
         do {
-            let remotePath = try await projectService.createAgentDirectory(
-                folderName: safeFolder,
-                parentPath: parentPath,
-                on: server,
-                allowFallback: false,
-                failIfExists: true
+            progress(.creatingFolder)
+            // Pooled file-ops session shared for bootstrap + rules guard.
+            let session = try await sshService.getConnection(for: source, purpose: .fileOperations)
+
+            let bootstrap = AgentDuplicationRemoteBootstrap.shellScript(
+                sourcePath: source.path,
+                clonePath: intendedPath,
+                copyRules: request.copyRules,
+                copySkills: request.copySkills,
+                copyAvatarImage: request.copyAvatar
             )
+            progress(.copyingWorkspace)
+            let bootstrapOutput = try await session.execute(bootstrap)
+            switch AgentDuplicationRemoteBootstrap.interpretOutput(bootstrapOutput) {
+            case .failure(let error):
+                throw error
+            case .success:
+                break
+            }
+
+            let remotePath = intendedPath
             createdRemotePath = remotePath
 
             let basePath = AgentDuplicationPath.parentDirectory(of: remotePath) ?? parentPath
@@ -148,7 +167,6 @@ final class AgentDuplicationService {
                 serverId: server.id,
                 basePath: basePath
             )
-            // Ensure path matches verified remote path (RemoteProject init joins base/name).
             clone.path = remotePath
             clone.resetOpenCodeRuntimeState()
             clone.clearClaudeProxyTransportState(clearActiveStreamingMessage: true)
@@ -168,27 +186,32 @@ final class AgentDuplicationService {
             var warnings: [String] = []
             var didCopyPermissions = false
 
+            // Rules tool-call guard (single remote command after bootstrap copy).
             if request.copyRules {
                 do {
-                    try await copyRules(from: source, to: clone)
+                    try await CodeAgentsUIRules.ensureRulesFile(
+                        session: session,
+                        project: clone,
+                        onlyIfMissing: false
+                    )
                 } catch {
                     warnings.append("Rules: \(error.localizedDescription)")
                 }
             }
 
             if request.copySkills {
-                let skillWarnings = await copySkills(
-                    from: source,
-                    to: clone,
-                    modelContext: modelContext
-                )
-                warnings.append(contentsOf: skillWarnings)
+                assignSkillsLocally(from: source, to: clone, modelContext: modelContext)
             }
 
-            if request.copyProjectMCP {
-                let mcpWarnings = await copyProjectMCP(from: source, to: clone)
-                warnings.append(contentsOf: mcpWarnings)
-            }
+            progress(.configuringTools)
+
+            // Batch MCP: user servers (optional) + managed scheduler + avatar in one write.
+            let mcpWarnings = await configureMCPBatched(
+                from: source,
+                to: clone,
+                copyProjectMCP: request.copyProjectMCP
+            )
+            warnings.append(contentsOf: mcpWarnings)
 
             if request.copyPermissions {
                 approvalStore.copyAgentApprovals(from: source.id, to: clone.id)
@@ -212,30 +235,17 @@ final class AgentDuplicationService {
 
             if request.copyAvatar {
                 do {
-                    try await AgentAvatarService.shared.copyAvatar(from: source, to: clone)
+                    try await AgentAvatarService.shared.copyAvatar(
+                        from: source,
+                        to: clone,
+                        imageAlreadyCopied: true
+                    )
                 } catch {
                     warnings.append("Avatar: \(error.localizedDescription)")
                 }
             }
 
-            // After identity may have been created for env, refresh managed scheduler headers.
-            if request.copyProjectMCP || request.envMode != .off {
-                do {
-                    try await mcpService.ensureManagedSchedulerServerIfNeeded(for: clone)
-                } catch {
-                    // Non-fatal when MCP was already provisioned without identity.
-                    if !warnings.contains(where: { $0.hasPrefix("Managed scheduler") }) {
-                        warnings.append("Managed scheduler MCP: \(error.localizedDescription)")
-                    }
-                }
-            }
-
-            // Always try to provision avatar MCP on the clone so the agent can set its face.
-            do {
-                try await mcpService.ensureManagedAvatarServerIfNeeded(for: clone)
-            } catch {
-                warnings.append("Avatar MCP: \(error.localizedDescription)")
-            }
+            progress(.finishing)
 
             do {
                 try modelContext.save()
@@ -250,15 +260,23 @@ final class AgentDuplicationService {
 
             ShortcutSyncService.shared.sync(using: modelContext)
 
+            // Defer push — not required to show "Agent Created".
             let agentDisplayName = "\(clone.displayTitle)@\(server.name)"
-            await pushManager.registerProjectSubscription(
-                project: clone,
-                server: server,
-                agentDisplayName: agentDisplayName
-            )
+            let cloneId = clone.id
+            Task { @MainActor in
+                await self.pushManager.registerProjectSubscription(
+                    project: clone,
+                    server: server,
+                    agentDisplayName: agentDisplayName
+                )
+                SSHLogger.log(
+                    "Deferred push registration for duplicated agent \(cloneId.uuidString)",
+                    level: .debug
+                )
+            }
 
             SSHLogger.log(
-                "Duplicated agent \(source.id.uuidString) → \(clone.id.uuidString) path=\(remotePath) warnings=\(warnings.count)",
+                "Duplicated agent \(source.id.uuidString) → \(clone.id.uuidString) path=\(remotePath) warnings=\(warnings.count) (fast path)",
                 level: .info
             )
 
@@ -274,8 +292,6 @@ final class AgentDuplicationService {
             throw mapProjectError(error)
         } catch let error as AgentDuplicationError {
             if let path = createdRemotePath {
-                // Only roll back remote when local insert/save failed hard.
-                // Exclusive mkdir means only the creator owns this leaf path.
                 if case .localSaveFailed = error {
                     try? await projectService.removeAgentDirectory(at: path, on: server)
                 }
@@ -321,7 +337,7 @@ final class AgentDuplicationService {
             return .invalidFolderName
         case .directoryAlreadyExists:
             return .directoryAlreadyExists
-        case .failedToCreateDirectory:
+        case .failedToCreateDirectory, .failedToDeleteDirectory:
             return .failedToCreateDirectory
         case .noWritePermission:
             return .noWritePermission
@@ -332,59 +348,12 @@ final class AgentDuplicationService {
         }
     }
 
-    private func copyRules(from source: RemoteProject, to clone: RemoteProject) async throws {
-        let session = try await sshService.getConnection(for: source, purpose: .fileOperations)
-        guard let content = try await readRulesContent(for: source, session: session) else {
-            return
-        }
-
-        let writeSession = try await sshService.getConnection(for: clone, purpose: .fileOperations)
-        let rulesPath = AgentProjectFileLayout.remotePath(
-            projectPath: clone.path,
-            relativePath: AgentProjectFileLayout.rulesPrimaryRelativePath
-        )
-        let rulesDirectory = (rulesPath as NSString).deletingLastPathComponent
-        _ = try await writeSession.execute("mkdir -p \(shellEscaped(rulesDirectory))")
-
-        let guarded = CodeAgentsUIRules.ensuringToolCallGuard(in: content)
-        guard let data = guarded.data(using: .utf8) else {
-            throw SSHError.fileTransferFailed("Invalid rules content")
-        }
-        let base64 = data.base64EncodedString()
-        let writeCommand = "printf '%s' \(shellEscaped(base64)) | base64 -d > \(shellEscaped(rulesPath))"
-        _ = try await writeSession.execute(writeCommand)
-
-        try await CodeAgentsUIRules.ensureRulesFile(
-            session: writeSession,
-            project: clone,
-            onlyIfMissing: false
-        )
-    }
-
-    private func readRulesContent(for project: RemoteProject, session: SSHSession) async throws -> String? {
-        let candidates = AgentProjectFileLayout.rulesReadCandidates.map(\.relativePath)
-        for relative in candidates {
-            let path = AgentProjectFileLayout.remotePath(projectPath: project.path, relativePath: relative)
-            do {
-                let raw = try await session.readFile(path)
-                return raw
-            } catch {
-                let message = error.localizedDescription.lowercased()
-                if message.contains("no such file") || message.contains("cannot open") {
-                    continue
-                }
-                throw error
-            }
-        }
-        return nil
-    }
-
-    private func copySkills(
+    /// Mirror skill assignment rows only — remote skill trees were copied in bootstrap via `cp -a`.
+    private func assignSkillsLocally(
         from source: RemoteProject,
         to clone: RemoteProject,
         modelContext: ModelContext
-    ) async -> [String] {
-        var warnings: [String] = []
+    ) {
         let sourceId = source.id
         let descriptor = FetchDescriptor<AgentSkillAssignment>(
             predicate: #Predicate { assignment in
@@ -392,114 +361,55 @@ final class AgentDuplicationService {
             }
         )
         let assignments = (try? modelContext.fetch(descriptor)) ?? []
-        guard !assignments.isEmpty else { return [] }
-
-        let skills = (try? modelContext.fetch(FetchDescriptor<AgentSkill>())) ?? []
-        let skillBySlug = Dictionary(uniqueKeysWithValues: skills.map { ($0.slug, $0) })
-
         for assignment in assignments {
-            let slug = assignment.skillSlug
-            var installed = false
-
-            if let skill = skillBySlug[slug] {
-                do {
-                    try await skillSyncService.installSkill(skill, to: clone)
-                    installed = true
-                } catch {
-                    // Fall through to remote directory copy.
-                    SSHLogger.log(
-                        "Skill library install failed for \(slug); trying remote copy: \(error.localizedDescription)",
-                        level: .debug
-                    )
-                }
-            }
-
-            if !installed {
-                do {
-                    try await copyRemoteSkillDirectory(slug: slug, from: source, to: clone)
-                    installed = true
-                } catch {
-                    if skillBySlug[slug] == nil {
-                        warnings.append("Skill “\(slug)” is not in the local library and was missing on the source agent.")
-                    } else {
-                        warnings.append("Skill “\(slug)”: \(error.localizedDescription)")
-                    }
-                }
-            }
-
-            // Only assign after remote files exist so Abilities does not show a broken enable.
-            if installed {
-                modelContext.insert(AgentSkillAssignment(projectId: clone.id, skillSlug: slug))
-            }
+            modelContext.insert(AgentSkillAssignment(projectId: clone.id, skillSlug: assignment.skillSlug))
         }
-        return warnings
     }
 
-    /// Best-effort: `cp -a` source `.opencode/skills/<slug>` → clone when local library is missing/fails.
-    private func copyRemoteSkillDirectory(slug: String, from source: RemoteProject, to clone: RemoteProject) async throws {
-        guard SSHShellQuoting.isSafePathComponent(slug) else {
-            throw SkillLibraryError.invalidSkill("Unsafe skill slug")
-        }
-
-        let session = try await sshService.getConnection(for: source, purpose: .fileOperations)
-        let relative = "\(AgentProjectFileLayout.skillsInstallRelativePath)/\(slug)"
-        let sourceSkill = AgentProjectFileLayout.remotePath(projectPath: source.path, relativePath: relative)
-        let destRoot = AgentProjectFileLayout.remotePath(
-            projectPath: clone.path,
-            relativePath: AgentProjectFileLayout.skillsInstallRelativePath
-        )
-        let destSkill = "\(destRoot)/\(slug)"
-
-        let qSource = SSHShellQuoting.quote(sourceSkill)
-        let qDestRoot = SSHShellQuoting.quote(destRoot)
-        let qDest = SSHShellQuoting.quote(destSkill)
-
-        let exists = try await session.execute("test -d \(qSource) && echo EXISTS || echo MISSING")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard exists == "EXISTS" else {
-            throw SkillLibraryError.invalidSkill("Missing remote skill folder for \(slug)")
-        }
-
-        _ = try await session.execute("mkdir -p -- \(qDestRoot)")
-        // Same server: remote-to-remote copy (source and clone share SSH host).
-        _ = try await session.execute("rm -rf -- \(qDest) && cp -a -- \(qSource) \(qDest)")
-    }
-
-    private func copyProjectMCP(from source: RemoteProject, to clone: RemoteProject) async -> [String] {
+    /// One load of source MCP + one write of clone config (user servers + managed scheduler/avatar).
+    private func configureMCPBatched(
+        from source: RemoteProject,
+        to clone: RemoteProject,
+        copyProjectMCP: Bool
+    ) async -> [String] {
         var warnings: [String] = []
-        let configurations: [String: OpenCodeMCPServerConfiguration]
-        do {
-            configurations = try await mcpService.projectServerConfigurations(for: source)
-        } catch {
-            return ["MCP: \(error.localizedDescription)"]
-        }
+        var configurations: [String: OpenCodeMCPServerConfiguration] = [:]
 
-        for (name, configuration) in configurations.sorted(by: { $0.key < $1.key }) {
-            if MCPServer.isManagedServer(name) {
-                continue
-            }
-            // Write the full OpenCode configuration so oauth / timeout / enabled are not dropped
-            // by the MCPServer round-trip used by the generic addServer path.
-            if let headers = configuration.headers, headersContainSourceHints(headers, source: source) {
-                warnings.append("MCP “\(name)” headers may still reference the source agent; review after open.")
-            }
+        if copyProjectMCP {
             do {
-                try await mcpService.addServerConfiguration(
-                    named: name,
-                    configuration: configuration,
-                    scope: .project,
-                    for: clone,
-                    allowManaged: false
-                )
+                let sourceConfigs = try await mcpService.projectServerConfigurations(for: source)
+                for (name, configuration) in sourceConfigs {
+                    if MCPServer.isManagedServer(name) { continue }
+                    if let headers = configuration.headers, headersContainSourceHints(headers, source: source) {
+                        warnings.append("MCP “\(name)” headers may still reference the source agent; review after open.")
+                    }
+                    configurations[name] = configuration
+                }
             } catch {
-                warnings.append("MCP “\(name)”: \(error.localizedDescription)")
+                warnings.append("MCP: \(error.localizedDescription)")
             }
         }
 
+        // Always provision managed tools so the clone can schedule tasks and set an avatar.
+        if let scheduler = mcpService.managedSchedulerConfiguration(for: clone) {
+            configurations[MCPServer.managedSchedulerServerName] = scheduler
+        }
+        configurations[MCPServer.managedAvatarServerName] = mcpService.managedAvatarConfiguration(for: clone)
+
         do {
-            try await mcpService.ensureManagedSchedulerServerIfNeeded(for: clone)
+            try await mcpService.deployManagedAvatarScript(for: clone)
         } catch {
-            warnings.append("Managed scheduler MCP: \(error.localizedDescription)")
+            warnings.append("Avatar MCP script: \(error.localizedDescription)")
+        }
+
+        do {
+            try await mcpService.writeProjectServerConfigurations(
+                configurations,
+                for: clone,
+                activateLive: false
+            )
+        } catch {
+            warnings.append("MCP config: \(error.localizedDescription)")
         }
 
         return warnings
@@ -663,8 +573,4 @@ final class AgentDuplicationService {
         return []
     }
 
-    private func shellEscaped(_ value: String) -> String {
-        let escaped = value.replacingOccurrences(of: "'", with: "'\"'\"'")
-        return "'\(escaped)'"
-    }
 }

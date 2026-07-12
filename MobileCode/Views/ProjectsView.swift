@@ -29,6 +29,9 @@ struct ProjectsView: View {
     @State private var projectToEdit: RemoteProject?
     @State private var projectToDuplicate: RemoteProject?
     @State private var deleteFromServer = false
+    @State private var isDeleting = false
+    @State private var deleteErrorMessage: String?
+    @State private var showDeleteError = false
     @State private var editMode: EditMode = .inactive
 
     // MARK: - Data
@@ -77,16 +80,25 @@ struct ProjectsView: View {
                     DeleteProjectConfirmationSheet(
                         project: project,
                         deleteFromServer: $deleteFromServer,
-                        onDelete: {
+                        isDeleting: isDeleting,
+                        onDelete: { removeFromServer in
+                            // Capture the toggle *before* the sheet tears down so a dismiss
+                            // race cannot drop “Also delete from server”.
                             Task {
-                                await performDeletion(of: project)
+                                await performDeletion(of: project, deleteFromServer: removeFromServer)
                             }
                         },
                         onCancel: {
+                            guard !isDeleting else { return }
                             projectToDelete = nil
                             deleteFromServer = false
                         }
                     )
+                }
+                .alert("Could Not Delete Agent", isPresented: $showDeleteError) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(deleteErrorMessage ?? "An error occurred.")
                 }
                 // Soft background sync (independent of push):
                 // 1) pull new OpenCode messages + unread badges for listed agents
@@ -322,31 +334,79 @@ struct ProjectsView: View {
     }
 
     // MARK: - Delete Methods
-    
-    private func performDeletion(of project: RemoteProject) async {
+
+    private func performDeletion(of project: RemoteProject, deleteFromServer removeRemote: Bool) async {
+        guard !isDeleting else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+
+        // Snapshot path/id before local delete (SwiftData object may invalidate).
+        let serverId = project.serverId
+        let projectPath = project.path
+        let projectId = project.id
+
         do {
-            // If deleteFromServer is true, delete from server first
-            if deleteFromServer {
+            if removeRemote {
                 try await ServiceManager.shared.projectService.deleteProject(project)
+            } else {
+                // Still drop pooled SSH retainers for this agent.
+                ServiceManager.shared.sshService.closeConnections(projectId: projectId)
             }
 
             await PushNotificationsManager.shared.unregisterDevice(
-                serverId: project.serverId,
-                cwd: project.path
+                serverId: serverId,
+                cwd: projectPath
             )
-            
-            // Delete locally
+
+            // Local toolbox rows owned by this agent.
+            cleanupLocalAgentOwnedRows(projectId: projectId)
+            ToolApprovalStore.shared.removeAgentApprovals(for: projectId)
+
+            if projectContext.activeProject?.id == projectId {
+                projectContext.clearActiveProject()
+            }
+
             modelContext.delete(project)
             try modelContext.save()
             ShortcutSyncService.shared.sync(using: modelContext)
-            
-            // Clear selection and reset state
+
             projectToDelete = nil
             deleteFromServer = false
-            
         } catch {
-            // Failed to delete project
-            // TODO: Show error alert
+            deleteErrorMessage = error.localizedDescription
+            showDeleteError = true
+            // Keep the confirmation sheet dismissable; leave project in the list on failure.
+            projectToDelete = nil
+            deleteFromServer = false
+        }
+    }
+
+    private func cleanupLocalAgentOwnedRows(projectId: UUID) {
+        let skillDescriptor = FetchDescriptor<AgentSkillAssignment>(
+            predicate: #Predicate { assignment in
+                assignment.projectId == projectId
+            }
+        )
+        for row in (try? modelContext.fetch(skillDescriptor)) ?? [] {
+            modelContext.delete(row)
+        }
+
+        let envDescriptor = FetchDescriptor<AgentEnvironmentVariable>(
+            predicate: #Predicate { item in
+                item.projectId == projectId
+            }
+        )
+        for row in (try? modelContext.fetch(envDescriptor)) ?? [] {
+            modelContext.delete(row)
+        }
+
+        let taskDescriptor = FetchDescriptor<AgentScheduledTask>(
+            predicate: #Predicate { task in
+                task.projectId == projectId
+            }
+        )
+        for row in (try? modelContext.fetch(taskDescriptor)) ?? [] {
+            modelContext.delete(row)
         }
     }
 }
@@ -779,20 +839,24 @@ struct EditProjectSheet: View {
 struct DeleteProjectConfirmationSheet: View {
     let project: RemoteProject
     @Binding var deleteFromServer: Bool
-    let onDelete: () -> Void
+    var isDeleting: Bool = false
+    /// Called with the resolved “delete remote folder” flag captured at tap time.
+    let onDelete: (Bool) -> Void
     let onCancel: () -> Void
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     Text("Are you sure you want to delete '\(project.displayTitle)'?")
                         .font(.body)
-                    
+
                     Toggle("Also delete from server", isOn: $deleteFromServer)
                         .tint(.red)
-                    
+                        .disabled(isDeleting)
+                        .accessibilityIdentifier("delete-agent-from-server-toggle")
+
                     if deleteFromServer {
                         Label {
                             Text("The agent folder and all its contents will be permanently deleted from the server.")
@@ -802,7 +866,7 @@ struct DeleteProjectConfirmationSheet: View {
                         }
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        
+
                         Label {
                             Text("This action cannot be undone.")
                         } icon: {
@@ -825,20 +889,29 @@ struct DeleteProjectConfirmationSheet: View {
             }
             .navigationTitle("Delete Agent")
             .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(isDeleting)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         onCancel()
                         dismiss()
                     }
+                    .disabled(isDeleting)
                 }
-                
+
                 ToolbarItem(placement: .destructiveAction) {
-                    Button("Delete", role: .destructive) {
-                        dismiss()
-                        onDelete()
+                    if isDeleting {
+                        ProgressView()
+                    } else {
+                        Button("Delete", role: .destructive) {
+                            // Capture toggle at tap time; keep sheet open until parent clears
+                            // `projectToDelete` so we never re-present mid-delete.
+                            let removeRemote = deleteFromServer
+                            onDelete(removeRemote)
+                        }
+                        .foregroundColor(.red)
+                        .accessibilityIdentifier("delete-agent-confirm-button")
                     }
-                    .foregroundColor(.red)
                 }
             }
         }

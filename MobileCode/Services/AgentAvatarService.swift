@@ -166,7 +166,13 @@ final class AgentAvatarService {
     }
 
     /// Copy avatar metadata + image from source agent to clone (new agent_id already on clone).
-    func copyAvatar(from source: RemoteProject, to clone: RemoteProject) async throws {
+    /// - Parameter imageAlreadyCopied: When true (Duplicate Agent bootstrap already `cp`'d the image),
+    ///   only identity metadata is written — avoids a second remote image copy.
+    func copyAvatar(
+        from source: RemoteProject,
+        to clone: RemoteProject,
+        imageAlreadyCopied: Bool = false
+    ) async throws {
         let sourceSession = try await sshService.getConnection(for: source, purpose: .fileOperations)
         guard let sourceDoc = await identityService.readIdentityDocument(for: source, session: sourceSession),
               let avatar = sourceDoc.avatar,
@@ -182,17 +188,19 @@ final class AgentAvatarService {
         next.updatedBy = .user
 
         if avatar.kind == .image {
-            let relative = avatar.image.flatMap { AgentAvatarPathValidation.validatedProjectRelativePath($0) }
-                ?? AgentProjectFileLayout.avatarImageRelativePath
-            let sourcePath = AgentProjectFileLayout.remotePath(projectPath: source.path, relativePath: relative)
             let destRelative = AgentProjectFileLayout.avatarImageRelativePath
-            let destPath = AgentProjectFileLayout.remotePath(projectPath: clone.path, relativePath: destRelative)
-            let destDir = (destPath as NSString).deletingLastPathComponent
-            let copyCmd = """
-            mkdir -p \(shellEscaped(destDir)) && \
-            if [ -f \(shellEscaped(sourcePath)) ]; then cp \(shellEscaped(sourcePath)) \(shellEscaped(destPath)); fi
-            """
-            _ = try await cloneSession.execute(copyCmd)
+            if !imageAlreadyCopied {
+                let relative = avatar.image.flatMap { AgentAvatarPathValidation.validatedProjectRelativePath($0) }
+                    ?? AgentProjectFileLayout.avatarImageRelativePath
+                let sourcePath = AgentProjectFileLayout.remotePath(projectPath: source.path, relativePath: relative)
+                let destPath = AgentProjectFileLayout.remotePath(projectPath: clone.path, relativePath: destRelative)
+                let destDir = (destPath as NSString).deletingLastPathComponent
+                let copyCmd = """
+                mkdir -p \(shellEscaped(destDir)) && \
+                if [ -f \(shellEscaped(sourcePath)) ]; then cp \(shellEscaped(sourcePath)) \(shellEscaped(destPath)); fi
+                """
+                _ = try await cloneSession.execute(copyCmd)
+            }
             // Prefer canonical path on clone even if source used a custom relative path.
             next.image = destRelative
         }

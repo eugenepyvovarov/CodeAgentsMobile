@@ -34,6 +34,7 @@ struct DuplicateAgentSheet: View {
     @State private var copyTasks = false
     @State private var copyAvatar = true
     @State private var isDuplicating = false
+    @State private var progressPhase: DuplicateAgentProgress?
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var warnings: [String] = []
@@ -68,6 +69,9 @@ struct DuplicateAgentSheet: View {
         return AgentDuplicationPath.join(parent: parentPath, folderName: name)
     }
 
+    /// True when another agent already owns the intended path in SwiftData.
+    /// Ignores the clone we just created (`completedCloneId`) so a successful
+    /// insert does not flag the form against itself while the sheet is still open.
     private var localFolderCollision: Bool {
         guard let server,
               let safe = SSHShellQuoting.sanitizedPathComponent(folderName) else {
@@ -76,13 +80,24 @@ struct DuplicateAgentSheet: View {
         let intended = PathUtils.normalize(
             AgentDuplicationPath.join(parent: parentPath, folderName: safe)
         )
+        let ignoreId = completedCloneId
         return allProjects.contains {
-            $0.serverId == server.id && PathUtils.normalize($0.path) == intended
+            $0.serverId == server.id
+                && PathUtils.normalize($0.path) == intended
+                && $0.id != ignoreId
         }
+    }
+
+    /// Collision caption for the form only — not while create is running or success is shown.
+    /// Mid-duplicate, the service inserts the clone before finishing setup; `@Query` would
+    /// otherwise treat that path as already taken and flash a false error.
+    private var showsLocalFolderCollision: Bool {
+        !isDuplicating && !showSuccess && localFolderCollision
     }
 
     private var canDuplicate: Bool {
         !isDuplicating
+            && !showSuccess
             && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && SSHShellQuoting.sanitizedPathComponent(folderName) != nil
             && server != nil
@@ -103,15 +118,27 @@ struct DuplicateAgentSheet: View {
                         .fontDesign(.monospaced)
                         .accessibilityIdentifier("duplicate-agent-folder-name-field")
 
-                    if localFolderCollision {
+                    if showsLocalFolderCollision {
                         Text("An agent already uses this folder path. Try a suffix like -2.")
                             .font(.caption)
                             .foregroundStyle(.red)
+                            .accessibilityIdentifier("duplicate-agent-folder-collision-label")
                     }
                 } header: {
                     Text("New Agent")
                 } footer: {
                     Text("Creates a new folder and empty chat. Does not copy messages or session.")
+                }
+
+                if isDuplicating, let phase = progressPhase {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text(phase.userLabel)
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityIdentifier("duplicate-agent-progress")
+                    }
                 }
 
                 Section("Location") {
@@ -262,7 +289,11 @@ struct DuplicateAgentSheet: View {
     private func performDuplicate() async {
         guard !isDuplicating else { return }
         isDuplicating = true
-        defer { isDuplicating = false }
+        progressPhase = .preparing
+        defer {
+            isDuplicating = false
+            progressPhase = nil
+        }
 
         let envMode: AgentEnvCopyMode
         if !copyEnv {
@@ -290,7 +321,10 @@ struct DuplicateAgentSheet: View {
             let result = try await AgentDuplicationService.shared.duplicate(
                 source: source,
                 request: request,
-                modelContext: modelContext
+                modelContext: modelContext,
+                onProgress: { phase in
+                    progressPhase = phase
+                }
             )
             completedCloneId = result.projectId
             warnings = result.warnings
