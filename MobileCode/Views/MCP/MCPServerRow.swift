@@ -65,6 +65,15 @@ struct MCPServerRow: View {
                     }
                     .foregroundColor(.secondary)
                 }
+
+                if server.status == .disconnected,
+                   let detail = server.statusError?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                }
             }
             
             Spacer()

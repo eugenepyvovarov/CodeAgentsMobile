@@ -138,4 +138,10 @@ final class AgentProjectFileLayoutTests: XCTestCase {
             )
         )
     }
+
+    func testRulesAspectDirectoryIsUnderCodeAgents() {
+        XCTAssertEqual(AgentProjectFileLayout.rulesDirectoryRelativePath, ".codeagents/rules")
+        XCTAssertTrue(AgentProjectFileLayout.rulesPersonalityRelativePath.hasPrefix(".codeagents/rules/"))
+        XCTAssertTrue(AgentProjectFileLayout.rulesUIRelativePath.hasPrefix(".codeagents/rules/"))
+    }
 }

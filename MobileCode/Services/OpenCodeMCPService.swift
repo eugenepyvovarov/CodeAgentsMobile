@@ -19,6 +19,7 @@ final class OpenCodeMCPService: ObservableObject {
         self.clientOverride = client
     }
 
+    /// Fast read of configured MCP servers + live status. Does **not** provision or connect.
     func fetchServers(for project: RemoteProject, scope: MCPServer.MCPScope? = nil) async throws -> [MCPServer] {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
         let document = try await loadConfiguration(for: project, scope: scope ?? .project, session: session).document
@@ -28,11 +29,24 @@ final class OpenCodeMCPService: ObservableObject {
         for var server in document.servers {
             if let status = statuses[server.name] {
                 server.status = status.mcpStatus
+                server.statusError = status.error
             }
             serversByName[server.name] = server
         }
 
         return serversByName.values.sorted { $0.name < $1.name }
+    }
+
+    /// Whether a named project MCP entry already exists in opencode config (no live status).
+    func projectHasServer(named name: String, for project: RemoteProject) async throws -> Bool {
+        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
+        let document = try await loadConfiguration(for: project, scope: .project, session: session).document
+        return document.server(named: name) != nil
+    }
+
+    /// Best-effort connect for a live OpenCode process (used after first-time provision only).
+    func connectServerIfNeeded(named name: String, for project: RemoteProject) async {
+        await connectLiveServer(name: name, for: project)
     }
 
     func addServer(
@@ -53,18 +67,29 @@ final class OpenCodeMCPService: ObservableObject {
             throw MCPServiceError.invalidConfiguration("Cannot convert MCP server to OpenCode configuration")
         }
         try loaded.document.setServer(named: server.name, configuration: configuration)
-        try await writeConfigurationIfChanged(loaded.document, previousJSON: previousJSON, to: loaded.path, session: session)
-        await addLiveServer(name: server.name, configuration: configuration, for: project)
+        let didWrite = try await writeConfigurationIfChanged(
+            loaded.document,
+            previousJSON: previousJSON,
+            to: loaded.path,
+            session: session
+        )
+        // Live POST is expensive; only when config actually changed.
+        if didWrite {
+            await addLiveServer(name: server.name, configuration: configuration, for: project)
+        }
     }
 
     /// Write a full project MCP configuration (preserves `oauth`, `timeout`, and other fields lost by `MCPServer` round-trip).
+    /// - Returns: `true` when the on-disk config changed (and live add was attempted).
+    @discardableResult
     func addServerConfiguration(
         named name: String,
         configuration: OpenCodeMCPServerConfiguration,
         scope: MCPServer.MCPScope = .project,
         for project: RemoteProject,
-        allowManaged: Bool = false
-    ) async throws {
+        allowManaged: Bool = false,
+        activateLive: Bool = true
+    ) async throws -> Bool {
         let synthetic = MCPServer(name: name, openCodeConfiguration: configuration)
             ?? MCPServer(name: name, command: nil, args: nil, env: nil, url: configuration.url, headers: configuration.headers)
         try validateManagedServerWrite(name, server: synthetic, allowManaged: allowManaged)
@@ -73,8 +98,16 @@ final class OpenCodeMCPService: ObservableObject {
         var loaded = try await loadConfiguration(for: project, scope: scope, session: session)
         let previousJSON = try loaded.document.toJSONString()
         try loaded.document.setServer(named: name, configuration: configuration)
-        try await writeConfigurationIfChanged(loaded.document, previousJSON: previousJSON, to: loaded.path, session: session)
-        await addLiveServer(name: name, configuration: configuration, for: project)
+        let didWrite = try await writeConfigurationIfChanged(
+            loaded.document,
+            previousJSON: previousJSON,
+            to: loaded.path,
+            session: session
+        )
+        if didWrite, activateLive {
+            await addLiveServer(name: name, configuration: configuration, for: project)
+        }
+        return didWrite
     }
 
     /// Project-scope MCP server configurations including `enabled` (for accurate clone).
@@ -191,6 +224,7 @@ final class OpenCodeMCPService: ObservableObject {
             }
             if let status = statuses[name] {
                 server.status = status.mcpStatus
+                server.statusError = status.error
             }
             return (server, scope)
         }
@@ -338,6 +372,16 @@ final class OpenCodeMCPService: ObservableObject {
         }
     }
 
+    private func connectLiveServer(name: String, for project: RemoteProject) async {
+        do {
+            let session = try await sshService.getConnection(for: project, purpose: .opencode)
+            let client = client(for: project)
+            _ = try await client.connectMCPServer(sshSession: session, name: name, directory: project.path)
+        } catch {
+            SSHLogger.log("OpenCode MCP connect failed for \(name): \(error.localizedDescription)", level: .warning)
+        }
+    }
+
     private func client(for project: RemoteProject) -> OpenCodeClient {
         clientOverride ?? OpenCodeClientFactory.client(for: project.serverId)
     }
@@ -387,16 +431,18 @@ final class OpenCodeMCPService: ObservableObject {
         }
     }
 
+    /// - Returns: `true` when bytes were written.
+    @discardableResult
     private func writeConfigurationIfChanged(
         _ document: OpenCodeMCPConfigDocument,
         previousJSON: String,
         to path: String,
         session: SSHSession
-    ) async throws {
+    ) async throws -> Bool {
         let nextJSON = try document.toJSONString()
         guard nextJSON != previousJSON else {
             SSHLogger.log("Skipping unchanged OpenCode MCP configuration write: \(path)", level: .debug)
-            return
+            return false
         }
 
         guard let data = nextJSON.data(using: .utf8) else {
@@ -406,6 +452,7 @@ final class OpenCodeMCPService: ObservableObject {
         let escapedPath = escapeForDoubleQuotes(path)
         let command = "mkdir -p \"$(dirname \"\(escapedPath)\")\" && printf '%s' '\(base64)' | base64 -d > \"\(escapedPath)\""
         _ = try await session.execute(command)
+        return true
     }
 
     private func globalConfigurationPath(session: SSHSession) async throws -> String {

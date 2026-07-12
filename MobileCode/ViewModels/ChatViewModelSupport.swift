@@ -61,22 +61,32 @@ struct ChatMCPServerSetupPlan: Equatable {
 }
 
 enum ChatMCPServerSetupPlanner {
+    /// - Parameter allowMCPFetch: When false, never fetch MCP on this path.
+    ///   OpenCode send does not consume `mcpServers`; MCP refresh stays on post-ready /
+    ///   explicit Abilities UI so the first message is not blocked on a status list.
     static func plan(
         cachedServerCount: Int,
         isInvalidated: Bool,
         lastFetchedAt: Date?,
         now: Date,
         staleInterval: TimeInterval,
-        includeRules: Bool
+        includeRules: Bool,
+        allowMCPFetch: Bool = true
     ) -> ChatMCPServerSetupPlan {
-        ChatMCPServerSetupPlan(
-            shouldFetchMCPServers: ChatMCPServerCachePolicy.needsFetch(
+        let shouldFetchMCPServers: Bool
+        if allowMCPFetch {
+            shouldFetchMCPServers = ChatMCPServerCachePolicy.needsFetch(
                 cachedServerCount: cachedServerCount,
                 isInvalidated: isInvalidated,
                 lastFetchedAt: lastFetchedAt,
                 now: now,
                 staleInterval: staleInterval
-            ),
+            )
+        } else {
+            shouldFetchMCPServers = false
+        }
+        return ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: shouldFetchMCPServers,
             shouldEnsureRules: includeRules
         )
     }

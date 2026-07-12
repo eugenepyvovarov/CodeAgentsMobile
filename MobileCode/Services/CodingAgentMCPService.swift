@@ -56,20 +56,31 @@ final class CodingAgentMCPService: ObservableObject {
     }
 
     /// Write a full project MCP configuration (preserves `oauth`, `timeout`, etc.).
+    @discardableResult
     func addServerConfiguration(
         named name: String,
         configuration: OpenCodeMCPServerConfiguration,
         scope: MCPServer.MCPScope = .project,
         for project: RemoteProject,
-        allowManaged: Bool = false
-    ) async throws {
+        allowManaged: Bool = false,
+        activateLive: Bool = true
+    ) async throws -> Bool {
         try await openCodeService.addServerConfiguration(
             named: name,
             configuration: configuration,
             scope: scope,
             for: project,
-            allowManaged: allowManaged
+            allowManaged: allowManaged,
+            activateLive: activateLive
         )
+    }
+
+    func projectHasServer(named name: String, for project: RemoteProject) async throws -> Bool {
+        try await openCodeService.projectHasServer(named: name, for: project)
+    }
+
+    func connectServerIfNeeded(named name: String, for project: RemoteProject) async {
+        await openCodeService.connectServerIfNeeded(named: name, for: project)
     }
 
     func projectServerConfigurations(for project: RemoteProject) async throws -> [String: OpenCodeMCPServerConfiguration] {
@@ -168,6 +179,22 @@ final class CodingAgentMCPService: ObservableObject {
 
         let task = Task { @MainActor in
             try await avatarProvisionService.ensureManagedAvatarServer(for: project)
+        }
+        avatarProvisionTasks[project.id] = task
+        defer {
+            avatarProvisionTasks.removeValue(forKey: project.id)
+        }
+        try await task.value
+    }
+
+    /// Force re-deploy avatar MCP script + reconnect (protocol repairs, failed status).
+    func repairManagedAvatarServer(for project: RemoteProject) async throws {
+        // Coalesce with any in-flight ensure/repair for the same project.
+        if let existingTask = avatarProvisionTasks[project.id] {
+            try await existingTask.value
+        }
+        let task = Task { @MainActor in
+            try await avatarProvisionService.repairManagedAvatarServer(for: project)
         }
         avatarProvisionTasks[project.id] = task
         defer {

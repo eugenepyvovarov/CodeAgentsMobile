@@ -58,12 +58,17 @@ Managed local MCP `codeagents-avatar`:
 
 - Provisioned into project OpenCode MCP config (command + env `CODEAGENTS_PROJECT_PATH`)
 - Script deployed to `.codeagents/mcp/codeagents_avatar_mcp.py`
+- **Stdio wire format: NDJSON** (one JSON-RPC message per line) — OpenCode uses
+  `@modelcontextprotocol/sdk` `StdioClientTransport`. Content-Length-only framing
+  hangs the handshake until timeout (seen as “Operation timed out after 30000ms”).
+- `SCRIPT_VERSION` in the script is matched by the app; stale remotes are force-redeployed.
 - Tools:
   - `get_agent_avatar`
   - `set_agent_avatar_emoji` `{ emoji }`
   - `set_agent_avatar_image` `{ path }` (project-relative; copy into `.codeagents/avatar.png`)
   - `clear_agent_avatar`
 - Protected as managed (not user-deletable without allowManaged)
+- Agents must use these tools (not hand-edit `codeagents.json`) — see UI rules + MCP instructions
 
 ## Duplicate
 

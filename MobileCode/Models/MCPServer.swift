@@ -24,6 +24,8 @@ struct MCPServer: Identifiable, Equatable {
     
     // Runtime status (not persisted in .mcp.json)
     var status: MCPStatus = .unknown
+    /// Live status detail from OpenCode (`/mcp`), when available.
+    var statusError: String?
 
     static let managedSchedulerServerName = "codeagents-scheduled-tasks"
     static let managedSchedulerDisplayName = "Task Scheduler"

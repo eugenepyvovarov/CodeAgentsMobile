@@ -116,7 +116,26 @@ final class ChatDeferredStartupTests: XCTestCase {
         ))
     }
 
-    func testSendTimeSetupPlanFetchesStaleMCPBeforeOpenCodeSendWithoutRules() {
+    func testSendTimeSetupPlanSkipsMCPFetchOnOpenCodeCriticalPath() {
+        let now = Date()
+        // OpenCode send does not consume app-side MCP lists; avoid blocking first message.
+        let plan = ChatMCPServerSetupPlanner.plan(
+            cachedServerCount: 2,
+            isInvalidated: false,
+            lastFetchedAt: now.addingTimeInterval(-600),
+            now: now,
+            staleInterval: 300,
+            includeRules: false,
+            allowMCPFetch: false
+        )
+
+        XCTAssertEqual(plan, ChatMCPServerSetupPlan(
+            shouldFetchMCPServers: false,
+            shouldEnsureRules: false
+        ))
+    }
+
+    func testSendTimeSetupPlanStillFetchesMCPWhenAllowlisted() {
         let now = Date()
         let plan = ChatMCPServerSetupPlanner.plan(
             cachedServerCount: 2,
@@ -124,7 +143,8 @@ final class ChatDeferredStartupTests: XCTestCase {
             lastFetchedAt: now.addingTimeInterval(-600),
             now: now,
             staleInterval: 300,
-            includeRules: false
+            includeRules: false,
+            allowMCPFetch: true
         )
 
         XCTAssertEqual(plan, ChatMCPServerSetupPlan(

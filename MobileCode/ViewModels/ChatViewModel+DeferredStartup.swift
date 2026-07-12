@@ -71,8 +71,21 @@ extension ChatViewModel {
                 return
             }
 
-            // OpenCode-only deferred MCP refresh (Claude installation checks removed).
+            // Warm OpenCode SSH first so the next Send reuses a live pooled login.
             _ = runtimeKind
+            if let server = ServerManager.shared.server(withId: project.serverId) {
+                await OpenCodeInstallerService.shared.warmConnection(for: server, probeHealth: true)
+            }
+            guard !Task.isCancelled else {
+                timingStatus = .cancelled
+                return
+            }
+            guard self.projectId == projectID else {
+                timingStatus = .skipped
+                return
+            }
+
+            // OpenCode-only deferred MCP refresh (Claude installation checks removed).
             await self.refreshMCPServersAfterChatReadyIfNeeded(project: project)
             guard !Task.isCancelled else {
                 timingStatus = .cancelled

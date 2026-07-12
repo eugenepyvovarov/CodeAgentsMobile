@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Minimal stdio MCP server: set/get/clear agent avatar in .codeagents/codeagents.json."""
+"""Minimal stdio MCP server: set/get/clear agent avatar in .codeagents/codeagents.json.
+
+Wire format: MCP stdio = newline-delimited JSON-RPC (NDJSON), one message per line.
+OpenCode uses @modelcontextprotocol/sdk StdioClientTransport (NDJSON), not LSP Content-Length.
+SCRIPT_VERSION is checked by the iOS app to force re-deploy after protocol fixes.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Bump when the on-disk script must be replaced on remote hosts.
+SCRIPT_VERSION = "2"
+
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "codeagents-avatar"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.0.1"
 
 IDENTITY_REL = Path(".codeagents") / "codeagents.json"
 AVATAR_IMAGE_REL = Path(".codeagents") / "avatar.png"
@@ -86,9 +94,7 @@ def set_agent_avatar_emoji(emoji: str) -> dict[str, Any]:
     emoji = (emoji or "").strip()
     if not emoji:
         return tool_result("emoji is required", is_error=True)
-    # First grapheme-ish: take first codepoint cluster naively
-    emoji = emoji[0] if len(emoji) == 1 else emoji
-    # Prefer first unicode character sequence via list of chars for simplicity
+    # First Unicode scalar (good enough for common emoji avatars).
     emoji = list(emoji)[0] if emoji else ""
     if not emoji:
         return tool_result("emoji is required", is_error=True)
@@ -147,7 +153,6 @@ def clear_agent_avatar() -> dict[str, Any]:
         "updated_by": "mcp",
     }
     save_identity(doc)
-    # Remove default image path and previous image if under .codeagents/
     for candidate in {AVATAR_IMAGE_REL.as_posix(), image}:
         if not candidate:
             continue
@@ -166,12 +171,18 @@ def clear_agent_avatar() -> dict[str, Any]:
 TOOLS = [
     {
         "name": "get_agent_avatar",
-        "description": "Return the current agent avatar descriptor from .codeagents/codeagents.json.",
+        "description": (
+            "Return the current agent avatar from .codeagents/codeagents.json. "
+            "Prefer this over reading the file directly."
+        ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "set_agent_avatar_emoji",
-        "description": "Set this agent's avatar to an emoji (stored in codeagents.json).",
+        "description": (
+            "Set this agent's avatar to an emoji. Required when the user asks to change the avatar. "
+            "Do not edit codeagents.json by hand — this tool merges identity safely."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"emoji": {"type": "string", "description": "Emoji character"}},
@@ -181,7 +192,10 @@ TOOLS = [
     },
     {
         "name": "set_agent_avatar_image",
-        "description": "Set avatar from a project-relative image path (copied to .codeagents/avatar.png).",
+        "description": (
+            "Set avatar from a project-relative image path (copied to .codeagents/avatar.png). "
+            "Do not edit codeagents.json by hand."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -217,41 +231,67 @@ def handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def send(msg: dict[str, Any]) -> None:
-    body = json.dumps(msg, separators=(",", ":")).encode("utf-8")
-    sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
-    sys.stdout.buffer.write(body)
+    """Write one NDJSON JSON-RPC message (MCP stdio spec)."""
+    # Compact JSON, no embedded newlines — required by NDJSON framing.
+    line = json.dumps(msg, separators=(",", ":"), ensure_ascii=False)
+    sys.stdout.buffer.write(line.encode("utf-8"))
+    sys.stdout.buffer.write(b"\n")
     sys.stdout.buffer.flush()
 
 
 def read_message() -> dict[str, Any] | None:
-    headers: dict[str, str] = {}
-    while True:
-        line = sys.stdin.buffer.readline()
-        if not line:
-            return None
-        if line in (b"\r\n", b"\n"):
-            break
-        try:
-            text = line.decode("ascii", errors="replace").strip()
-        except Exception:
-            continue
+    """Read one JSON-RPC message.
+
+    Primary: NDJSON (OpenCode / official MCP SDK).
+    Fallback: LSP-style Content-Length framing (older clients).
+    """
+    line = sys.stdin.buffer.readline()
+    if not line:
+        return None
+
+    # Content-Length header path (legacy / dual-compat).
+    if line.lower().startswith(b"content-length:"):
+        headers: dict[str, str] = {}
+        text = line.decode("ascii", errors="replace").strip()
         if ":" in text:
             k, v = text.split(":", 1)
             headers[k.strip().lower()] = v.strip()
-    length = int(headers.get("content-length") or "0")
-    if length <= 0:
-        return None
-    raw = sys.stdin.buffer.read(length)
-    if not raw:
-        return None
-    return json.loads(raw.decode("utf-8"))
+        while True:
+            hline = sys.stdin.buffer.readline()
+            if not hline or hline in (b"\r\n", b"\n"):
+                break
+            t = hline.decode("ascii", errors="replace").strip()
+            if ":" in t:
+                k, v = t.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+        length = int(headers.get("content-length") or "0")
+        if length <= 0:
+            return None
+        raw = sys.stdin.buffer.read(length)
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+
+    # NDJSON path.
+    text = line.decode("utf-8", errors="replace").strip()
+    if not text:
+        # Blank line — keep reading (some clients pad).
+        return read_message()
+    return json.loads(text)
 
 
 def main() -> None:
     while True:
-        msg = read_message()
+        try:
+            msg = read_message()
+        except Exception as exc:  # noqa: BLE001
+            # Malformed input: log to stderr only (never stdout).
+            sys.stderr.write(f"codeagents-avatar: parse error: {exc}\n")
+            sys.stderr.flush()
+            continue
         if msg is None:
             break
+
         method = msg.get("method")
         msg_id = msg.get("id")
         params = msg.get("params") or {}
@@ -260,7 +300,14 @@ def main() -> None:
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                "serverInfo": {
+                    "name": SERVER_NAME,
+                    "version": SERVER_VERSION,
+                },
+                "instructions": (
+                    "Use set_agent_avatar_emoji / set_agent_avatar_image / clear_agent_avatar "
+                    "to change this agent's avatar. Do not edit .codeagents/codeagents.json by hand."
+                ),
             }
             send({"jsonrpc": "2.0", "id": msg_id, "result": result})
             continue

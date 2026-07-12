@@ -113,11 +113,7 @@ struct PermissionsListView: View {
     }
 
     private var agentLabel: String? {
-        guard let project = projectContext.activeProject else { return nil }
-        if let server = projectContext.activeServer {
-            return "\(project.displayTitle)@\(server.name)"
-        }
-        return project.displayTitle
+        projectContext.activeProject?.displayTitle
     }
 }
 

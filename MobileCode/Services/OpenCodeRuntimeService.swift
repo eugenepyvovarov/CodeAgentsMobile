@@ -453,7 +453,9 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
     private func resolveSessionID(for project: RemoteProject, sshSession: SSHSession) async throws -> String {
         if let existing = sanitizedSessionID(project.openCodeSessionId) {
-            try? await ProxyTaskService.shared.recordActiveOpenCodeSession(project: project, sessionId: existing)
+            // Re-pin is for scheduled tasks / daemon only — not required for this chat stream.
+            // Defer so text send is not blocked on a second SSH+daemon round-trip.
+            scheduleActiveSessionRepin(project: project, sessionId: existing)
             return existing
         }
 
@@ -475,8 +477,47 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         project.openCodeSessionId = sessionID
         project.selectedAgentRuntime = .openCode
         project.updateLastModified()
+        // First pin for a newly created session: await so schedulers see it promptly.
         try? await ProxyTaskService.shared.recordActiveOpenCodeSession(project: project, sessionId: sessionID)
         return sessionID
+    }
+
+    /// Best-effort daemon re-pin off the send critical path.
+    ///
+    /// The active-session endpoint is last-write-wins. A pre-check alone is not enough: the
+    /// daemon POST can still complete after clear chat / new session, leaving scheduled tasks
+    /// pinned to a stale OpenCode conversation. Always reconcile after the write.
+    private func scheduleActiveSessionRepin(project: RemoteProject, sessionId: String) {
+        let expectedSessionId = sessionId
+        Task { @MainActor in
+            guard OpenCodeSessionID.sanitize(project.openCodeSessionId) == expectedSessionId else {
+                return
+            }
+            try? await ProxyTaskService.shared.recordActiveOpenCodeSession(
+                project: project,
+                sessionId: expectedSessionId
+            )
+            await reconcileActiveSessionPin(project: project, writtenSessionId: expectedSessionId)
+        }
+    }
+
+    /// Repair a daemon pin if local session state changed while the write was in flight.
+    private func reconcileActiveSessionPin(project: RemoteProject, writtenSessionId: String) async {
+        let current = OpenCodeSessionID.sanitize(project.openCodeSessionId)
+        switch OpenCodeActiveSessionPinReconcile.action(
+            writtenSessionId: writtenSessionId,
+            currentSessionId: current
+        ) {
+        case .none:
+            return
+        case .pin(let sessionId):
+            try? await ProxyTaskService.shared.recordActiveOpenCodeSession(
+                project: project,
+                sessionId: sessionId
+            )
+        case .clear:
+            try? await ProxyTaskService.shared.clearActiveOpenCodeSession(project: project)
+        }
     }
 
     private func resolvePromptModel(for project: RemoteProject, sshSession: SSHSession) async -> OpenCodePromptModel? {
@@ -717,32 +758,106 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         _ prompt: OpenCodePromptBuildResult,
         sshSession: SSHSession
     ) async throws {
-        if let skillReference = prompt.skillReference {
-            let checks = skillReference.skillFilePaths
-                .map { "[ -f \(shellEscaped($0)) ]" }
-                .joined(separator: " || ")
-            let command = "if \(checks); then echo EXISTS; else echo MISSING; fi"
-            let output = try await sshSession.execute(command)
-            guard output.contains("EXISTS") else {
-                throw OpenCodePromptBuildError.missingSkill(
-                    slug: skillReference.slug,
-                    checkedPaths: skillReference.skillFilePaths
-                )
-            }
-        }
+        let skillPaths = prompt.skillReference?.skillFilePaths ?? []
+        let filePaths = prompt.fileReferences.map(\.absolutePath)
+        guard !skillPaths.isEmpty || !filePaths.isEmpty else { return }
 
-        for file in prompt.fileReferences {
-            let command = "[ -f \(shellEscaped(file.absolutePath)) ] && echo EXISTS || echo MISSING"
-            let output = try await sshSession.execute(command)
-            guard output.contains("EXISTS") else {
-                throw OpenCodePromptBuildError.missingAttachment(file.absolutePath)
-            }
+        let command = OpenCodePromptReferenceValidator.shellCommand(
+            skillPaths: skillPaths,
+            filePaths: filePaths,
+            escape: shellEscaped
+        )
+        let output = try await sshSession.execute(command)
+        if let error = OpenCodePromptReferenceValidator.parseFailure(
+            output: output,
+            skillSlug: prompt.skillReference?.slug,
+            skillPaths: skillPaths,
+            filePaths: filePaths
+        ) {
+            throw error
         }
     }
 
     private func shellEscaped(_ value: String) -> String {
         let escaped = value.replacingOccurrences(of: "'", with: "'\"'\"'")
         return "'\(escaped)'"
+    }
+}
+
+/// Decides how to repair a daemon active-session pin after an async write may have raced.
+enum OpenCodeActiveSessionPinReconcile {
+    enum Action: Equatable {
+        case none
+        case pin(String)
+        case clear
+    }
+
+    static func action(writtenSessionId: String, currentSessionId: String?) -> Action {
+        if currentSessionId == writtenSessionId {
+            return .none
+        }
+        if let currentSessionId {
+            return .pin(currentSessionId)
+        }
+        return .clear
+    }
+}
+
+/// Batches skill (OR) + attachment (AND) existence checks into one remote shell invocation.
+///
+/// The script is POSIX/`bash` syntax. `SSHSession.execute` runs commands via the user's login
+/// shell (`$SHELL -l -c`), which may be fish — so the body is always wrapped in `bash -c`.
+enum OpenCodePromptReferenceValidator {
+    static func shellCommand(
+        skillPaths: [String],
+        filePaths: [String],
+        escape: (String) -> String
+    ) -> String {
+        var lines: [String] = ["set +e"]
+
+        if !skillPaths.isEmpty {
+            let checks = skillPaths.map { "[ -f \(escape($0)) ]" }.joined(separator: " || ")
+            lines.append("if \(checks); then :; else echo MISSING_SKILL; exit 0; fi")
+        }
+
+        for (index, path) in filePaths.enumerated() {
+            lines.append(
+                "if [ -f \(escape(path)) ]; then :; else echo MISSING_FILE:\(index); exit 0; fi"
+            )
+        }
+
+        lines.append("echo OK")
+        let script = lines.joined(separator: "; ")
+        // Force bash so fish (and other non-POSIX login shells) do not parse `if`/`fi`/`set +e`.
+        return "bash -c \(SSHShellQuoting.quote(script))"
+    }
+
+    static func parseFailure(
+        output: String,
+        skillSlug: String?,
+        skillPaths: [String],
+        filePaths: [String]
+    ) -> OpenCodePromptBuildError? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("MISSING_SKILL") {
+            return .missingSkill(slug: skillSlug ?? "", checkedPaths: skillPaths)
+        }
+        if let range = trimmed.range(of: "MISSING_FILE:") {
+            let indexText = String(trimmed[range.upperBound...])
+                .split(whereSeparator: { $0.isNewline || $0.isWhitespace })
+                .first
+                .map(String.init) ?? ""
+            if let index = Int(indexText), filePaths.indices.contains(index) {
+                return .missingAttachment(filePaths[index])
+            }
+            return .missingAttachment(indexText.isEmpty ? trimmed : indexText)
+        }
+        // Success marker from the remote script.
+        if trimmed.contains("OK") {
+            return nil
+        }
+        // No OK and no structured miss — fail closed so we do not prompt with missing files.
+        return .missingAttachment(filePaths.first ?? "unknown")
     }
 }
 

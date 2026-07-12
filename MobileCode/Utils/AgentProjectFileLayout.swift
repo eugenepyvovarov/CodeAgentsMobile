@@ -65,7 +65,13 @@ struct AgentRulesFileSelection: Equatable {
 }
 
 enum AgentProjectFileLayout {
+    /// OpenCode entrypoint — assembled from aspect files under `rulesDirectoryRelativePath`.
     static let rulesPrimaryRelativePath = "AGENTS.md"
+    /// Source-of-truth aspect files (`personality.md`, `codeagents-ui.md`).
+    static let rulesDirectoryRelativePath = ".codeagents/rules"
+    static let rulesPersonalityRelativePath = AgentRulesAspect.personality.relativePath
+    static let rulesUIRelativePath = AgentRulesAspect.codeAgentsUI.relativePath
+
     static let legacyClaudeDirectoryRulesRelativePath = ".claude/CLAUDE.md"
     static let legacyClaudeRootRulesRelativePath = "CLAUDE.md"
 

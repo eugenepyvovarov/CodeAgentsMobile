@@ -15,6 +15,8 @@ final class RemoteProject {
     var id = UUID()
     var name: String
     var displayName: String?
+    /// Short note shown only on the Abilities overview (not in Agents list, chat, or shortcuts).
+    var overviewDescription: String?
     var path: String
     var lastModified: Date
     var createdAt: Date
@@ -279,6 +281,13 @@ final class RemoteProject {
             return trimmed
         }
         return name
+    }
+
+    /// Trimmed overview blurb for Abilities UI; `nil` when unset/blank.
+    var overviewDescriptionText: String? {
+        let trimmed = overviewDescription?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return nil }
+        return trimmed
     }
 
     var unreadCount: Int {

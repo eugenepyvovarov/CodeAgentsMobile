@@ -70,9 +70,15 @@ enum AgentDuplicationRemoteBootstrap {
 
         if copyRules {
             let agents = AgentProjectFileLayout.rulesPrimaryRelativePath
+            let rulesDir = AgentProjectFileLayout.rulesDirectoryRelativePath
             let legacyDir = AgentProjectFileLayout.legacyClaudeDirectoryRulesRelativePath
             let legacyRoot = AgentProjectFileLayout.legacyClaudeRootRulesRelativePath
+            // Prefer multi-file aspects; always also copy assembled AGENTS.md when present.
             lines += [
+                "if [ -d \"$SRC/\(rulesDir)\" ]; then",
+                "  mkdir -p -- \"$DST/.codeagents\"",
+                "  cp -R -- \"$SRC/\(rulesDir)\" \"$DST/\(rulesDir)\"",
+                "fi",
                 "for f in \(shellSingleQuote(agents)) \(shellSingleQuote(legacyDir)) \(shellSingleQuote(legacyRoot)); do",
                 "  if [ -f \"$SRC/$f\" ]; then",
                 "    cp -- \"$SRC/$f\" \"$DST/\(agents)\"",

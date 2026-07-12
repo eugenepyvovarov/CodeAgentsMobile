@@ -89,6 +89,7 @@ final class AgentDuplicationTests: XCTestCase {
         XCTAssertTrue(script.contains("cp -a --"))
         XCTAssertTrue(script.contains(".opencode/skills"))
         XCTAssertTrue(script.contains("AGENTS.md"))
+        XCTAssertTrue(script.contains(".codeagents/rules"))
         XCTAssertTrue(script.contains(".codeagents/avatar.png"))
         // Must not scp/upload from phone — only remote paths.
         XCTAssertFalse(script.contains("scp "))
@@ -103,6 +104,7 @@ final class AgentDuplicationTests: XCTestCase {
             copyAvatarImage: false
         )
         XCTAssertFalse(script.contains("AGENTS.md"))
+        XCTAssertFalse(script.contains(".codeagents/rules"))
         XCTAssertFalse(script.contains(".opencode/skills"))
         XCTAssertFalse(script.contains("avatar.png"))
         XCTAssertTrue(script.contains(AgentDuplicationRemoteBootstrap.okMarker))

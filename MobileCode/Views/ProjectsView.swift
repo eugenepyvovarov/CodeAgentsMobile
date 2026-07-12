@@ -744,68 +744,72 @@ struct AddProjectSheet: View {
 }
 
 struct EditProjectSheet: View {
+    /// Soft cap so the Abilities overview stays a short blurb.
+    static let overviewDescriptionMaxLength = 200
+
+    // MARK: - Inputs
+
     let project: RemoteProject
+
+    // MARK: - Environment
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
+    // MARK: - State
+
     @State private var displayName: String
+    @State private var overviewDescription: String
     @State private var errorMessage: String?
     @State private var showError = false
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case name
+        case description
+    }
+
+    // MARK: - Derived
+
+    private var descriptionCount: Int {
+        overviewDescription.count
+    }
+
+    private var descriptionCountLabel: String {
+        "\(descriptionCount)/\(Self.overviewDescriptionMaxLength)"
+    }
+
+    private var descriptionNearLimit: Bool {
+        descriptionCount >= Self.overviewDescriptionMaxLength - 20
+    }
+
+    // MARK: - Init
 
     init(project: RemoteProject) {
         self.project = project
         _displayName = State(initialValue: project.displayTitle)
+        _overviewDescription = State(initialValue: project.overviewDescription ?? "")
     }
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Agent Name") {
-                    TextField("Agent Name", text: $displayName)
-                        .textInputAutocapitalization(.words)
-
-                    Text("Leave blank to use the folder name.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Section("Agent Folder") {
-                    HStack {
-                        Text("Folder Name")
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(project.name)
-                            .fontDesign(.monospaced)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-
-                    HStack {
-                        Text("Path")
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(project.path)
-                            .fontDesign(.monospaced)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
+            List {
+                introSection
+                nameSection
+                descriptionSection
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Edit Agent")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        saveChanges()
-                    }
+            .toolbar { toolbarContent }
+            .safeAreaInset(edge: .bottom) {
+                saveBar
+            }
+            .onChange(of: overviewDescription) { _, newValue in
+                if newValue.count > Self.overviewDescriptionMaxLength {
+                    overviewDescription = String(newValue.prefix(Self.overviewDescriptionMaxLength))
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -816,6 +820,95 @@ struct EditProjectSheet: View {
         }
     }
 
+    // MARK: - Sections
+
+    private var introSection: some View {
+        Section {
+            GlassInfoCard(
+                title: "Name & overview",
+                subtitle: "Display name is app-only. Description appears only on Abilities overview.",
+                systemImage: "person.crop.circle.badge.checkmark"
+            )
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    private var nameSection: some View {
+        Section {
+            TextField("Agent name", text: $displayName)
+                .textInputAutocapitalization(.words)
+                .font(.body.weight(.medium))
+                .focused($focusedField, equals: .name)
+                .submitLabel(.next)
+                .onSubmit { focusedField = .description }
+                .accessibilityIdentifier("edit-agent-name-field")
+        } header: {
+            Text("Display name")
+        } footer: {
+            Text("Leave blank to use the remote folder name “\(project.name)”. Does not rename the folder.")
+        }
+    }
+
+    private var descriptionSection: some View {
+        Section {
+            // Single prompt only — avoid ZStack placeholder + TextField label overlap.
+            TextField(
+                "Optional short blurb for Abilities overview",
+                text: $overviewDescription,
+                axis: .vertical
+            )
+            .lineLimit(3...6)
+            .focused($focusedField, equals: .description)
+            .textInputAutocapitalization(.sentences)
+            .accessibilityIdentifier("edit-agent-description-field")
+        } header: {
+            HStack {
+                Text("Description")
+                Spacer()
+                Text(descriptionCountLabel)
+                    .font(.caption.monospacedDigit().weight(.medium))
+                    .foregroundStyle(descriptionNearLimit ? Color.orange : Color.secondary)
+                    .accessibilityIdentifier("edit-agent-description-count")
+            }
+        } footer: {
+            Text("Optional. Shown only on Abilities overview — not in the Agents list or chat.")
+        }
+    }
+
+    private var saveBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            PrimaryGlassButton(action: saveChanges) {
+                Label("Save changes", systemImage: "checkmark.circle.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .accessibilityIdentifier("edit-agent-save-button")
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+            .background(.bar)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel") {
+                dismiss()
+            }
+        }
+        ToolbarItemGroup(placement: .keyboard) {
+            Spacer()
+            Button("Done") {
+                focusedField = nil
+            }
+        }
+    }
+
+    // MARK: - Actions
+
     private func saveChanges() {
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed == project.name {
@@ -823,6 +916,13 @@ struct EditProjectSheet: View {
         } else {
             project.displayName = trimmed
         }
+
+        var description = overviewDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if description.count > Self.overviewDescriptionMaxLength {
+            description = String(description.prefix(Self.overviewDescriptionMaxLength))
+        }
+        project.overviewDescription = description.isEmpty ? nil : description
+        project.updateLastModified()
 
         do {
             try modelContext.save()
@@ -834,6 +934,8 @@ struct EditProjectSheet: View {
         }
     }
 }
+
+
 
 
 struct DeleteProjectConfirmationSheet: View {

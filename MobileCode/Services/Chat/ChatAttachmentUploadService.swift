@@ -18,25 +18,42 @@ enum ChatAttachmentError: LocalizedError {
     }
 }
 
+/// Reusable SSH + remote attachments directory for serial multi-file chat uploads.
+struct ChatAttachmentUploadContext {
+    let session: SSHSession
+    let remoteAttachmentsDir: String
+}
+
 final class ChatAttachmentUploadService {
     static let shared = ChatAttachmentUploadService()
+
+    /// Base64 payload size that fits in a single remote shell command (ARG_MAX headroom).
+    /// Must stay divisible by 4 for base64. Larger than the old 12KB chunks → fewer SSH round-trips.
+    static let maxSingleShotBase64Length = 48_000
+    /// Chunk size for multi-command uploads (divisible by 4).
+    static let chunkBase64Length = 48_000
 
     private let sshService = ServiceManager.shared.sshService
     private let fileManager = FileManager.default
 
     private init() { }
 
-    func resolveFileReferences(
-        for attachments: [ChatComposerAttachment],
-        in project: RemoteProject
-    ) async throws -> [String] {
+    /// One pooled session + `mkdir -p` for a batch of serial uploads.
+    func prepareUploadContext(for project: RemoteProject) async throws -> ChatAttachmentUploadContext {
         let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-
         let remoteAttachmentsDir = AgentProjectFileLayout.remotePath(
             projectPath: project.path,
             relativePath: AgentProjectFileLayout.attachmentsRelativePath
         )
         try await ensureRemoteDirectory(remoteAttachmentsDir, session: session)
+        return ChatAttachmentUploadContext(session: session, remoteAttachmentsDir: remoteAttachmentsDir)
+    }
+
+    func resolveFileReferences(
+        for attachments: [ChatComposerAttachment],
+        in project: RemoteProject
+    ) async throws -> [String] {
+        let context = try await prepareUploadContext(for: project)
 
         var references: [String] = []
         for attachment in attachments {
@@ -51,8 +68,7 @@ final class ChatAttachmentUploadService {
                 let reference = try await uploadLocalFile(
                     localURL: localURL,
                     displayName: displayName,
-                    remoteAttachmentsDir: remoteAttachmentsDir,
-                    session: session
+                    using: context
                 )
                 references.append(reference)
             }
@@ -72,25 +88,19 @@ final class ChatAttachmentUploadService {
         displayName: String,
         in project: RemoteProject
     ) async throws -> String {
-        let session = try await sshService.getConnection(for: project, purpose: .fileOperations)
-        let remoteAttachmentsDir = AgentProjectFileLayout.remotePath(
-            projectPath: project.path,
-            relativePath: AgentProjectFileLayout.attachmentsRelativePath
-        )
-        try await ensureRemoteDirectory(remoteAttachmentsDir, session: session)
+        let context = try await prepareUploadContext(for: project)
         return try await uploadLocalFile(
             localURL: localURL,
             displayName: displayName,
-            remoteAttachmentsDir: remoteAttachmentsDir,
-            session: session
+            using: context
         )
     }
 
-    private func uploadLocalFile(
+    /// Upload using a prepared context (shared session + directory). Serial one-by-one is intentional.
+    func uploadLocalFile(
         localURL: URL,
         displayName: String,
-        remoteAttachmentsDir: String,
-        session: SSHSession
+        using context: ChatAttachmentUploadContext
     ) async throws -> String {
         guard fileManager.fileExists(atPath: localURL.path) else {
             throw ChatAttachmentError.missingLocalFile(displayName)
@@ -98,9 +108,9 @@ final class ChatAttachmentUploadService {
 
         let safeName = sanitizeFilename(displayName)
         let remoteFileName = "\(UUID().uuidString.prefix(8))-\(safeName)"
-        let remotePath = "\(remoteAttachmentsDir)/\(remoteFileName)"
+        let remotePath = "\(context.remoteAttachmentsDir)/\(remoteFileName)"
 
-        try await uploadFileChunked(localURL: localURL, remotePath: remotePath, session: session)
+        try await uploadFileData(localURL: localURL, remotePath: remotePath, session: context.session)
         return AgentProjectFileLayout.attachmentReference(fileName: remoteFileName)
     }
 
@@ -111,27 +121,36 @@ final class ChatAttachmentUploadService {
         _ = try await session.execute("mkdir -p \(escaped)")
     }
 
-    private func uploadFileChunked(localURL: URL, remotePath: String, session: SSHSession) async throws {
+    private func uploadFileData(localURL: URL, remotePath: String, session: SSHSession) async throws {
         let data = try Data(contentsOf: localURL)
         let base64 = data.base64EncodedString()
-
         let remoteEscaped = shellEscaped(remotePath)
 
-        // Create or truncate the remote file first.
+        guard !base64.isEmpty else {
+            _ = try await session.execute(": > \(remoteEscaped)")
+            return
+        }
+
+        // Small/medium files: one round-trip (truncate + write).
+        if base64.count <= Self.maxSingleShotBase64Length {
+            let chunkEscaped = shellEscaped(base64)
+            _ = try await session.execute(
+                "printf '%s' \(chunkEscaped) | base64 -d > \(remoteEscaped)"
+            )
+            return
+        }
+
+        // Large files: fewer, larger chunks than the old 12KB path.
         _ = try await session.execute(": > \(remoteEscaped)")
-
-        guard !base64.isEmpty else { return }
-
-        // Keep chunks reasonably small to avoid command length issues.
-        // Must be divisible by 4 for base64 decoding.
-        let chunkSize = 12_000
+        let chunkSize = Self.chunkBase64Length
         var index = base64.startIndex
-
         while index < base64.endIndex {
             let endIndex = base64.index(index, offsetBy: chunkSize, limitedBy: base64.endIndex) ?? base64.endIndex
             let chunk = String(base64[index..<endIndex])
             let chunkEscaped = shellEscaped(chunk)
-            _ = try await session.execute("printf '%s' \(chunkEscaped) | base64 -d >> \(remoteEscaped)")
+            _ = try await session.execute(
+                "printf '%s' \(chunkEscaped) | base64 -d >> \(remoteEscaped)"
+            )
             index = endIndex
         }
     }

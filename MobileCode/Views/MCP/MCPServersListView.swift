@@ -218,15 +218,21 @@ struct MCPServersListView: View {
         isLoading = true
         
         do {
-            try await mcpService.ensureManagedSchedulerServerIfNeeded(for: project)
+            // Show configured servers immediately — do not block on provision/connect.
             let newServers = try await mcpService.fetchServers(for: project)
-            // Update servers after fetch completes
             servers = newServers
+            isLoading = false
+
+            // Background: ensure managed entries exist without stalling the list.
+            Task {
+                await ensureManagedServersInBackground(for: project)
+            }
         } catch MCPServiceError.claudeNotInstalled {
             // Claude CLI is not required for OpenCode MCP management.
             errorMessage = "Unable to load MCP servers. Check OpenCode is running on the server."
             showError = true
             servers = []
+            isLoading = false
         } catch {
             let description = error.localizedDescription
             if description.localizedCaseInsensitiveContains("claude") &&
@@ -236,9 +242,57 @@ struct MCPServersListView: View {
                 errorMessage = description
             }
             showError = true
+            isLoading = false
         }
-        
-        isLoading = false
+    }
+
+    /// Provision missing managed MCPs / repair failed avatar without blocking first paint.
+    private func ensureManagedServersInBackground(for project: RemoteProject) async {
+        let hadScheduler = servers.contains(where: \.isManagedSchedulerServer)
+        let avatarServer = servers.first(where: \.isManagedAvatarServer)
+        let hadAvatar = avatarServer != nil
+        let avatarNeedsRepair = avatarServer.map { server in
+            server.status == .disconnected || server.status == .unknown
+                || (server.statusError?.localizedCaseInsensitiveContains("timeout") == true)
+        } ?? false
+
+        // Skip when both managed entries are healthy.
+        if hadScheduler, hadAvatar, !avatarNeedsRepair {
+            return
+        }
+
+        var didChange = false
+        if !hadScheduler {
+            do {
+                try await mcpService.ensureManagedSchedulerServerIfNeeded(for: project)
+                didChange = true
+            } catch {
+                SSHLogger.log("MCP list: scheduler ensure failed: \(error)", level: .debug)
+            }
+        }
+        if !hadAvatar {
+            do {
+                try await mcpService.ensureManagedAvatarServerIfNeeded(for: project)
+                didChange = true
+            } catch {
+                SSHLogger.log("MCP list: avatar ensure failed: \(error)", level: .debug)
+            }
+        } else if avatarNeedsRepair {
+            // Stale Content-Length script → redeploy NDJSON + reconnect.
+            do {
+                try await mcpService.repairManagedAvatarServer(for: project)
+                didChange = true
+            } catch {
+                SSHLogger.log("MCP list: avatar repair failed: \(error)", level: .debug)
+            }
+        }
+
+        guard didChange else { return }
+        do {
+            servers = try await mcpService.fetchServers(for: project)
+        } catch {
+            SSHLogger.log("MCP list: post-ensure refresh failed: \(error)", level: .debug)
+        }
     }
     
     private func deleteServers(at offsets: IndexSet) {

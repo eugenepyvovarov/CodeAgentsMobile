@@ -72,4 +72,36 @@ final class AgentAvatarTests: XCTestCase {
     func testAvatarViewMonogramUnchanged() {
         XCTAssertEqual(AgentAvatarView.monogram(from: "Ops Bot"), "OB")
     }
+
+    func testAvatarMCPScriptVersionMatchesProvisionConstant() throws {
+        // Bundle resource may be unavailable in pure unit-test hosts; load from source path when needed.
+        let candidates: [URL] = [
+            Bundle.main.url(forResource: "codeagents_avatar_mcp", withExtension: "py", subdirectory: "MCP"),
+            Bundle.main.url(forResource: "codeagents_avatar_mcp", withExtension: "py"),
+            URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent() // MobileCodeTests
+                .deletingLastPathComponent() // repo root
+                .appendingPathComponent("MobileCode/Resources/MCP/codeagents_avatar_mcp.py"),
+        ].compactMap { $0 }
+
+        guard let url = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+            throw XCTSkip("avatar MCP script not found in test bundle or source tree")
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(
+            text.contains("SCRIPT_VERSION = \"\(MCPAgentAvatarProvisionService.scriptVersion)\""),
+            "Python SCRIPT_VERSION must match MCPAgentAvatarProvisionService.scriptVersion for redeploy"
+        )
+        // OpenCode speaks NDJSON, not Content-Length-only.
+        XCTAssertTrue(text.contains("NDJSON") || text.contains("newline"), "script docs should mention NDJSON")
+        XCTAssertFalse(
+            text.contains("Content-Length: {len(body)}"),
+            "primary send path must not be Content-Length-only (OpenCode hangs)"
+        )
+    }
+
+    func testUIRulesMentionAvatarMCPTools() {
+        XCTAssertTrue(CodeAgentsUIRules.rulesMarkdown.contains("set_agent_avatar_emoji"))
+        XCTAssertTrue(CodeAgentsUIRules.rulesMarkdown.contains("codeagents-avatar"))
+    }
 }

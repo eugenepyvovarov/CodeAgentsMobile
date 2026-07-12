@@ -213,6 +213,25 @@ extension ChatViewModel {
         }
         updateMessageAttachments(message, records)
 
+        // One SSH session + mkdir for the whole batch; files still upload one-by-one.
+        let uploadContext: ChatAttachmentUploadContext
+        do {
+            uploadContext = try await ChatAttachmentUploadService.shared.prepareUploadContext(for: project)
+        } catch {
+            for index in records.indices where records[index].remoteReference == nil {
+                records[index].uploadStatus = .failed
+                records[index].errorMessage = error.localizedDescription
+            }
+            updateMessageAttachments(message, records)
+            if announceFailure {
+                addErrorMessage("Attachment upload failed: \(error.localizedDescription)")
+            }
+            return AttachmentUploadOutcome(
+                fileReferences: records.compactMap(\.remoteReference),
+                shouldContinue: false
+            )
+        }
+
         var lastError: Error?
         for index in records.indices {
             if let existing = records[index].remoteReference, !existing.isEmpty {
@@ -234,7 +253,7 @@ extension ChatViewModel {
                 let reference = try await ChatAttachmentUploadService.shared.uploadLocalFile(
                     localURL: localURL,
                     displayName: displayName,
-                    in: project
+                    using: uploadContext
                 )
                 records[index].remoteReference = reference
                 records[index].uploadStatus = .uploaded

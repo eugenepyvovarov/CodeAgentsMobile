@@ -10,6 +10,9 @@ import Observation
 import SwiftData
 
 extension ChatViewModel {
+    /// Just-in-time work before an OpenCode prompt. MCP listing is intentionally skipped:
+    /// OpenCode send does not use the app-side server list (tools come from remote `opencode.json`).
+    /// MCP refresh stays on post-ready deferred startup and explicit Abilities actions.
     func ensureSendTimeSetup(for project: RemoteProject, includeRules: Bool) async {
         let plan = ChatMCPServerSetupPlanner.plan(
             cachedServerCount: cachedMCPServers.count,
@@ -17,7 +20,8 @@ extension ChatViewModel {
             lastFetchedAt: mcpCacheLastFetchedAt,
             now: Date(),
             staleInterval: mcpCacheStaleInterval,
-            includeRules: includeRules
+            includeRules: includeRules,
+            allowMCPFetch: false
         )
         if plan.shouldFetchMCPServers {
             await fetchMCPServersForSetupIfCurrent(project: project, operation: "chat.ensureSendTimeMCPServers")

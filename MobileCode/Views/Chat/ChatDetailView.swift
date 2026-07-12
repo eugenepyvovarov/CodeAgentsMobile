@@ -70,7 +70,6 @@ struct ChatDetailView: View {
                 let messageId = sourceMessage.id
                 let bubble = MessageBubble(
                     message: sourceMessage,
-                    assistantLabel: assistantLabel,
                     userLabel: userLabel,
                     isStreaming: viewModel.streamingMessage?.id == sourceMessage.id,
                     streamingBlocks: viewModel.streamingMessage?.id == sourceMessage.id ? viewModel.streamingBlocks : [],

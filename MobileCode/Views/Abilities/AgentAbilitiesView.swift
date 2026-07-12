@@ -11,6 +11,8 @@ import SwiftData
 /// Human-facing home for agent configuration (project files + local permissions/env).
 /// The agent mutates the same project files via normal OpenCode tools — no parallel MCP API.
 struct AgentAbilitiesView: View {
+    // MARK: - Environment / queries
+
     @Environment(\.modelContext) private var modelContext
     @StateObject private var projectContext = ProjectContext.shared
 
@@ -18,13 +20,18 @@ struct AgentAbilitiesView: View {
     @Query(sort: [SortDescriptor(\AgentEnvironmentVariable.key, order: .forward)])
     private var allEnvironmentVariables: [AgentEnvironmentVariable]
 
+    // MARK: - State
+
     @State private var mcpServerCount: Int?
     @State private var isLoadingMCP = false
     @State private var showingModelChange = false
     @State private var showingDuplicate = false
     @State private var showingAvatarEditor = false
+    @State private var showingEditAgent = false
     @State private var modelSummaryEpoch = 0
     @State private var rulesStatus: RulesOverviewStatus = .unknown
+
+    // MARK: - Derived
 
     private var project: RemoteProject? {
         projectContext.activeProject
@@ -39,6 +46,48 @@ struct AgentAbilitiesView: View {
         guard let project else { return 0 }
         return allEnvironmentVariables.filter { $0.projectId == project.id }.count
     }
+
+    private var agentLabel: String {
+        project?.displayTitle ?? "Agent"
+    }
+
+    private var serverLabel: String {
+        projectContext.activeServer?.name ?? "No server"
+    }
+
+    private var mcpCountLabel: String {
+        if isLoadingMCP && mcpServerCount == nil {
+            return "…"
+        }
+        if let mcpServerCount {
+            return "\(mcpServerCount)"
+        }
+        return "—"
+    }
+
+    /// Compact provider · model · thinking label (same source as chat overflow menu).
+    private var openCodeModelSummary: String {
+        _ = modelSummaryEpoch
+        guard let serverId = project?.serverId else {
+            return "No model selected"
+        }
+        let profile = OpenCodeAIProviderSettingsStore().effectiveProfile(for: serverId)
+        let providerName = OpenCodeProviderPreset.name(for: profile.normalizedProviderID)
+            ?? profile.trimmedProviderName
+        guard let modelID = profile.resolvedModelID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !modelID.isEmpty else {
+            return "\(providerName) · No model"
+        }
+        if let variant = profile.resolvedVariant {
+            let thinking = OpenCodeThinkingSupport.displayTitle(for: variant)
+            return "\(providerName) · \(modelID) · \(thinking)"
+        }
+        return "\(providerName) · \(modelID)"
+    }
+
+
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
@@ -60,22 +109,7 @@ struct AgentAbilitiesView: View {
             }
             .navigationTitle("Abilities")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    ConnectionStatusView()
-                }
-                if project != nil {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            showingDuplicate = true
-                        } label: {
-                            Image(systemName: "plus.square.on.square")
-                        }
-                        .accessibilityLabel("Duplicate Agent")
-                        .accessibilityIdentifier("abilities-duplicate-button")
-                    }
-                }
-            }
+            .toolbar { toolbarContent }
             .task(id: project?.id) {
                 await refreshOverview()
             }
@@ -94,29 +128,15 @@ struct AgentAbilitiesView: View {
                     AgentAvatarEditorSheet(project: project)
                 }
             }
+            .sheet(isPresented: $showingEditAgent) {
+                if let project {
+                    EditProjectSheet(project: project)
+                }
+            }
             .sheet(isPresented: $showingModelChange, onDismiss: {
                 modelSummaryEpoch += 1
             }) {
-                // Same sheet as chat: edits the *effective* profile (global or server override).
-                // Full Server AI locks Change while "Use Global Defaults" is on — bad for Abilities.
-                // OpenCodeChatModelChangeSheet also links to Providers & connection for OAuth/setup.
-                if let server = projectContext.activeServer {
-                    OpenCodeChatModelChangeSheet(server: server)
-                } else {
-                    NavigationStack {
-                        ContentUnavailableView(
-                            "No Server",
-                            systemImage: "server.rack",
-                            description: Text("Select an agent with a connected server to change the model.")
-                        )
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Close") { showingModelChange = false }
-                                    .accessibilityIdentifier("abilities-model-close-button")
-                            }
-                        }
-                    }
-                }
+                modelChangeSheet
             }
         }
         .accessibilityIdentifier("agent-abilities-root")
@@ -124,59 +144,27 @@ struct AgentAbilitiesView: View {
 
     // MARK: - Sections
 
+    @ViewBuilder
     private var overviewSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 8) {
-                if let project {
-                    HStack(alignment: .center, spacing: 14) {
-                        Button {
-                            showingAvatarEditor = true
-                        } label: {
-                            AgentAvatarView(project: project, size: 64)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Change avatar")
-                        .accessibilityIdentifier("abilities-avatar-button")
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(agentLabel)
-                                .font(.headline)
-                                .accessibilityIdentifier("abilities-agent-label")
-
-                            Text(openCodeModelSummary)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .accessibilityIdentifier("abilities-model-summary")
-
-                            Text(avatarStatusLabel)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                HStack(spacing: 16) {
-                    overviewStat(title: "Skills", value: "\(enabledSkillsCount)")
-                    overviewStat(title: "MCP", value: mcpCountLabel)
-                    overviewStat(title: "Rules", value: rulesStatus.shortLabel)
-                }
-                .padding(.top, 4)
+        if let project {
+            Section {
+                AbilitiesOverviewCard(
+                    project: project,
+                    agentLabel: agentLabel,
+                    modelSummary: openCodeModelSummary,
+                    serverLabel: serverLabel,
+                    skillsCount: enabledSkillsCount,
+                    mcpLabel: mcpCountLabel,
+                    rulesLabel: rulesStatus.shortLabel,
+                    onAvatarTap: { showingAvatarEditor = true },
+                    onEditTap: { showingEditAgent = true }
+                )
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } header: {
+                Text("Overview")
             }
-            .padding(.vertical, 4)
-        } header: {
-            Text("Overview")
-        }
-    }
-
-    private var avatarStatusLabel: String {
-        guard let project else { return "Monogram" }
-        switch project.avatarKind {
-        case .emoji:
-            return "Emoji avatar"
-        case .image:
-            return "Image avatar"
-        case .none:
-            return "Tap to set avatar"
         }
     }
 
@@ -187,8 +175,8 @@ struct AgentAbilitiesView: View {
             } label: {
                 abilitiesRow(
                     title: "Personality",
-                    subtitle: "Behavioral rules in AGENTS.md",
-                    systemImage: "doc.text",
+                    subtitle: "Aspects linked into AGENTS.md",
+                    systemImage: "person.text.rectangle",
                     value: rulesStatus.detailLabel
                 )
             }
@@ -271,18 +259,47 @@ struct AgentAbilitiesView: View {
         }
     }
 
-    // MARK: - Row helpers
-
-    private func overviewStat(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.subheadline.weight(.semibold))
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            ConnectionStatusView()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        if project != nil {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    showingDuplicate = true
+                } label: {
+                    Image(systemName: "plus.square.on.square")
+                }
+                .accessibilityLabel("Duplicate Agent")
+                .accessibilityIdentifier("abilities-duplicate-button")
+            }
+        }
     }
+
+    @ViewBuilder
+    private var modelChangeSheet: some View {
+        // Same sheet as chat: edits the *effective* profile (global or server override).
+        if let server = projectContext.activeServer {
+            OpenCodeChatModelChangeSheet(server: server)
+        } else {
+            NavigationStack {
+                ContentUnavailableView(
+                    "No Server",
+                    systemImage: "server.rack",
+                    description: Text("Select an agent with a connected server to change the model.")
+                )
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { showingModelChange = false }
+                            .accessibilityIdentifier("abilities-model-close-button")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Row helpers
 
     private func abilitiesRow(
         title: String,
@@ -320,44 +337,6 @@ struct AgentAbilitiesView: View {
 
     // MARK: - Data
 
-    private var agentLabel: String {
-        guard let project else { return "Agent" }
-        if let server = projectContext.activeServer {
-            return "\(project.displayTitle)@\(server.name)"
-        }
-        return project.displayTitle
-    }
-
-    private var mcpCountLabel: String {
-        if isLoadingMCP && mcpServerCount == nil {
-            return "…"
-        }
-        if let mcpServerCount {
-            return "\(mcpServerCount)"
-        }
-        return "—"
-    }
-
-    /// Compact provider · model · thinking label (same source as chat overflow menu).
-    private var openCodeModelSummary: String {
-        _ = modelSummaryEpoch
-        guard let serverId = project?.serverId else {
-            return "No model selected"
-        }
-        let profile = OpenCodeAIProviderSettingsStore().effectiveProfile(for: serverId)
-        let providerName = OpenCodeProviderPreset.name(for: profile.normalizedProviderID)
-            ?? profile.trimmedProviderName
-        guard let modelID = profile.resolvedModelID?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !modelID.isEmpty else {
-            return "\(providerName) · No model"
-        }
-        if let variant = profile.resolvedVariant {
-            let thinking = OpenCodeThinkingSupport.displayTitle(for: variant)
-            return "\(providerName) · \(modelID) · \(thinking)"
-        }
-        return "\(providerName) · \(modelID)"
-    }
-
     @MainActor
     private func refreshOverview() async {
         guard let project else {
@@ -368,8 +347,10 @@ struct AgentAbilitiesView: View {
 
         await AgentAvatarService.shared.refresh(for: project, modelContext: modelContext)
         await withTaskGroup(of: Void.self) { group in
+            // Count is a fast config+status read — never provision/connect here.
             group.addTask { await self.loadMCPCount(for: project) }
             group.addTask { await self.loadRulesStatus(for: project) }
+            // Avatar ensure is best-effort background; skipped when already provisioned.
             group.addTask {
                 try? await CodingAgentMCPService.shared.ensureManagedAvatarServerIfNeeded(for: project)
             }
@@ -384,7 +365,6 @@ struct AgentAbilitiesView: View {
             let servers = try await CodingAgentMCPService.shared.fetchServers(for: project)
             mcpServerCount = servers.count
         } catch {
-            // Keep last known count if refresh fails.
             if mcpServerCount == nil {
                 mcpServerCount = nil
             }
@@ -398,10 +378,10 @@ struct AgentAbilitiesView: View {
         await viewModel.load(for: project)
         if viewModel.loadErrorMessage != nil {
             rulesStatus = .error
-        } else if viewModel.isMissingFile || viewModel.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            rulesStatus = .empty
-        } else {
+        } else if viewModel.hasPersonalityContent {
             rulesStatus = .configured
+        } else {
+            rulesStatus = .empty
         }
     }
 
@@ -416,6 +396,196 @@ struct AgentAbilitiesView: View {
         )
         if let clone = try? modelContext.fetch(descriptor).first {
             ProjectContext.shared.setActiveProject(clone)
+        }
+    }
+}
+
+// MARK: - Overview card
+
+private struct AbilitiesOverviewCard: View {
+    let project: RemoteProject
+    let agentLabel: String
+    let modelSummary: String
+    let serverLabel: String
+    let skillsCount: Int
+    let mcpLabel: String
+    let rulesLabel: String
+    let onAvatarTap: () -> Void
+    let onEditTap: () -> Void
+
+    var body: some View {
+        let card = VStack(alignment: .leading, spacing: 16) {
+            identityRow
+            statsRow
+            editIdentityButton
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+        Group {
+            if #available(iOS 26.0, *) {
+                card
+                    .glassEffect(
+                        .regular.tint(Color.accentColor.opacity(0.12)),
+                        in: .rect(cornerRadius: 20)
+                    )
+            } else {
+                card
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                    )
+            }
+        }
+    }
+
+    private var identityRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Button(action: onAvatarTap) {
+                AgentAvatarView(project: project, size: 68)
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "camera.circle.fill")
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, Color.accentColor)
+                            .font(.system(size: 18))
+                            .offset(x: 2, y: 2)
+                    }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Change avatar")
+            .accessibilityIdentifier("abilities-avatar-button")
+            .modifier(AbilitiesInteractiveGlassCircle())
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(agentLabel)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+                    .accessibilityIdentifier("abilities-agent-label")
+
+                if let overviewDescription = project.overviewDescriptionText {
+                    Text(overviewDescription)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("abilities-agent-description")
+                } else {
+                    Text("No overview description")
+                        .font(.subheadline)
+                        .foregroundStyle(.tertiary)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "cpu")
+                        .imageScale(.small)
+                    Text(modelSummary)
+                        .lineLimit(2)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("abilities-model-summary")
+
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "server.rack")
+                        .imageScale(.small)
+                    Text(serverLabel)
+                        .lineLimit(1)
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .accessibilityIdentifier("abilities-server-label")
+            }
+        }
+    }
+
+    private var statsRow: some View {
+        let chips = HStack(spacing: 10) {
+            AbilitiesStatChip(title: "Skills", value: "\(skillsCount)", systemImage: "wand.and.stars")
+            AbilitiesStatChip(title: "MCP", value: mcpLabel, systemImage: "server.rack")
+            AbilitiesStatChip(title: "Rules", value: rulesLabel, systemImage: "person.text.rectangle")
+        }
+
+        return Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 10) {
+                    chips
+                }
+            } else {
+                chips
+            }
+        }
+    }
+
+    private var editIdentityButton: some View {
+        Button(action: onEditTap) {
+            Label(
+                project.overviewDescriptionText == nil
+                    ? "Rename or add description"
+                    : "Edit name or description",
+                systemImage: "pencil.line"
+            )
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+        }
+        .accessibilityIdentifier("abilities-edit-agent-row")
+        .modifier(AbilitiesGlassButtonStyle())
+    }
+}
+
+private struct AbilitiesStatChip: View {
+    let title: String
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        let content = VStack(alignment: .leading, spacing: 4) {
+            Label(title, systemImage: systemImage)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .labelStyle(.titleAndIcon)
+                .lineLimit(1)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+
+        Group {
+            if #available(iOS 26.0, *) {
+                content
+                    .glassEffect(
+                        .regular.tint(Color.accentColor.opacity(0.1)),
+                        in: .rect(cornerRadius: 14)
+                    )
+            } else {
+                content
+                    .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+    }
+}
+
+private struct AbilitiesInteractiveGlassCircle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            content
+        }
+    }
+}
+
+private struct AbilitiesGlassButtonStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.buttonStyle(.glass)
+        } else {
+            content.buttonStyle(.bordered)
         }
     }
 }
@@ -441,7 +611,7 @@ private enum RulesOverviewStatus {
         switch self {
         case .unknown: return "…"
         case .empty: return "Not set"
-        case .configured: return "AGENTS.md"
+        case .configured: return "Set"
         case .error: return "Unavailable"
         }
     }

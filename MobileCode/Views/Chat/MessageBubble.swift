@@ -9,7 +9,6 @@ import SwiftUI
 
 struct MessageBubble: View {
     let message: Message
-    let assistantLabel: String
     let userLabel: String
     let isStreaming: Bool
     let streamingBlocks: [ContentBlock]
@@ -24,7 +23,6 @@ struct MessageBubble: View {
                               hasStructuredContent || 
                               isStreaming
         let isUser = message.role == MessageRole.user
-        let senderLabel = isUser ? userLabel : assistantLabel
         let isLocalError = message.presentsAsLocalError
         
         if hasVisibleContent {
@@ -42,15 +40,13 @@ struct MessageBubble: View {
                 .accessibilityIdentifier("chat-message-error-\(message.id.uuidString)")
             } else {
                 VStack(spacing: 4) {
-                    HStack(spacing: 6) {
-                        if isUser {
+                    // Sender label only for user turns ("You"). Agent name lives in the chat header.
+                    if isUser {
+                        HStack(spacing: 6) {
                             Spacer()
-                        }
-                        Text(senderLabel)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(.secondary)
-                        if !isUser {
-                            Spacer()
+                            Text(userLabel)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundColor(.secondary)
                         }
                     }
                     // Message content

@@ -136,4 +136,103 @@ final class OpenCodePromptBuilderTests: XCTestCase {
         XCTAssertFalse(body.contains("variant"))
     }
 
+    // MARK: - Active session pin reconcile
+
+    func testActiveSessionPinReconcileKeepsMatchingWrite() {
+        XCTAssertEqual(
+            OpenCodeActiveSessionPinReconcile.action(
+                writtenSessionId: "ses_aaa",
+                currentSessionId: "ses_aaa"
+            ),
+            .none
+        )
+    }
+
+    func testActiveSessionPinReconcileRepinsWhenSessionChanged() {
+        XCTAssertEqual(
+            OpenCodeActiveSessionPinReconcile.action(
+                writtenSessionId: "ses_old",
+                currentSessionId: "ses_new"
+            ),
+            .pin("ses_new")
+        )
+    }
+
+    func testActiveSessionPinReconcileClearsWhenSessionRemoved() {
+        XCTAssertEqual(
+            OpenCodeActiveSessionPinReconcile.action(
+                writtenSessionId: "ses_old",
+                currentSessionId: nil
+            ),
+            .clear
+        )
+    }
+
+    // MARK: - Batched reference validation
+
+    func testReferenceValidatorShellUsesSkillORAndFileAND() {
+        let command = OpenCodePromptReferenceValidator.shellCommand(
+            skillPaths: ["/a/SKILL.md", "/b/SKILL.md"],
+            filePaths: ["/proj/.codeagents/attachments/1.png", "/proj/doc.txt"],
+            escape: SSHShellQuoting.quote
+        )
+
+        // Must run under bash so fish login shells do not parse POSIX if/fi.
+        XCTAssertTrue(command.hasPrefix("bash -c "), command)
+        XCTAssertTrue(command.contains("/a/SKILL.md"), command)
+        XCTAssertTrue(command.contains("/b/SKILL.md"), command)
+        XCTAssertTrue(command.contains("||"), command)
+        XCTAssertTrue(command.contains("MISSING_SKILL"), command)
+        XCTAssertTrue(command.contains("MISSING_FILE:0"), command)
+        XCTAssertTrue(command.contains("MISSING_FILE:1"), command)
+        XCTAssertTrue(command.contains("echo OK"), command)
+    }
+
+    func testReferenceValidatorShellQuotesScriptForNestedLoginShell() {
+        let command = OpenCodePromptReferenceValidator.shellCommand(
+            skillPaths: [],
+            filePaths: ["/tmp/it's-a-file.png"],
+            escape: SSHShellQuoting.quote
+        )
+        XCTAssertTrue(command.hasPrefix("bash -c "), command)
+        // Path body survives quoting (apostrophe may be split as '\'' inside the bash -c payload).
+        XCTAssertTrue(command.contains("s-a-file.png"), command)
+        XCTAssertTrue(command.contains("MISSING_FILE:0"), command)
+        // Outer payload is a single-quoted bash -c argument (SSHShellQuoting.quote).
+        XCTAssertTrue(command.contains("bash -c '"), command)
+    }
+
+    func testReferenceValidatorParseOK() {
+        let error = OpenCodePromptReferenceValidator.parseFailure(
+            output: "OK\n",
+            skillSlug: "demo",
+            skillPaths: ["/a"],
+            filePaths: ["/b"]
+        )
+        XCTAssertNil(error)
+    }
+
+    func testReferenceValidatorParseMissingSkill() {
+        let error = OpenCodePromptReferenceValidator.parseFailure(
+            output: "MISSING_SKILL\n",
+            skillSlug: "demo-skill",
+            skillPaths: ["/a/SKILL.md"],
+            filePaths: []
+        )
+        XCTAssertEqual(
+            error,
+            .missingSkill(slug: "demo-skill", checkedPaths: ["/a/SKILL.md"])
+        )
+    }
+
+    func testReferenceValidatorParseMissingFileByIndex() {
+        let error = OpenCodePromptReferenceValidator.parseFailure(
+            output: "MISSING_FILE:1\n",
+            skillSlug: nil,
+            skillPaths: [],
+            filePaths: ["/first.png", "/second.png"]
+        )
+        XCTAssertEqual(error, .missingAttachment("/second.png"))
+    }
+
 }

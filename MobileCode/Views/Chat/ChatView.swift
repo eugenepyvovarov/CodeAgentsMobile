@@ -79,12 +79,16 @@ struct ChatView: View {
                     )
                 }
             }
-            .navigationTitle(chatTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     ConnectionStatusView()
                 }
+
+                ToolbarItem(placement: .principal) {
+                    chatHeaderTitle
+                }
+
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         if projectContext.activeServer != nil {
@@ -145,6 +149,10 @@ struct ChatView: View {
                 return
             }
             viewModel.configure(modelContext: modelContext, projectId: project.id)
+            // Keep list/abilities avatar cache warm without blocking chat open.
+            Task {
+                await AgentAvatarService.shared.refresh(for: project, modelContext: modelContext)
+            }
             await startOpenCodeConnectLoop(force: false)
         }
         .onAppear {
@@ -169,11 +177,10 @@ struct ChatView: View {
             if let project = newValue {
                 if let server = projectContext.activeServer {
                     Task {
-                        let agentDisplayName = "\(project.displayTitle)@\(server.name)"
                         await PushNotificationsManager.shared.recordChatOpened(
                             project: project,
                             server: server,
-                            agentDisplayName: agentDisplayName
+                            agentDisplayName: project.displayTitle
                         )
                     }
                 }
@@ -244,16 +251,43 @@ struct ChatView: View {
         viewModel.clearChat()
     }
 
+    /// Agent display name only (no `@server` — server lives in Abilities).
     private var assistantLabel: String {
-        guard let project = projectContext.activeProject else { return "Agent" }
-        if let server = projectContext.activeServer {
-            return "\(project.displayTitle)@\(server.name)"
-        }
-        return project.displayTitle
+        projectContext.activeProject?.displayTitle ?? "Agent"
     }
 
     private var chatTitle: String {
         assistantLabel
+    }
+
+    /// Principal bar: avatar + agent name (tap opens Abilities).
+    @ViewBuilder
+    private var chatHeaderTitle: some View {
+        if let project = projectContext.activeProject {
+            Button {
+                navigationState.selectedTab = .abilities
+            } label: {
+                HStack(spacing: 8) {
+                    AgentAvatarView(project: project, size: 52)
+                        .modifier(ChatHeaderAvatarChrome())
+
+                    Text(chatTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(chatTitle)
+            .accessibilityHint("Opens Abilities")
+            .accessibilityIdentifier("chat-header-agent")
+        } else {
+            Text(chatTitle)
+                .font(.headline)
+                .lineLimit(1)
+        }
     }
 
     /// Compact provider · model · thinking label for the chat overflow menu.
@@ -339,6 +373,27 @@ struct ChatView: View {
             openCodeConnectionPhase = .failed(lastBlockingStatus)
         } else {
             openCodeConnectionPhase = .failed(.unknown("OpenCode is not reachable."))
+        }
+    }
+}
+
+// MARK: - Header chrome
+
+/// Subtle glass ring around the chat-header avatar (interactive because the header is tappable).
+private struct ChatHeaderAvatarChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(
+                    .regular.tint(Color.accentColor.opacity(0.12)).interactive(),
+                    in: .circle
+                )
+        } else {
+            content
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                }
         }
     }
 }
