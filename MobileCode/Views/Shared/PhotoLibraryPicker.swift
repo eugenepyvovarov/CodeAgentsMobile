@@ -3,9 +3,9 @@
 //  CodeAgentsMobile
 //
 //  Purpose: PHPicker wrapper for multi-select image/video picking.
+//  Uses only PHPicker + NSItemProvider — no PHAsset / Photos library permission.
 //
 
-import Photos
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -48,7 +48,9 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
-        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        // Do NOT pass `.shared()` photo library — that enables asset identifiers and
+        // invites PHAsset access, which requires NSPhotoLibraryUsageDescription.
+        var configuration = PHPickerConfiguration()
         switch mediaFilter {
         case .images:
             configuration.filter = .images
@@ -58,6 +60,8 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
             configuration.filter = .any(of: [.images, .videos])
         }
         configuration.selectionLimit = selectionLimit
+        // Prefer current representation; still fully usable without library permission.
+        configuration.preferredAssetRepresentationMode = .current
 
         let picker = PHPickerViewController(configuration: configuration)
         picker.delegate = context.coordinator
@@ -89,7 +93,12 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
                         let item = try await stage(result)
                         uploads.append(item)
                         if item.kind == .image {
-                            images.append(StagedImageAttachment(displayName: item.displayName, localURL: item.localURL))
+                            images.append(
+                                StagedImageAttachment(
+                                    displayName: item.displayName,
+                                    localURL: item.localURL
+                                )
+                            )
                         }
                     } catch {
                         if firstError == nil {
@@ -109,7 +118,8 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
         }
 
         private func stage(_ result: PHPickerResult) async throws -> StagedUploadItem {
-            let preferredName = preferredFilename(for: result)
+            // Only use NSItemProvider metadata — never PHAsset (TCC crash without usage string).
+            let preferredName = preferredFilename(from: result.itemProvider)
 
             if isVideo(result.itemProvider) {
                 let videoTypes = [
@@ -138,14 +148,21 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
             }
 
             // Image path — reuse JPEG stager for size normalization.
-            if let url = try await loadFileURL(from: result.itemProvider, typeIdentifier: UTType.image.identifier) {
+            if let url = try await loadFileURL(
+                from: result.itemProvider,
+                typeIdentifier: UTType.image.identifier
+            ) {
                 defer { try? FileManager.default.removeItem(at: url) }
                 let staged = try ImageAttachmentStager.stageImage(
                     at: url,
                     preferredName: preferredName ?? url.lastPathComponent,
                     directoryName: parent.directoryName
                 )
-                return StagedUploadItem(displayName: staged.displayName, localURL: staged.localURL, kind: .image)
+                return StagedUploadItem(
+                    displayName: staged.displayName,
+                    localURL: staged.localURL,
+                    kind: .image
+                )
             }
 
             if let image = try await loadUIImage(from: result.itemProvider) {
@@ -154,25 +171,18 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
                     preferredName: preferredName,
                     directoryName: parent.directoryName
                 )
-                return StagedUploadItem(displayName: staged.displayName, localURL: staged.localURL, kind: .image)
+                return StagedUploadItem(
+                    displayName: staged.displayName,
+                    localURL: staged.localURL,
+                    kind: .image
+                )
             }
 
             throw ImageAttachmentStagerError.missingImageData
         }
 
-        private func preferredFilename(for result: PHPickerResult) -> String? {
-            if let assetId = result.assetIdentifier {
-                let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
-                if let asset = assets.firstObject {
-                    let resources = PHAssetResource.assetResources(for: asset)
-                    if let original = resources.first?.originalFilename,
-                       !UploadFilename.isLikelyAssetIdentifier(original) {
-                        return original
-                    }
-                }
-            }
-
-            if let suggested = result.itemProvider.suggestedName,
+        private func preferredFilename(from provider: NSItemProvider) -> String? {
+            if let suggested = provider.suggestedName,
                !UploadFilename.isLikelyAssetIdentifier(suggested) {
                 return suggested
             }

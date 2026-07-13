@@ -211,3 +211,4 @@ joplin-notes/
 
 # Python bytecode (skill scripts, etc.)
 **/__pycache__/
+.asc/
