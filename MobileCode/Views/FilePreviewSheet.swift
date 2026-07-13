@@ -31,10 +31,13 @@ struct FilePreviewSheet: View {
     @State private var isLoading = true
     @State private var isSaving = false
     @State private var isSharing = false
+    @State private var isSavingToPhotos = false
     @State private var loadErrorMessage: String?
     @State private var alertMessage: String?
     @State private var showErrorAlert = false
     @State private var showLargeFileWarning = false
+    @State private var showPhotosSaveAlert = false
+    @State private var photosSaveMessage: String?
     @State private var pendingDownloadPurpose: DownloadPurpose?
     @State private var previewURL: URL?
 
@@ -60,6 +63,20 @@ struct FilePreviewSheet: View {
                 }
 
                 ToolbarItemGroup(placement: .primaryAction) {
+                    if canSaveToPhotos {
+                        Button {
+                            Task { await saveMediaToPhotos() }
+                        } label: {
+                            if isSavingToPhotos {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "square.and.arrow.down")
+                            }
+                        }
+                        .disabled(isLoading || loadErrorMessage != nil || isSavingToPhotos || previewURL == nil)
+                        .accessibilityLabel("Save to Photos")
+                    }
+
                     Button {
                         shareFile()
                     } label: {
@@ -82,6 +99,11 @@ struct FilePreviewSheet: View {
             } else {
                 await preparePreviewDownload()
             }
+        }
+        .alert("Photos", isPresented: $showPhotosSaveAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(photosSaveMessage ?? "")
         }
         .alert("Large File", isPresented: $showLargeFileWarning) {
             Button("Cancel", role: .cancel) {
@@ -256,11 +278,44 @@ struct FilePreviewSheet: View {
         await downloadFile(for: .preview)
     }
 
+    private var canSaveToPhotos: Bool {
+        guard file.isMediaFile else { return false }
+        if let previewURL {
+            return PhotoLibrarySaveService.canSaveToPhotos(url: previewURL)
+        }
+        // Extension-based pre-check before download finishes.
+        return PhotoLibrarySaveService.canSaveToPhotos(
+            url: URL(fileURLWithPath: file.name)
+        )
+    }
+
     private func shareFile() {
         if file.isTextFile {
             Task { await shareTextFile() }
         } else {
             Task { await shareNonTextFile() }
+        }
+    }
+
+    @MainActor
+    private func saveMediaToPhotos() async {
+        isSavingToPhotos = true
+        defer { isSavingToPhotos = false }
+
+        do {
+            let url: URL
+            if let previewURL {
+                url = previewURL
+            } else {
+                url = try await viewModel.downloadFile(file)
+                previewURL = url
+            }
+            try await PhotoLibrarySaveService.saveFile(at: url)
+            photosSaveMessage = "Saved to Photos."
+            showPhotosSaveAlert = true
+        } catch {
+            photosSaveMessage = error.localizedDescription
+            showPhotosSaveAlert = true
         }
     }
 

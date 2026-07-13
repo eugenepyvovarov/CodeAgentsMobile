@@ -381,7 +381,8 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(chunks.count, 1)
         XCTAssertEqual(chunks[0].metadata?["type"] as? String, "tool_permission")
         XCTAssertEqual(chunks[0].metadata?["permissionId"] as? String, "perm_fixture")
-        XCTAssertEqual(chunks[0].metadata?["toolName"] as? String, "Run command")
+        // Prefer stable OpenCode type over display title for store / Abilities keys.
+        XCTAssertEqual(chunks[0].metadata?["toolName"] as? String, "bash")
         XCTAssertEqual(chunks[0].metadata?["blockedPath"] as? String, "Sources/App.swift")
         XCTAssertEqual(chunks[0].metadata?["suggestions"] as? [String], ["*.swift", "*.md"])
 

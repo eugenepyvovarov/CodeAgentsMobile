@@ -32,4 +32,11 @@ final class OpenCodeMidAnswerSendPolicyTests: XCTestCase {
         XCTAssertFalse(OpenCodeStreamCompletionPolicy.shouldFinish(after: toolChunk))
         XCTAssertTrue(OpenCodeStreamCompletionPolicy.shouldFinish(after: answerChunk))
     }
+
+    func testIdleGraceKeepsStreamOpenLongEnoughForSoftSteer() {
+        // Soft-steer races: session can go idle between the first answer and the
+        // follow-up loop. Grace must be non-trivial so prompt_async can resume.
+        XCTAssertGreaterThanOrEqual(OpenCodeStreamCompletionPolicy.idleGraceNanoseconds, 1_000_000_000)
+        XCTAssertLessThanOrEqual(OpenCodeStreamCompletionPolicy.idleGraceNanoseconds, 10_000_000_000)
+    }
 }

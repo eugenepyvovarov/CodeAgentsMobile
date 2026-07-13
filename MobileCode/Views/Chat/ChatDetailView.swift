@@ -267,6 +267,13 @@ struct ChatDetailView: View {
                         if let blockedPath = request.blockedPath, !blockedPath.isEmpty {
                             parts.append("Requested path: \(blockedPath)")
                         }
+                        let patternLines = request.suggestions
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                            .prefix(3)
+                        if !patternLines.isEmpty {
+                            parts.append("Patterns:\n" + patternLines.map { "• \($0)" }.joined(separator: "\n"))
+                        }
                         parts.append("This decision is saved for \(assistantLabel) and can be changed in Permissions.")
 
                         return Text(parts.joined(separator: "\n\n"))

@@ -148,16 +148,45 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         promptVariant: promptVariant
                     )
 
+                    // After session.idle / final answer, keep `/event` open briefly so a
+                    // soft-steered follow-up (prompt_async mid-run) can resume before we detach.
+                    var awaitingIdleGrace = false
+
+                    func finishStreamSuccessfully() async {
+                        try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
+                        continuation.finish()
+                    }
+
+                    /// Returns whether the send stream should end immediately (errors only).
+                    /// Non-error completion arms a short grace window instead of detaching.
                     func consume(_ event: OpenCodeEvent) async throws -> Bool {
                         try Task.checkCancellation()
                         let chunks = accumulator.consume(event)
+                        if chunks.isEmpty { return false }
+
+                        var sawTerminalComplete = false
                         for chunk in chunks {
                             continuation.yield(chunk)
                             if chunk.isComplete, OpenCodeStreamCompletionPolicy.shouldFinish(after: chunk) {
-                                try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
-                                continuation.finish()
-                                return true
+                                if chunk.isError {
+                                    try? await hydrateOpenCodeState(
+                                        project: project,
+                                        sshSession: sshSession,
+                                        sessionID: sessionID
+                                    )
+                                    continuation.finish()
+                                    return true
+                                }
+                                sawTerminalComplete = true
+                            } else {
+                                // Further tool/text/progress after a prior idle means the run continued
+                                // (typical soft-steer). Cancel the grace detach.
+                                awaitingIdleGrace = false
+                                sawTerminalComplete = false
                             }
+                        }
+                        if sawTerminalComplete {
+                            awaitingIdleGrace = true
                         }
                         return false
                     }
@@ -168,8 +197,38 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     }
 
                     do {
-                        while let event = try await eventIterator.next() {
-                            if try await consume(event) {
+                        while true {
+                            let timed: OpenCodeTimedEvent
+                            if awaitingIdleGrace {
+                                timed = try await nextEventWithTimeout(
+                                    from: eventIterator,
+                                    timeoutNanoseconds: OpenCodeStreamCompletionPolicy.idleGraceNanoseconds
+                                )
+                            } else if let event = try await eventIterator.next() {
+                                timed = .event(event)
+                            } else {
+                                timed = .ended
+                            }
+
+                            switch timed {
+                            case .event(let event):
+                                if try await consume(event) {
+                                    return
+                                }
+                            case .timedOut:
+                                // Grace expired with no further activity after a final answer.
+                                await finishStreamSuccessfully()
+                                return
+                            case .ended:
+                                let fallbackChunks = try await fallbackHydrationChunks(
+                                    project: project,
+                                    sshSession: sshSession,
+                                    sessionID: sessionID
+                                )
+                                for chunk in fallbackChunks {
+                                    continuation.yield(chunk)
+                                }
+                                continuation.finish()
                                 return
                             }
                         }
@@ -191,16 +250,6 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         continuation.finish()
                         return
                     }
-
-                    let fallbackChunks = try await fallbackHydrationChunks(
-                        project: project,
-                        sshSession: sshSession,
-                        sessionID: sessionID
-                    )
-                    for chunk in fallbackChunks {
-                        continuation.yield(chunk)
-                    }
-                    continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
@@ -409,6 +458,12 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             response: openCodePermissionResponse(decision: decision, scope: scope),
             directory: project.path
         )
+    }
+
+    func fetchPendingPermissions(project: RemoteProject) async throws -> [OpenCodePendingPermission] {
+        let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
+        let client = client(for: project)
+        return try await client.listPermissions(sshSession: sshSession, directory: project.path)
     }
 
     func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws {
@@ -877,6 +932,10 @@ private final class OpenCodeSendStreamLifetime: @unchecked Sendable {
 }
 
 enum OpenCodeStreamCompletionPolicy {
+    /// How long to keep `/event` open after a terminal answer chunk so soft-steered
+    /// follow-ups (`prompt_async` while a stream is live) can produce more events.
+    static let idleGraceNanoseconds: UInt64 = 2_500_000_000
+
     static func shouldFinish(after chunk: MessageChunk) -> Bool {
         if chunk.isError {
             return true

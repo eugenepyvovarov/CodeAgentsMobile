@@ -518,11 +518,13 @@ struct OpenCodeChatEventAccumulator {
             input["callID"] = callID
         }
 
+        // Prefer stable OpenCode type (`bash`, `external_directory`) over display title
+        // so ToolApprovalStore / Abilities keys match auto-policy lookups.
         var metadata: [String: Any] = [
             "type": "tool_permission",
             "runtime": CodingAgentRuntimeKind.openCode.rawValue,
             "permissionId": permissionID,
-            "toolName": properties.title ?? properties.type ?? "OpenCode Tool",
+            "toolName": properties.type ?? properties.title ?? "OpenCode Tool",
             "input": input,
             "suggestions": properties.pattern?.values ?? []
         ]

@@ -12,18 +12,54 @@ import SwiftData
 extension ChatViewModel {
     func handleToolPermissionChunk(_ chunk: MessageChunk, project: RemoteProject) {
         guard let request = toolApprovalRequest(from: chunk, agentId: project.id) else { return }
+        presentOrAutoReplyToolApproval(request, announce: true)
+    }
 
-        toolApprovalStore.recordKnownTool(request.toolName, agentId: project.id)
+    /// Recover pending OpenCode permissions after chat is ready (deferred). Soft-fails.
+    func recoverPendingOpenCodePermissionsIfNeeded(project: RemoteProject) async {
+        let projectID = project.id
+        guard let sessionID = project.openCodeSessionId?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty else {
+            return
+        }
+
+        let pending: [OpenCodePendingPermission]
+        do {
+            pending = try await runtimeRegistry.runtime(for: .openCode)
+                .fetchPendingPermissions(project: project)
+        } catch {
+            print("⚠️ Pending permission recovery failed: \(error.localizedDescription)")
+            return
+        }
+
+        guard !Task.isCancelled else { return }
+        guard self.projectId == projectID,
+              let active = ProjectContext.shared.activeProject,
+              active.id == projectID else {
+            return
+        }
+
+        let sessionScoped = OpenCodePendingPermission.matchingSession(pending, sessionID: sessionID)
+        for item in sessionScoped {
+            guard let request = item.makeToolApprovalRequest(agentId: projectID) else { continue }
+            presentOrAutoReplyToolApproval(request, announce: true)
+        }
+    }
+
+    /// Shared path for live stream + deferred recovery (idempotent by permission id).
+    func presentOrAutoReplyToolApproval(_ request: ToolApprovalRequest, announce: Bool) {
+        toolApprovalStore.recordKnownTool(request.toolName, agentId: request.agentId)
 
         guard !handledToolPermissionIds.contains(request.id) else { return }
         handledToolPermissionIds.insert(request.id)
 
-        if let record = toolApprovalStore.decision(for: request.toolName, agentId: project.id) {
+        if let record = toolApprovalStore.decision(for: request.toolName, agentId: request.agentId) {
             Task { await sendToolApprovalDecision(request: request, decision: record.decision, scope: record.scope) }
             return
         }
 
-        enqueueToolApproval(request, announce: true)
+        enqueueToolApproval(request, announce: announce)
     }
 
     func handleOpenCodeQuestionChunk(_ chunk: MessageChunk, project: RemoteProject) {
@@ -188,7 +224,8 @@ extension ChatViewModel {
         }
 
         if announce {
-            _ = createMessage(content: "Permission required to use \(request.toolName).", role: .assistant)
+            let displayName = ToolPermissionInfo.displayName(for: request.toolName)
+            _ = createMessage(content: "Permission required to use \(displayName).", role: .assistant)
         }
     }
 

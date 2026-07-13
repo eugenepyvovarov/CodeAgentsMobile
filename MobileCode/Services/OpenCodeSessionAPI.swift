@@ -177,6 +177,20 @@ extension OpenCodeClient {
         )
     }
 
+    /// Pending permission asks for the OpenCode instance (`GET /permission`).
+    /// Payload field names differ from live `permission.updated` events.
+    func listPermissions(
+        sshSession: SSHSession,
+        directory: String? = nil
+    ) async throws -> [OpenCodePendingPermission] {
+        try await jsonRequest(
+            session: sshSession,
+            method: .get,
+            path: OpenCodeSessionPath.path("/permission", directory: directory),
+            responseType: [OpenCodePendingPermission].self
+        )
+    }
+
     @discardableResult
     func replyQuestion(
         sshSession: SSHSession,

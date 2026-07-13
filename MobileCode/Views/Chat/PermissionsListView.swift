@@ -30,6 +30,10 @@ struct PermissionsListView: View {
         .onChange(of: projectContext.activeProject?.id) { _, _ in
             refreshTools()
         }
+        .onChange(of: approvalStore.revision) { _, _ in
+            // Chat Allow/Deny and recovery both bump revision; keep Abilities list in sync.
+            refreshTools()
+        }
     }
 
     private var rootContent: some View {

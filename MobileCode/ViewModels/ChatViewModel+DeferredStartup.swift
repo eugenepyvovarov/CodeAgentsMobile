@@ -85,6 +85,18 @@ extension ChatViewModel {
                 return
             }
 
+            // Surface any pending OpenCode permission asks missed while the stream was down.
+            // Soft-fails; must not block local-first chat open (already painted).
+            await self.recoverPendingOpenCodePermissionsIfNeeded(project: project)
+            guard !Task.isCancelled else {
+                timingStatus = .cancelled
+                return
+            }
+            guard self.projectId == projectID else {
+                timingStatus = .skipped
+                return
+            }
+
             // OpenCode-only deferred MCP refresh (Claude installation checks removed).
             await self.refreshMCPServersAfterChatReadyIfNeeded(project: project)
             guard !Task.isCancelled else {

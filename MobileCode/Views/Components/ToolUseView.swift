@@ -109,11 +109,10 @@ struct ToolUseView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     } else {
-                        Text(formatParameterValue(toolUseBlock.input[key]))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(12)
-                            .textSelection(.enabled)
+                        ToolOutputScrollView(
+                            text: formatParameterValue(toolUseBlock.input[key]),
+                            isError: false
+                        )
                     }
                 }
             }

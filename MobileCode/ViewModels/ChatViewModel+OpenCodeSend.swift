@@ -570,12 +570,10 @@ extension ChatViewModel {
                     } else if let placeholder = activeAssistantPlaceholder, !assistantMessageWasRemoved {
                         placeholder.isStreaming = false
                         placeholder.isComplete = true
-                    } else {
-                        project.activeStreamingMessageId = nil
                     }
-                    // Stream consumer ends when runtime finishes (session idle after full run,
-                    // including any soft-steered follow-ups in the same OpenCode loop).
-                    break
+                    // Do not break here: soft-steered follow-ups may continue on the same
+                    // `/event` stream after a brief idle. Exit only when the runtime ends
+                    // the stream (grace elapsed / SSE closed / error).
                 }
             }
 

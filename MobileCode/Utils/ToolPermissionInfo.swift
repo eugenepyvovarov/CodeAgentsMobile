@@ -133,7 +133,11 @@ enum ToolPermissionInfo {
         "exitplanmode": ToolDetails(displayName: "Exit Plan Mode",
                                     summary: "Return the agent to normal mode."),
         "skill": ToolDetails(displayName: "Use Skills",
-                             summary: "Use installed skills (instructions, templates, workflows).")
+                             summary: "Use installed skills (instructions, templates, workflows)."),
+        "external_directory": ToolDetails(
+            displayName: "Access Outside Project",
+            summary: "Read or write paths outside the agent’s project folder (for example config or home directories)."
+        )
     ]
 }
 

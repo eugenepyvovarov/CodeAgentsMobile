@@ -2,7 +2,7 @@
 //  CodeAgentsUIMediaPreviewController.swift
 //  CodeAgentsMobile
 //
-//  Purpose: QuickLook preview sheet for chat media with Close / Share chrome.
+//  Purpose: QuickLook preview sheet for chat media with Close / Save / Share chrome.
 //
 
 import SwiftUI
@@ -10,7 +10,7 @@ import QuickLook
 import UIKit
 
 /// Sheet used by chat image/gallery/video/attachment previews.
-/// Matches the Files viewer toolbar: Close (leading) + Share (trailing).
+/// Toolbar: Close (leading) + Save to Photos (when supported) + Share (trailing).
 struct CodeAgentsUIMediaPreviewController: View {
     // MARK: - Inputs
 
@@ -21,6 +21,9 @@ struct CodeAgentsUIMediaPreviewController: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var currentIndex: Int
+    @State private var isSavingToPhotos = false
+    @State private var saveFeedbackMessage: String?
+    @State private var showSaveFeedback = false
 
     // MARK: - Init
 
@@ -61,7 +64,21 @@ struct CodeAgentsUIMediaPreviewController: View {
                     }
                 }
 
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if canSaveCurrentToPhotos {
+                        Button {
+                            Task { await saveCurrentItemToPhotos() }
+                        } label: {
+                            if isSavingToPhotos {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "square.and.arrow.down")
+                            }
+                        }
+                        .disabled(isSavingToPhotos || !fileExists(at: currentURL))
+                        .accessibilityLabel("Save to Photos")
+                    }
+
                     Button {
                         shareCurrentItem()
                     } label: {
@@ -70,6 +87,11 @@ struct CodeAgentsUIMediaPreviewController: View {
                     .disabled(urls.isEmpty || !fileExists(at: currentURL))
                     .accessibilityLabel("Share")
                 }
+            }
+            .alert("Photos", isPresented: $showSaveFeedback) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(saveFeedbackMessage ?? "")
             }
         }
     }
@@ -89,6 +111,11 @@ struct CodeAgentsUIMediaPreviewController: View {
         return urls[currentIndex]
     }
 
+    private var canSaveCurrentToPhotos: Bool {
+        guard let url = currentURL else { return false }
+        return PhotoLibrarySaveService.canSaveToPhotos(url: url)
+    }
+
     private func fileExists(at url: URL?) -> Bool {
         guard let url else { return false }
         var isDirectory: ObjCBool = false
@@ -99,6 +126,22 @@ struct CodeAgentsUIMediaPreviewController: View {
     private func shareCurrentItem() {
         guard let url = currentURL, fileExists(at: url) else { return }
         ShareSheetPresenter.present(urls: [url])
+    }
+
+    @MainActor
+    private func saveCurrentItemToPhotos() async {
+        guard let url = currentURL, fileExists(at: url) else { return }
+        isSavingToPhotos = true
+        defer { isSavingToPhotos = false }
+
+        do {
+            try await PhotoLibrarySaveService.saveFile(at: url)
+            saveFeedbackMessage = "Saved to Photos."
+            showSaveFeedback = true
+        } catch {
+            saveFeedbackMessage = error.localizedDescription
+            showSaveFeedback = true
+        }
     }
 }
 

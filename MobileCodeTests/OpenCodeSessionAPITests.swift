@@ -196,6 +196,41 @@ final class OpenCodeSessionAPITests: XCTestCase {
         XCTAssertEqual(body["response"] as? String, "always")
     }
 
+    func testListPermissionsUsesPermissionRouteAndDecodesListShape() async throws {
+        let listResponse = try httpResponse(status: "200 OK", body: """
+        [{
+          "id":"per_fixture",
+          "sessionID":"ses_fixture",
+          "permission":"external_directory",
+          "patterns":["/home/codeagent/.config/opencode/*","/tmp/*"],
+          "metadata":{
+            "command":"ls",
+            "directories":["/home/codeagent/.config/opencode"],
+            "patterns":["/home/codeagent/.config/opencode/*"]
+          },
+          "always":["/home/codeagent/.config/opencode/*"],
+          "tool":{"messageID":"msg_fixture","callID":"call_fixture"}
+        }]
+        """)
+        let client = OpenCodeClient()
+        let listSession = SessionAPIFakeSSHSession(responseChunks: [listResponse])
+
+        let permissions = try await client.listPermissions(
+            sshSession: listSession,
+            directory: "/workspace/MobileCode"
+        )
+
+        XCTAssertEqual(permissions.count, 1)
+        XCTAssertEqual(permissions[0].id, "per_fixture")
+        XCTAssertEqual(permissions[0].sessionID, "ses_fixture")
+        XCTAssertEqual(permissions[0].permission, "external_directory")
+        XCTAssertEqual(permissions[0].patterns, ["/home/codeagent/.config/opencode/*", "/tmp/*"])
+        XCTAssertEqual(permissions[0].tool?.callID, "call_fixture")
+        XCTAssertTrue(listSession.sentInput.contains(
+            "GET /permission?directory=/workspace/MobileCode HTTP/1.1"
+        ))
+    }
+
     func testQuestionEndpointsUseOpenCodeQuestionRoutes() async throws {
         let listResponse = try httpResponse(status: "200 OK", body: """
         [{"id":"question_fixture","sessionID":"ses_fixture","questions":[{"header":"Scope","question":"Which setup?","options":[{"label":"Default","description":"Use defaults."}]}]}]

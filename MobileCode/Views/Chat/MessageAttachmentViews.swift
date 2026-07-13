@@ -191,6 +191,9 @@ private struct MessageAttachmentFullscreenImageView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
+    @State private var isSavingToPhotos = false
+    @State private var saveFeedbackMessage: String?
+    @State private var showSaveFeedback = false
 
     var body: some View {
         NavigationStack {
@@ -238,7 +241,20 @@ private struct MessageAttachmentFullscreenImageView: View {
                     }
                     .foregroundStyle(.white)
                 }
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        Task { await saveImageToPhotos() }
+                    } label: {
+                        if isSavingToPhotos {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .disabled(isSavingToPhotos)
+                    .accessibilityLabel("Save to Photos")
+
                     Button {
                         shareImage()
                     } label: {
@@ -249,6 +265,11 @@ private struct MessageAttachmentFullscreenImageView: View {
                 }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
+            .alert("Photos", isPresented: $showSaveFeedback) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(saveFeedbackMessage ?? "")
+            }
         }
     }
 
@@ -265,6 +286,20 @@ private struct MessageAttachmentFullscreenImageView: View {
             }
         } catch {
             // Share is best-effort for fullscreen attachment images.
+        }
+    }
+
+    @MainActor
+    private func saveImageToPhotos() async {
+        isSavingToPhotos = true
+        defer { isSavingToPhotos = false }
+        do {
+            try await PhotoLibrarySaveService.saveImage(image)
+            saveFeedbackMessage = "Saved to Photos."
+            showSaveFeedback = true
+        } catch {
+            saveFeedbackMessage = error.localizedDescription
+            showSaveFeedback = true
         }
     }
 }

@@ -46,12 +46,10 @@ struct ToolResultView: View {
             canExpand: canExpand,
             isExpanded: $isExpanded
         ) {
-            Text(toolResultBlock.content)
-                .font(.caption2.monospaced())
-                .foregroundStyle(toolResultBlock.isError ? Color.red.opacity(0.85) : Color.secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ToolOutputScrollView(
+                text: toolResultBlock.content,
+                isError: toolResultBlock.isError
+            )
         }
     }
 }

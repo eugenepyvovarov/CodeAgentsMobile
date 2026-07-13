@@ -171,6 +171,8 @@ protocol CodingAgentRuntimeService: AnyObject {
         scope: ToolApprovalScope,
         message: String?
     ) async throws
+    /// Pending OpenCode permission asks (`GET /permission`). Default: empty.
+    func fetchPendingPermissions(project: RemoteProject) async throws -> [OpenCodePendingPermission]
     func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws
     func rejectQuestion(project: RemoteProject, questionId: String) async throws
     func reset(project: RemoteProject) async throws
@@ -205,6 +207,10 @@ extension CodingAgentRuntimeService {
         mcpServers: [MCPServer]
     ) async throws {
         throw CodingAgentRuntimeError.unsupported("This runtime does not support mid-answer prompt submission.")
+    }
+
+    func fetchPendingPermissions(project: RemoteProject) async throws -> [OpenCodePendingPermission] {
+        []
     }
 
     func replyToQuestion(project: RemoteProject, questionId: String, answers: [[String]]) async throws {

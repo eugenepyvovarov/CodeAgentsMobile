@@ -28,6 +28,8 @@
 	<string>public.app-category.developer-tools</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Code Agents uses the camera so you can take photos and attach them to chats.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Code Agents saves images and videos you choose into your Photos library.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Code Agents connects over your local network to SSH servers and agent daemons you configure, including devices on the same Wi-Fi.</string>
 	<key>UIApplicationSceneManifest</key>

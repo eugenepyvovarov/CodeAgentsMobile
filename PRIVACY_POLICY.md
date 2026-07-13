@@ -14,6 +14,7 @@
 - **Projects & files**: Project names and local file-browser state
 - **Chat history**: Conversations with the coding agent runtime (OpenCode), stored with SwiftData
 - **Settings**: Preferences, tool approvals, and runtime selection
+- **Photos library (optional)**: When you tap **Save to Photos** on an image or video, the media is written into your local Photos library with add-only access. We do not browse or upload your existing library for this feature.
 
 ## When Data Leaves Your Device
 
