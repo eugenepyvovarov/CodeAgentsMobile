@@ -191,6 +191,22 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
   seed_dir "${SPM_HOST_CACHE}/artifacts" "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts"
   seed_dir "${SPM_HOST_CACHE}/repositories" "${TF_DERIVED_DATA_PATH}/SourcePackages/repositories"
 
+  # Unlock the host codesign keychain before archive. act overrides HOME to a per-job tmp
+  # dir, so the runner's unlock script must be pointed at the login home paths explicitly.
+  UNLOCK_SCRIPT="${CODEAGENTS_CODESIGN_UNLOCK_SCRIPT:-${HOST_HOME}/.opencode/codesign/unlock-codesign-keychain.sh}"
+  if [[ -x "${UNLOCK_SCRIPT}" ]]; then
+    echo "Unlocking codesign keychain via ${UNLOCK_SCRIPT}..." >&2
+    CODESIGN_KEYCHAIN_PATH="${CODESIGN_KEYCHAIN_PATH:-${HOST_HOME}/Library/Keychains/opencode-signing.keychain-db}" \
+      CODESIGN_KEYCHAIN_PASSWORD_FILE="${CODESIGN_KEYCHAIN_PASSWORD_FILE:-${HOST_HOME}/.opencode/codesign/opencode-signing.keychain.pass}" \
+      "${UNLOCK_SCRIPT}"
+  elif [[ -n "${CODESIGN_KEYCHAIN_PATH:-}" && -n "${CODESIGN_KEYCHAIN_PASSWORD:-}" ]]; then
+    echo "Unlocking codesign keychain ${CODESIGN_KEYCHAIN_PATH}..." >&2
+    security unlock-keychain -p "${CODESIGN_KEYCHAIN_PASSWORD}" "${CODESIGN_KEYCHAIN_PATH}"
+    security set-keychain-settings -lut 21600 "${CODESIGN_KEYCHAIN_PATH}" >/dev/null || true
+  else
+    echo "No codesign unlock helper found; archive may hang if the signing keychain is locked." >&2
+  fi
+
   # Pre-resolve with the same DerivedData so binary targets populate artifacts before archive.
   echo "Resolving Swift packages for TestFlight (host_home=${HOST_HOME} derived_data=${TF_DERIVED_DATA_PATH})..." >&2
   # Line-buffer xcodebuild so Gitea logs show progress before the 60m job timeout.
