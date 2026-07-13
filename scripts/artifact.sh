@@ -137,30 +137,72 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
   VERSION_ARG=(--version "${RELEASE_VERSION_RESOLVED}")
   BUILD_ARG=(--build-number "${RELEASE_BUILD_RESOLVED}")
 
-  # Stable DerivedData for TestFlight archives. Xcode/SPM can fail on a clean machine with
-  # "The folder artifacts doesn't exist" unless SourcePackages/artifacts is created before resolve.
-  TF_DERIVED_DATA_PATH="${CODEAGENTS_TESTFLIGHT_DERIVED_DATA_PATH:-${DERIVED_DATA_PATH}}"
-  TF_PACKAGE_CACHE_PATH="${CODEAGENTS_PACKAGE_CACHE_PATH:-${ROOT_DIR}/.build/opencode-artifact/PackageCache}"
+  # act / Gitea runners override HOME to a per-job tmp dir under ~/.cache/act/. Prefer the
+  # login home so DerivedData + SPM seeds survive across runs (otherwise every TF job cold-fetches).
+  resolve_host_home() {
+    if [[ -n "${CODEAGENTS_HOST_HOME:-}" && -d "${CODEAGENTS_HOST_HOME}" ]]; then
+      printf '%s\n' "${CODEAGENTS_HOST_HOME}"
+      return 0
+    fi
+    local candidate=""
+    candidate="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -E 's/^NFSHomeDirectory:[[:space:]]*//')"
+    if [[ -n "${candidate}" && -d "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    if [[ -n "${HOME:-}" && -d "${HOME}" && "${HOME}" != *'/.cache/act/'* ]]; then
+      printf '%s\n' "${HOME}"
+      return 0
+    fi
+    printf '%s\n' "${HOME:-/var/tmp}"
+  }
+
+  HOST_HOME="$(resolve_host_home)"
+  HOST_TF_CACHE="${HOST_HOME}/Library/Caches/codeagents-mobile/testflight"
+  SPM_HOST_CACHE="${HOST_HOME}/Library/Caches/org.swift.swiftpm"
+
+  # Stable host paths by default (override with CODEAGENTS_*). Avoid ROOT_DIR/.build under act —
+  # that workspace is wiped when the job ends, so archives never get a warm incremental cache.
+  TF_DERIVED_DATA_PATH="${CODEAGENTS_TESTFLIGHT_DERIVED_DATA_PATH:-${HOST_TF_CACHE}/DerivedData}"
+  TF_PACKAGE_CACHE_PATH="${CODEAGENTS_PACKAGE_CACHE_PATH:-${HOST_TF_CACHE}/PackageCache}"
   mkdir -p \
     "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts" \
     "${TF_DERIVED_DATA_PATH}/SourcePackages/checkouts" \
     "${TF_DERIVED_DATA_PATH}/SourcePackages/repositories" \
     "${TF_PACKAGE_CACHE_PATH}"
 
-  # Seed artifacts from a prior warm resolve when present (runner host cache).
-  if [[ -d "${HOME}/Library/Caches/org.swift.swiftpm/artifacts" ]]; then
-    # Best-effort; ignore permission/copy races.
-    cp -R "${HOME}/Library/Caches/org.swift.swiftpm/artifacts/." \
-      "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts/" 2>/dev/null || true
-  fi
+  seed_dir() {
+    local src="$1"
+    local dst="$2"
+    [[ -d "${src}" ]] || return 0
+    mkdir -p "${dst}"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --ignore-existing "${src}/" "${dst}/" 2>/dev/null || true
+    else
+      cp -R "${src}/." "${dst}/" 2>/dev/null || true
+    fi
+  }
+
+  # Seed binary artifacts + git package repos from the host SPM cache (not act's fake HOME).
+  seed_dir "${SPM_HOST_CACHE}/artifacts" "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts"
+  seed_dir "${SPM_HOST_CACHE}/repositories" "${TF_DERIVED_DATA_PATH}/SourcePackages/repositories"
 
   # Pre-resolve with the same DerivedData so binary targets populate artifacts before archive.
-  echo "Resolving Swift packages for TestFlight (derived data: ${TF_DERIVED_DATA_PATH})..." >&2
-  xcodebuild -resolvePackageDependencies \
-    -project "${PROJECT_PATH}" \
-    -scheme "${SCHEME}" \
-    -derivedDataPath "${TF_DERIVED_DATA_PATH}" \
-    -packageCachePath "${TF_PACKAGE_CACHE_PATH}"
+  echo "Resolving Swift packages for TestFlight (host_home=${HOST_HOME} derived_data=${TF_DERIVED_DATA_PATH})..." >&2
+  # Line-buffer xcodebuild so Gitea logs show progress before the 60m job timeout.
+  if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL -eL xcodebuild -resolvePackageDependencies \
+      -project "${PROJECT_PATH}" \
+      -scheme "${SCHEME}" \
+      -derivedDataPath "${TF_DERIVED_DATA_PATH}" \
+      -packageCachePath "${TF_PACKAGE_CACHE_PATH}"
+  else
+    xcodebuild -resolvePackageDependencies \
+      -project "${PROJECT_PATH}" \
+      -scheme "${SCHEME}" \
+      -derivedDataPath "${TF_DERIVED_DATA_PATH}" \
+      -packageCachePath "${TF_PACKAGE_CACHE_PATH}"
+  fi
   mkdir -p "${TF_DERIVED_DATA_PATH}/SourcePackages/artifacts"
 
   # Auth flags are shared. DerivedData/package-cache are archive-only:
@@ -215,6 +257,17 @@ PLIST
     --issuer-id "${ASC_ISSUER_ID}" \
     --private-key "${PRIVATE_KEY_FILE}" >/dev/null
 
+  # Gitea production-artifact jobs are capped at 60m. Archive + upload need headroom, so
+  # default ASC processing wait is shorter under Actions than for local runs (45m).
+  if [[ -n "${ASC_TIMEOUT:-}" ]]; then
+    ASC_TIMEOUT_RESOLVED="${ASC_TIMEOUT}"
+  elif [[ -n "${OPENCODE_PRODUCTION_ARTIFACT_RUN_NUMBER:-}" || -n "${GITHUB_ACTIONS:-}" || -n "${GITEA_ACTIONS:-}" ]]; then
+    ASC_TIMEOUT_RESOLVED="20m"
+  else
+    ASC_TIMEOUT_RESOLVED="45m"
+  fi
+  echo "Publishing TestFlight (build ${RELEASE_BUILD_RESOLVED}, asc_timeout=${ASC_TIMEOUT_RESOLVED})..." >&2
+
   ASC_OUTPUT="$(
     "${ASC_BIN}" publish testflight \
       --app "${ASC_APP_ID}" \
@@ -227,7 +280,7 @@ PLIST
       --group "${TESTFLIGHT_GROUP}" \
       --wait \
       --poll-interval "${ASC_POLL_INTERVAL:-30s}" \
-      --timeout "${ASC_TIMEOUT:-45m}" \
+      --timeout "${ASC_TIMEOUT_RESOLVED}" \
       "${ASC_ARCHIVE_FLAGS[@]}" \
       "${ASC_EXPORT_FLAGS[@]}" \
       "${VERSION_ARG[@]}" \
