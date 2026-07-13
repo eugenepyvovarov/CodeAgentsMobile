@@ -251,7 +251,9 @@ struct AgentAbilitiesView: View {
         Section {
             Text(
                 "The agent can also update personality, skills, and MCP by editing project files "
-                    + "(`AGENTS.md`, `.opencode/skills`, OpenCode MCP config). Changes appear here after refresh."
+                    + "(`AGENTS.md`, `.opencode/skills`, OpenCode MCP config). "
+                    + "Open Skills to scan the remote skills folder; after the agent installs a skill it should call "
+                    + "`register_project_skill` on the Task Scheduler MCP."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)

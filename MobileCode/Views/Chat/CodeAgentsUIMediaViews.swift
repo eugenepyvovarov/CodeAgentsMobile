@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 import AVKit
 import ImageIO
 import UIKit
@@ -153,30 +154,56 @@ struct CodeAgentsUIGalleryView: View {
 }
 
 struct CodeAgentsUIVideoView: View {
+    // MARK: - Inputs
+
     let video: CodeAgentsUIVideo
     let project: RemoteProject?
+
+    // MARK: - State
+
     @State private var previewPayload: CodeAgentsUIMediaPreviewPayload?
     @State private var isPreparingPreview = false
 
+    // MARK: - Body
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             CodeAgentsUIMediaVideoView(source: video.source, poster: video.poster, project: project)
                 .frame(maxWidth: .infinity)
-                .frame(height: 220)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+
             if let caption = video.caption, !caption.isEmpty {
                 Text(caption)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
             }
         }
         .contentShape(Rectangle())
         .onTapGesture {
             openPreview()
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Plays video")
         .sheet(item: $previewPayload) { payload in
             CodeAgentsUIMediaPreviewController(urls: payload.urls, startIndex: payload.startIndex)
         }
+    }
+
+    // MARK: - Helpers
+
+    private var accessibilityLabel: String {
+        if let caption = video.caption, !caption.isEmpty {
+            return "Video, \(caption)"
+        }
+        return "Video"
     }
 
     private func openPreview() {
@@ -432,43 +459,429 @@ fileprivate func downsampleImage(from source: CGImageSource, maxPixelSize: Int) 
     return (UIImage(cgImage: cgImage), ratio)
 }
 
+// MARK: - Inline video poster (no live VideoPlayer in bubble)
+
+/// Caches first-frame posters extracted from local/remote video URLs (memory + disk).
+actor ChatVideoPosterCache {
+    static let shared = ChatVideoPosterCache()
+
+    private let imageCache = NSCache<NSString, UIImage>()
+    private var durationCache: [String: TimeInterval] = [:]
+    private var inFlight: [String: Task<UIImage?, Never>] = [:]
+
+    private init() {
+        imageCache.countLimit = 80
+        imageCache.totalCostLimit = 40 * 1024 * 1024
+    }
+
+    func cachedPoster(for url: URL) -> UIImage? {
+        let key = cacheKey(url)
+        if let memory = imageCache.object(forKey: key as NSString) {
+            return memory
+        }
+        if let disk = loadDiskPoster(forKey: key) {
+            storeInMemory(disk, key: key)
+            return disk
+        }
+        return nil
+    }
+
+    func cachedDuration(for url: URL) -> TimeInterval? {
+        durationCache[cacheKey(url)]
+    }
+
+    func poster(for url: URL, maxPixelSize: CGFloat = 720) async -> UIImage? {
+        let key = cacheKey(url)
+        if let cached = imageCache.object(forKey: key as NSString) {
+            return cached
+        }
+        if let disk = loadDiskPoster(forKey: key) {
+            storeInMemory(disk, key: key)
+            return disk
+        }
+
+        if let existing = inFlight[key] {
+            return await existing.value
+        }
+
+        let task = Task<UIImage?, Never> {
+            await Self.generatePoster(url: url, maxPixelSize: maxPixelSize)
+        }
+        inFlight[key] = task
+        let image = await task.value
+        inFlight[key] = nil
+
+        if let image {
+            storeInMemory(image, key: key)
+            persistPoster(image, forKey: key)
+        }
+        return image
+    }
+
+    func duration(for url: URL) async -> TimeInterval? {
+        let key = cacheKey(url)
+        if let cached = durationCache[key] {
+            return cached
+        }
+
+        let asset = AVURLAsset(url: url)
+        do {
+            let duration = try await asset.load(.duration)
+            let seconds = CMTimeGetSeconds(duration)
+            guard seconds.isFinite, seconds > 0 else { return nil }
+            durationCache[key] = seconds
+            return seconds
+        } catch {
+            return nil
+        }
+    }
+
+    private func cacheKey(_ url: URL) -> String {
+        if url.isFileURL {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size = values?.fileSize.map(String.init) ?? "0"
+            let mtime = values?.contentModificationDate.map { String(Int($0.timeIntervalSince1970)) } ?? "0"
+            return "video-poster:\(url.path)|\(size)|\(mtime)"
+        }
+        return "video-poster:\(url.absoluteString)"
+    }
+
+    private func storeInMemory(_ image: UIImage, key: String) {
+        let cost = max(1, Int(image.size.width * image.scale * image.size.height * image.scale * 4))
+        imageCache.setObject(image, forKey: key as NSString, cost: cost)
+    }
+
+    private func loadDiskPoster(forKey key: String) -> UIImage? {
+        guard let url = ChatMediaDiskCache.existingFile(forKey: key, pathExtension: "jpg") else {
+            return nil
+        }
+        return UIImage(contentsOfFile: url.path)
+    }
+
+    private func persistPoster(_ image: UIImage, forKey key: String) {
+        guard let data = image.jpegData(compressionQuality: 0.82) else { return }
+        _ = try? ChatMediaDiskCache.storeData(data, forKey: key, pathExtension: "jpg")
+    }
+
+    private static func generatePoster(url: URL, maxPixelSize: CGFloat) async -> UIImage? {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        // Slightly after zero to avoid pure-black first frames on some encodes.
+        let times: [CMTime] = [
+            CMTime(seconds: 0.15, preferredTimescale: 600),
+            CMTime(seconds: 0.0, preferredTimescale: 600),
+            CMTime(seconds: 1.0, preferredTimescale: 600)
+        ]
+
+        for time in times {
+            if let image = await generateImage(generator: generator, at: time) {
+                return image
+            }
+        }
+        return nil
+    }
+
+    private static func generateImage(generator: AVAssetImageGenerator, at time: CMTime) async -> UIImage? {
+        await withCheckedContinuation { continuation in
+            generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) { _, cgImage, _, result, _ in
+                if result == .succeeded, let cgImage {
+                    continuation.resume(returning: UIImage(cgImage: cgImage))
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+}
+
 struct CodeAgentsUIMediaVideoView: View {
+    // MARK: - Inputs
+
     let source: CodeAgentsUIMediaSource
     let poster: CodeAgentsUIMediaSource?
     let project: RemoteProject?
 
-    @State private var resolved: CodeAgentsUIMediaResolved?
+    // MARK: - State
+
+    @State private var resolvedVideo: CodeAgentsUIMediaResolved?
+    @State private var posterImage: UIImage?
+    @State private var durationSeconds: TimeInterval?
+    @State private var isLoading = true
     @State private var didFail = false
 
+    // MARK: - Body
+
     var body: some View {
-        Group {
-            if let resolved {
-                videoView(for: resolved)
-            } else if didFail {
-                EmptyView()
-            } else if let poster {
-                CodeAgentsUIMediaImageView(source: poster, project: project, aspectRatio: nil)
-            } else {
+        ZStack {
+            posterLayer
+            scrimGradient
+            playButton
+            if let durationSeconds {
+                durationBadge(seconds: durationSeconds)
+            }
+            if isLoading && posterImage == nil {
                 ProgressView()
+                    .controlSize(.regular)
+                    .tint(.white)
             }
         }
-        .task {
-            guard resolved == nil, !didFail else { return }
-            let resolved = await ChatMediaLoader.shared.resolveMedia(source, project: project ?? ProjectContext.shared.activeProject)
-            if let resolved {
-                self.resolved = resolved
-            } else {
-                didFail = true
+        .background(Color.black.opacity(0.12))
+        .task(id: taskID) {
+            await loadPosterAndMetadata()
+        }
+    }
+
+    // MARK: - Layers
+
+    @ViewBuilder
+    private var posterLayer: some View {
+        if let posterImage {
+            Image(uiImage: posterImage)
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .transition(.opacity)
+        } else if didFail {
+            failedPlaceholder
+        } else {
+            // Soft gradient while resolving — never show live VideoPlayer chrome.
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.16, green: 0.18, blue: 0.24),
+                        Color(red: 0.08, green: 0.09, blue: 0.12)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: "film")
+                    .font(.system(size: 28, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.white.opacity(0.35))
             }
         }
     }
 
-    private func videoView(for resolved: CodeAgentsUIMediaResolved) -> some View {
+    private var scrimGradient: some View {
+        LinearGradient(
+            colors: [
+                .black.opacity(0.05),
+                .black.opacity(0.0),
+                .black.opacity(0.35)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .allowsHitTesting(false)
+    }
+
+    private var playButton: some View {
+        Image(systemName: "play.fill")
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.leading, 3) // optical center for play triangle
+            .frame(width: 56, height: 56)
+            .modifier(ChatVideoPlayGlassModifier())
+            .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+            .accessibilityHidden(true)
+    }
+
+    private func durationBadge(seconds: TimeInterval) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Text(Self.formatDuration(seconds))
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .modifier(ChatVideoDurationGlassModifier())
+                    .padding(10)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var failedPlaceholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title2)
+                .foregroundStyle(.orange)
+            Text("Video unavailable")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.secondarySystemFill))
+    }
+
+    // MARK: - Loading
+
+    private var taskID: String {
+        "\(sourceStableID)|\(posterStableID)|\(project?.id.uuidString ?? "none")"
+    }
+
+    private var sourceStableID: String {
+        switch source {
+        case .projectFile(let path):
+            return "project:\(path)"
+        case .url(let url):
+            return "url:\(url.absoluteString)"
+        case .base64(let mediaType, let data):
+            return "b64:\(mediaType):\(data.count)"
+        }
+    }
+
+    private var posterStableID: String {
+        guard let poster else { return "nil" }
+        switch poster {
+        case .projectFile(let path):
+            return "project:\(path)"
+        case .url(let url):
+            return "url:\(url.absoluteString)"
+        case .base64(let mediaType, let data):
+            return "b64:\(mediaType):\(data.count)"
+        }
+    }
+
+    private func loadPosterAndMetadata() async {
+        isLoading = true
+        didFail = false
+
+        let activeProject = project ?? ProjectContext.shared.activeProject
+
+        // 1) Explicit poster from the widget (if any).
+        if posterImage == nil, let poster {
+            if let resolvedPoster = await ChatMediaLoader.shared.resolveMedia(poster, project: activeProject) {
+                if let image = await loadImage(from: resolvedPoster) {
+                    posterImage = image
+                }
+            }
+        }
+
+        // 2) Resolve the video itself for frame extraction + duration + tap-to-play.
+        let videoResolved = await ChatMediaLoader.shared.resolveMedia(source, project: activeProject)
+        guard let videoResolved else {
+            if posterImage == nil {
+                didFail = true
+            }
+            isLoading = false
+            return
+        }
+        resolvedVideo = videoResolved
+
+        let videoURL = videoURL(for: videoResolved)
+
+        if let videoURL {
+            if posterImage == nil {
+                if let cached = await ChatVideoPosterCache.shared.cachedPoster(for: videoURL) {
+                    posterImage = cached
+                } else if let generated = await ChatVideoPosterCache.shared.poster(for: videoURL) {
+                    posterImage = generated
+                }
+            }
+
+            if let cachedDuration = await ChatVideoPosterCache.shared.cachedDuration(for: videoURL) {
+                durationSeconds = cachedDuration
+            } else if let duration = await ChatVideoPosterCache.shared.duration(for: videoURL) {
+                durationSeconds = duration
+            }
+        }
+
+        if posterImage == nil {
+            // Keep a calm placeholder rather than broken AVPlayer chrome.
+            didFail = videoURL == nil
+        }
+        isLoading = false
+    }
+
+    private func videoURL(for resolved: CodeAgentsUIMediaResolved) -> URL? {
         switch resolved {
-        case .remote(let url):
-            return VideoPlayer(player: AVPlayer(url: url))
+        case .local(let url), .remote(let url):
+            return url
+        }
+    }
+
+    private func loadImage(from resolved: CodeAgentsUIMediaResolved) async -> UIImage? {
+        switch resolved {
         case .local(let url):
-            return VideoPlayer(player: AVPlayer(url: url))
+            if let cached = CodeAgentsUIMediaImageCache.shared.image(for: url) {
+                return cached
+            }
+            let image = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: UIImage(contentsOfFile: url.path))
+                }
+            }
+            if let image {
+                CodeAgentsUIMediaImageCache.shared.store(image, for: url)
+            }
+            return image
+        case .remote(let url):
+            if let cached = CodeAgentsUIMediaImageCache.shared.image(for: url) {
+                return cached
+            }
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let mimeType = response.mimeType, !mimeType.hasPrefix("image/") {
+                    return nil
+                }
+                guard let image = UIImage(data: data) else { return nil }
+                CodeAgentsUIMediaImageCache.shared.store(image, for: url)
+                return image
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    private static func formatDuration(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let minutes = total / 60
+        let secs = total % 60
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let mins = minutes % 60
+            return String(format: "%d:%02d:%02d", hours, mins, secs)
+        }
+        return String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+// MARK: - Glass chrome for video controls
+
+private struct ChatVideoPlayGlassModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(.white.opacity(0.18)).interactive(), in: .circle)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.8)
+                }
+        }
+    }
+}
+
+private struct ChatVideoDurationGlassModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(.black.opacity(0.25)), in: .capsule)
+        } else {
+            content
+                .background(.ultraThinMaterial.opacity(0.9), in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5)
+                }
         }
     }
 }

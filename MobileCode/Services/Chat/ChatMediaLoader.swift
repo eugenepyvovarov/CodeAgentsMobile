@@ -2,7 +2,8 @@
 //  ChatMediaLoader.swift
 //  CodeAgentsMobile
 //
-//  Purpose: Resolve CodeAgents UI media sources to local or remote URLs.
+//  Purpose: Resolve CodeAgents UI media sources to local or remote URLs,
+//  with durable on-disk caching for previews across app launches.
 //
 
 import Foundation
@@ -20,10 +21,9 @@ final class ChatMediaLoader: ObservableObject {
     private let sshService = ServiceManager.shared.sshService
     private let fileManager = FileManager.default
 
+    /// In-memory map of cacheKey → local file URL (also mirrored on disk).
     private var cache: [String: URL] = [:]
     private var inFlight: [String: Task<URL?, Never>] = [:]
-    private var previewCache: [String: URL] = [:]
-    private var previewInFlight: [String: Task<URL?, Never>] = [:]
     private var aspectRatioCache: [String: Double] = [:]
 
     private let maxProjectImageBytes = 25 * 1024 * 1024
@@ -35,6 +35,8 @@ final class ChatMediaLoader: ObservableObject {
 
     private init() { }
 
+    // MARK: - Public
+
     func resolveMedia(
         _ source: CodeAgentsUIMediaSource,
         project: RemoteProject?
@@ -42,7 +44,7 @@ final class ChatMediaLoader: ObservableObject {
         switch source {
         case .url(let url):
             guard isAllowedURL(url) else { return nil }
-            return .remote(url)
+            return await resolveRemoteURL(url)
         case .projectFile(let path):
             guard let project else { return nil }
             return await resolveProjectFile(path: path, project: project)
@@ -58,26 +60,23 @@ final class ChatMediaLoader: ObservableObject {
         switch source {
         case .url(let url):
             guard isAllowedURL(url) else { return nil }
+            let cacheKey = urlCacheKey(url)
+            if let local = localCachedURL(forKey: cacheKey, pathExtension: url.pathExtension) {
+                return .local(local)
+            }
             return .remote(url)
         case .projectFile(let path):
             guard let project else { return nil }
-            let cacheKey = "project:\(project.id.uuidString):\(path)"
-            if let cached = cache[cacheKey] {
-                if fileManager.fileExists(atPath: cached.path) {
-                    return .local(cached)
-                }
-                cache[cacheKey] = nil
-                aspectRatioCache[cacheKey] = nil
+            let cacheKey = projectCacheKey(projectId: project.id, path: path)
+            let ext = URL(fileURLWithPath: path).pathExtension
+            if let local = localCachedURL(forKey: cacheKey, pathExtension: ext) {
+                return .local(local)
             }
             return nil
         case .base64(_, let data):
-            let cacheKey = "base64:\(data.hashValue)"
-            if let cached = cache[cacheKey] {
-                if fileManager.fileExists(atPath: cached.path) {
-                    return .local(cached)
-                }
-                cache[cacheKey] = nil
-                aspectRatioCache[cacheKey] = nil
+            let cacheKey = base64CacheKey(data)
+            if let local = localCachedURL(forKey: cacheKey, pathExtension: nil) {
+                return .local(local)
             }
             return nil
         }
@@ -89,12 +88,12 @@ final class ChatMediaLoader: ObservableObject {
     ) -> Double? {
         switch source {
         case .url(let url):
-            return aspectRatioCache["url:\(url.absoluteString)"]
+            return aspectRatioCache[urlCacheKey(url)]
         case .projectFile(let path):
             guard let project else { return nil }
-            return aspectRatioCache["project:\(project.id.uuidString):\(path)"]
+            return aspectRatioCache[projectCacheKey(projectId: project.id, path: path)]
         case .base64(_, let data):
-            return aspectRatioCache["base64:\(data.hashValue)"]
+            return aspectRatioCache[base64CacheKey(data)]
         }
     }
 
@@ -102,30 +101,13 @@ final class ChatMediaLoader: ObservableObject {
         for source: CodeAgentsUIMediaSource,
         project: RemoteProject?
     ) async -> URL? {
-        switch source {
-        case .url(let url):
-            return await downloadRemotePreview(url)
-        case .projectFile(let path):
-            guard let project else { return nil }
-            if let resolved = await resolveProjectFile(path: path, project: project) {
-                switch resolved {
-                case .local(let url):
-                    return url
-                case .remote:
-                    return nil
-                }
-            }
-            return nil
-        case .base64(let mediaType, let data):
-            if let resolved = await resolveBase64(mediaType: mediaType, data: data) {
-                switch resolved {
-                case .local(let url):
-                    return url
-                case .remote:
-                    return nil
-                }
-            }
-            return nil
+        guard let resolved = await resolveMedia(source, project: project) else { return nil }
+        switch resolved {
+        case .local(let url):
+            return url
+        case .remote(let url):
+            // Fallback if resolve couldn't materialize a local copy.
+            return await downloadRemoteToDisk(url)
         }
     }
 
@@ -143,20 +125,17 @@ final class ChatMediaLoader: ObservableObject {
         return urls
     }
 
-    // MARK: - Private
+    // MARK: - Resolve paths
 
     private func resolveProjectFile(path: String, project: RemoteProject) async -> CodeAgentsUIMediaResolved? {
         let lowercasedExtension = URL(fileURLWithPath: path).pathExtension.lowercased()
         let mediaType = mediaTypeForExtension(lowercasedExtension)
         guard mediaType != nil else { return nil }
 
-        let cacheKey = "project:\(project.id.uuidString):\(path)"
-        if let cached = cache[cacheKey] {
-            if fileManager.fileExists(atPath: cached.path) {
-                return .local(cached)
-            }
-            cache[cacheKey] = nil
-            aspectRatioCache[cacheKey] = nil
+        let cacheKey = projectCacheKey(projectId: project.id, path: path)
+        if let local = localCachedURL(forKey: cacheKey, pathExtension: lowercasedExtension) {
+            await ensureAspectRatio(forKey: cacheKey, mediaType: mediaType, fileURL: local)
+            return .local(local)
         }
 
         if let task = inFlight[cacheKey] {
@@ -166,22 +145,134 @@ final class ChatMediaLoader: ObservableObject {
             return nil
         }
 
-        let task = Task<URL?, Never> {
+        let task = Task<URL?, Never> { [sshService] in
             guard let session = try? await sshService.getConnection(for: project, purpose: .fileOperations) else {
                 return nil
             }
             let remotePath = "\(project.path)/\(path)"
-            guard let size = await remoteFileSize(remotePath, session: session) else {
+            guard let size = await Self.remoteFileSize(remotePath, session: session) else {
                 return nil
             }
-            if let mediaType, !isSizeAllowed(size: size, mediaType: mediaType) {
+            if let mediaType, !Self.isSizeAllowed(
+                size: size,
+                mediaType: mediaType,
+                maxImage: 25 * 1024 * 1024,
+                maxVideo: 200 * 1024 * 1024
+            ) {
                 return nil
             }
 
-            let tempURL = makeTempURL(extension: lowercasedExtension)
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("codeagents-dl-\(UUID().uuidString)")
+                .appendingPathExtension(lowercasedExtension)
             do {
                 try await session.downloadFile(remotePath: remotePath, localPath: tempURL)
-                return tempURL
+                return try ChatMediaDiskCache.storeFile(
+                    at: tempURL,
+                    forKey: cacheKey,
+                    pathExtension: lowercasedExtension
+                )
+            } catch {
+                try? FileManager.default.removeItem(at: tempURL)
+                return nil
+            }
+        }
+
+        inFlight[cacheKey] = task
+        let result = await task.value
+        inFlight[cacheKey] = nil
+
+        if let result {
+            cache[cacheKey] = result
+            await ensureAspectRatio(forKey: cacheKey, mediaType: mediaType, fileURL: result)
+            return .local(result)
+        }
+
+        return nil
+    }
+
+    private func resolveBase64(mediaType: String, data: Data) async -> CodeAgentsUIMediaResolved? {
+        guard mediaType.lowercased().hasPrefix("image/") else { return nil }
+        guard data.count <= maxBase64Bytes else { return nil }
+
+        let cacheKey = base64CacheKey(data)
+        let ext = extensionForMediaType(mediaType)
+        if let local = localCachedURL(forKey: cacheKey, pathExtension: ext) {
+            await ensureAspectRatio(forKey: cacheKey, mediaType: "image", fileURL: local)
+            return .local(local)
+        }
+
+        do {
+            let destination = try ChatMediaDiskCache.storeData(data, forKey: cacheKey, pathExtension: ext)
+            cache[cacheKey] = destination
+            await ensureAspectRatio(forKey: cacheKey, mediaType: "image", fileURL: destination)
+            return .local(destination)
+        } catch {
+            return nil
+        }
+    }
+
+    private func resolveRemoteURL(_ url: URL) async -> CodeAgentsUIMediaResolved? {
+        let cacheKey = urlCacheKey(url)
+        if let local = localCachedURL(forKey: cacheKey, pathExtension: url.pathExtension) {
+            let mediaType = mediaTypeForExtension(url.pathExtension.lowercased())
+            await ensureAspectRatio(forKey: cacheKey, mediaType: mediaType, fileURL: local)
+            return .local(local)
+        }
+
+        if let downloaded = await downloadRemoteToDisk(url) {
+            return .local(downloaded)
+        }
+
+        // Network failed — still allow streaming remote if reachable later.
+        return .remote(url)
+    }
+
+    private func downloadRemoteToDisk(_ url: URL) async -> URL? {
+        guard isAllowedURL(url) else { return nil }
+        let cacheKey = urlCacheKey(url)
+        if let local = localCachedURL(forKey: cacheKey, pathExtension: url.pathExtension) {
+            return local
+        }
+        if let task = inFlight[cacheKey] {
+            return await task.value
+        }
+
+        let task = Task<URL?, Never> {
+            let ext = url.pathExtension.lowercased()
+            let allowedExt = ext.isEmpty ? nil : ext
+            let mediaTypeFromExt = allowedExt.flatMap { Self.mediaTypeForExtensionStatic($0) }
+            guard mediaTypeFromExt != nil || allowedExt == nil else { return nil }
+
+            do {
+                let (tempURL, response) = try await URLSession.shared.download(from: url)
+                let mimeType = response.mimeType
+                let mediaType = mediaTypeFromExt ?? mimeType.flatMap { Self.mediaTypeForMimeTypeStatic($0) }
+                guard let mediaType else {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    return nil
+                }
+
+                let finalExt = allowedExt
+                    ?? mimeType.flatMap { Self.extensionForMediaTypeStatic($0) }
+                    ?? tempURL.pathExtension
+
+                let size = (try? tempURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if !Self.isSizeAllowed(
+                    size: Int64(size),
+                    mediaType: mediaType,
+                    maxImage: 25 * 1024 * 1024,
+                    maxVideo: 200 * 1024 * 1024
+                ) {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    return nil
+                }
+
+                return try ChatMediaDiskCache.storeFile(
+                    at: tempURL,
+                    forKey: cacheKey,
+                    pathExtension: finalExt
+                )
             } catch {
                 return nil
             }
@@ -193,111 +284,54 @@ final class ChatMediaLoader: ObservableObject {
 
         if let result {
             cache[cacheKey] = result
-            if mediaType == "image" {
-                if let ratio = await imageAspectRatio(for: result) {
-                    aspectRatioCache[cacheKey] = ratio
-                }
-            }
-            return .local(result)
+            let mediaType = mediaTypeForExtension(result.pathExtension.lowercased())
+            await ensureAspectRatio(forKey: cacheKey, mediaType: mediaType, fileURL: result)
         }
+        return result
+    }
 
+    // MARK: - Local cache lookup
+
+    private func localCachedURL(forKey key: String, pathExtension: String?) -> URL? {
+        if let cached = cache[key], fileManager.fileExists(atPath: cached.path) {
+            return cached
+        }
+        if let disk = ChatMediaDiskCache.existingFile(forKey: key, pathExtension: pathExtension)
+            ?? ChatMediaDiskCache.existingFile(forKey: key) {
+            cache[key] = disk
+            return disk
+        }
+        if cache[key] != nil {
+            cache[key] = nil
+            aspectRatioCache[key] = nil
+        }
         return nil
     }
 
-    private func resolveBase64(mediaType: String, data: Data) async -> CodeAgentsUIMediaResolved? {
-        guard mediaType.lowercased().hasPrefix("image/") else { return nil }
-        guard data.count <= maxBase64Bytes else { return nil }
-
-        let cacheKey = "base64:\(data.hashValue)"
-        if let cached = cache[cacheKey] {
-            if fileManager.fileExists(atPath: cached.path) {
-                return .local(cached)
-            }
-            cache[cacheKey] = nil
-            aspectRatioCache[cacheKey] = nil
-        }
-
-        let ext = extensionForMediaType(mediaType)
-        let tempURL = makeTempURL(extension: ext)
-        do {
-            try data.write(to: tempURL, options: [.atomic])
-            cache[cacheKey] = tempURL
-            if let ratio = await imageAspectRatio(for: tempURL) {
-                aspectRatioCache[cacheKey] = ratio
-            }
-            return .local(tempURL)
-        } catch {
-            return nil
+    private func ensureAspectRatio(forKey key: String, mediaType: String?, fileURL: URL) async {
+        guard mediaType == "image" else { return }
+        if aspectRatioCache[key] != nil { return }
+        if let ratio = await imageAspectRatio(for: fileURL) {
+            aspectRatioCache[key] = ratio
         }
     }
 
-    private func downloadRemotePreview(_ url: URL) async -> URL? {
-        guard isAllowedURL(url) else { return nil }
-        let cacheKey = "url:\(url.absoluteString)"
-        if let cached = previewCache[cacheKey] {
-            if fileManager.fileExists(atPath: cached.path) {
-                return cached
-            }
-            previewCache[cacheKey] = nil
-            aspectRatioCache[cacheKey] = nil
-        }
-        if let task = previewInFlight[cacheKey] {
-            return await task.value
-        }
+    // MARK: - Keys
 
-        let task = Task<URL?, Never> {
-            let ext = url.pathExtension.lowercased()
-            let allowedExt = ext.isEmpty ? nil : ext
-            let mediaTypeFromExt = allowedExt.flatMap { mediaTypeForExtension($0) }
-            guard mediaTypeFromExt != nil || allowedExt == nil else { return nil }
-
-            do {
-                let (tempURL, response) = try await URLSession.shared.download(from: url)
-                let mimeType = response.mimeType
-                let mediaType = mediaTypeFromExt ?? mimeType.flatMap { mediaTypeForMimeType($0) }
-                guard let mediaType else { return nil }
-
-                let finalExt = allowedExt
-                    ?? mimeType.flatMap { extensionForMediaType($0) }
-                let destination = makeTempURL(extension: finalExt)
-
-                do {
-                    try? fileManager.removeItem(at: destination)
-                    try fileManager.moveItem(at: tempURL, to: destination)
-                } catch {
-                    return nil
-                }
-
-                let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                if !isSizeAllowed(size: Int64(size), mediaType: mediaType) {
-                    try? fileManager.removeItem(at: destination)
-                    return nil
-                }
-
-                if mediaType == "image" {
-                    if let ratio = await imageAspectRatio(for: destination) {
-                        await MainActor.run {
-                            aspectRatioCache[cacheKey] = ratio
-                        }
-                    }
-                }
-
-                return destination
-            } catch {
-                return nil
-            }
-        }
-
-        previewInFlight[cacheKey] = task
-        let result = await task.value
-        previewInFlight[cacheKey] = nil
-
-        if let result {
-            previewCache[cacheKey] = result
-        }
-
-        return result
+    private func projectCacheKey(projectId: UUID, path: String) -> String {
+        "project:\(projectId.uuidString):\(path)"
     }
+
+    private func urlCacheKey(_ url: URL) -> String {
+        "url:\(url.absoluteString)"
+    }
+
+    private func base64CacheKey(_ data: Data) -> String {
+        // Content hash is stable across launches (unlike Data.hashValue).
+        "base64:\(ChatMediaDiskCache.sha256Hex(data))"
+    }
+
+    // MARK: - ImageIO / helpers
 
     private func imageAspectRatio(for url: URL) async -> Double? {
         await withCheckedContinuation { continuation in
@@ -326,7 +360,7 @@ final class ChatMediaLoader: ObservableObject {
         }
     }
 
-    private func remoteFileSize(_ path: String, session: SSHSession) async -> Int64? {
+    private static func remoteFileSize(_ path: String, session: SSHSession) async -> Int64? {
         let escaped = shellEscaped(path)
         let command = "stat -f%z \(escaped) 2>/dev/null || stat -c%s \(escaped) 2>/dev/null"
         guard let output = try? await session.execute(command) else {
@@ -335,7 +369,7 @@ final class ChatMediaLoader: ObservableObject {
         return parseFirstInt64(from: output)
     }
 
-    private func parseFirstInt64(from output: String) -> Int64? {
+    private static func parseFirstInt64(from output: String) -> Int64? {
         let tokens = output.split { !$0.isNumber }
         for token in tokens {
             if let value = Int64(token) {
@@ -353,27 +387,38 @@ final class ChatMediaLoader: ObservableObject {
     }
 
     private func mediaTypeForExtension(_ ext: String) -> String? {
-        if imageExtensions.contains(ext) {
-            return "image"
-        }
-        if videoExtensions.contains(ext) {
-            return "video"
-        }
+        Self.mediaTypeForExtensionStatic(ext)
+    }
+
+    private static func mediaTypeForExtensionStatic(_ ext: String) -> String? {
+        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "gif", "heic"]
+        let videoExtensions: Set<String> = ["mp4", "mov"]
+        if imageExtensions.contains(ext) { return "image" }
+        if videoExtensions.contains(ext) { return "video" }
         return nil
     }
 
-    private func isSizeAllowed(size: Int64, mediaType: String) -> Bool {
+    private static func isSizeAllowed(
+        size: Int64,
+        mediaType: String,
+        maxImage: Int64,
+        maxVideo: Int64
+    ) -> Bool {
         switch mediaType {
         case "image":
-            return size <= maxProjectImageBytes
+            return size <= maxImage
         case "video":
-            return size <= maxProjectVideoBytes
+            return size <= maxVideo
         default:
             return false
         }
     }
 
     private func extensionForMediaType(_ mediaType: String) -> String? {
+        Self.extensionForMediaTypeStatic(mediaType)
+    }
+
+    private static func extensionForMediaTypeStatic(_ mediaType: String) -> String? {
         let lower = mediaType.lowercased()
         if lower == "image/png" { return "png" }
         if lower == "image/jpeg" { return "jpg" }
@@ -385,27 +430,14 @@ final class ChatMediaLoader: ObservableObject {
         return nil
     }
 
-    private func mediaTypeForMimeType(_ mimeType: String) -> String? {
+    private static func mediaTypeForMimeTypeStatic(_ mimeType: String) -> String? {
         let lower = mimeType.lowercased()
-        if lower.hasPrefix("image/") {
-            return "image"
-        }
-        if lower.hasPrefix("video/") {
-            return "video"
-        }
+        if lower.hasPrefix("image/") { return "image" }
+        if lower.hasPrefix("video/") { return "video" }
         return nil
     }
 
-    private func makeTempURL(extension ext: String?) -> URL {
-        let name = "codeagents-\(UUID().uuidString)"
-        var url = fileManager.temporaryDirectory.appendingPathComponent(name)
-        if let ext, !ext.isEmpty {
-            url = url.appendingPathExtension(ext)
-        }
-        return url
-    }
-
-    private func shellEscaped(_ value: String) -> String {
+    private static func shellEscaped(_ value: String) -> String {
         let escaped = value.replacingOccurrences(of: "'", with: "'\"'\"'")
         return "'\(escaped)'"
     }

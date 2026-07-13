@@ -169,6 +169,8 @@ private struct AgentSkillRow: View {
             base = "Marketplace"
         case .github:
             base = "GitHub"
+        case .remote:
+            base = "On agent"
         case .unknown:
             base = "Unknown"
         }

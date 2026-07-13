@@ -193,54 +193,78 @@ private struct MessageAttachmentFullscreenImageView: View {
     @State private var lastScale: CGFloat = 1
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .scaleEffect(scale)
-                .gesture(
-                    MagnificationGesture()
-                        .onChanged { value in
-                            scale = max(1, min(lastScale * value, 4))
-                        }
-                        .onEnded { _ in
-                            lastScale = scale
-                            if scale < 1.05 {
-                                withAnimation(.easeOut(duration: 0.15)) {
-                                    scale = 1
-                                    lastScale = 1
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                scale = max(1, min(lastScale * value, 4))
+                            }
+                            .onEnded { _ in
+                                lastScale = scale
+                                if scale < 1.05 {
+                                    withAnimation(.easeOut(duration: 0.15)) {
+                                        scale = 1
+                                        lastScale = 1
+                                    }
                                 }
                             }
-                        }
-                )
-                .onTapGesture(count: 2) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if scale > 1.1 {
-                            scale = 1
-                            lastScale = 1
-                        } else {
-                            scale = 2.2
-                            lastScale = 2.2
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            if scale > 1.1 {
+                                scale = 1
+                                lastScale = 1
+                            } else {
+                                scale = 2.2
+                                lastScale = 2.2
+                            }
                         }
                     }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(.ultraThinMaterial, in: Circle())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
             }
-            .buttonStyle(.plain)
-            .padding(16)
-            .accessibilityLabel("Close")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                    .foregroundStyle(.white)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        shareImage()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .foregroundStyle(.white)
+                    .accessibilityLabel("Share")
+                }
+            }
+            .toolbarBackground(.hidden, for: .navigationBar)
+        }
+    }
+
+    private func shareImage() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chat-attachment-share", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let url = tempDir.appendingPathComponent("photo-\(UUID().uuidString).jpg")
+        guard let data = image.jpegData(compressionQuality: 0.92) else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+            ShareSheetPresenter.present(urls: [url]) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        } catch {
+            // Share is best-effort for fullscreen attachment images.
         }
     }
 }

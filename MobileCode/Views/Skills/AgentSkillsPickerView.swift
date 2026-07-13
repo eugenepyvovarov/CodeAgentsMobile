@@ -22,6 +22,7 @@ struct AgentSkillsPickerView: View {
     @State private var showingMarketplaceInstall = false
     @State private var showingGitHubInstall = false
     @State private var syncingSlug: String?
+    @State private var isScanningRemote = false
     @State private var showError = false
     @State private var errorMessage = ""
 
@@ -121,25 +122,55 @@ struct AgentSkillsPickerView: View {
                 }
             }
             ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button {
-                        showingMarketplaceInstall = true
-                    } label: {
-                        Label("Add from Marketplace", systemImage: "cart")
+                HStack(spacing: 12) {
+                    if isScanningRemote {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .accessibilityIdentifier("agent-skills-picker-scan-progress")
+                    } else {
+                        Button {
+                            scanRemoteSkills()
+                        } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(project == nil)
+                        .accessibilityIdentifier("agent-skills-picker-scan-button")
+                        .accessibilityLabel("Scan remote skills")
                     }
-                    .accessibilityIdentifier("agent-skills-picker-add-marketplace-button")
-                    Button {
-                        showingGitHubInstall = true
+
+                    Menu {
+                        Button {
+                            showingMarketplaceInstall = true
+                        } label: {
+                            Label("Add from Marketplace", systemImage: "cart")
+                        }
+                        .accessibilityIdentifier("agent-skills-picker-add-marketplace-button")
+                        Button {
+                            showingGitHubInstall = true
+                        } label: {
+                            Label("Add from GitHub URL", systemImage: "link")
+                        }
+                        .accessibilityIdentifier("agent-skills-picker-add-github-button")
+                        Button {
+                            scanRemoteSkills()
+                        } label: {
+                            Label("Scan Remote Skills Folder", systemImage: "folder.badge.gearshape")
+                        }
+                        .disabled(project == nil || isScanningRemote)
+                        .accessibilityIdentifier("agent-skills-picker-scan-menu-button")
                     } label: {
-                        Label("Add from GitHub URL", systemImage: "link")
+                        Image(systemName: "plus")
                     }
-                    .accessibilityIdentifier("agent-skills-picker-add-github-button")
-                } label: {
-                    Image(systemName: "plus")
+                    .disabled(project == nil)
+                    .accessibilityIdentifier("agent-skills-picker-add-menu-button")
                 }
-                .disabled(project == nil)
-                .accessibilityIdentifier("agent-skills-picker-add-menu-button")
             }
+        }
+        .task(id: project?.id) {
+            await scanRemoteSkillsAsync()
+        }
+        .refreshable {
+            await scanRemoteSkillsAsync()
         }
         .sheet(isPresented: $showingMarketplaceInstall) {
             SkillMarketplaceInstallSheet { skill in
@@ -172,6 +203,24 @@ struct AgentSkillsPickerView: View {
 
     private func addSkillToAgent(_ skill: AgentSkill) {
         toggleSkill(skill, enabled: true)
+    }
+
+    private func scanRemoteSkills() {
+        Task { await scanRemoteSkillsAsync() }
+    }
+
+    @MainActor
+    private func scanRemoteSkillsAsync() async {
+        guard let project else { return }
+        guard !isScanningRemote else { return }
+        isScanningRemote = true
+        defer { isScanningRemote = false }
+        do {
+            _ = try await syncService.importRemoteSkills(for: project, into: modelContext)
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
+        }
     }
 
     private func toggleSkill(_ skill: AgentSkill, enabled: Bool) {
@@ -251,6 +300,8 @@ private struct AgentSkillToggleRow: View {
             return "Marketplace"
         case .github:
             return "GitHub"
+        case .remote:
+            return "On agent"
         case .unknown:
             return "Unknown"
         }
@@ -290,6 +341,8 @@ private struct AgentSkillAddRow: View {
             return "Marketplace"
         case .github:
             return "GitHub"
+        case .remote:
+            return "On agent"
         case .unknown:
             return "Unknown"
         }

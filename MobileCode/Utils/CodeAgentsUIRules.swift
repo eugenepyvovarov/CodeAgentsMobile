@@ -14,6 +14,15 @@ enum CodeAgentsUIRules {
 - Always emit UI as a fenced `codeagents-ui` JSON block, never a tool call.
 """
 
+    static let projectSkillsGuidanceMarkdown = """
+PROJECT SKILLS (managed MCP `codeagents-scheduled-tasks`):
+- Install project skills under `.opencode/skills/<slug>/` with a `SKILL.md` (legacy: `.claude/skills`, `.agents/skills`).
+- After you install, update, move, or remove a skill, call MCP tools on `codeagents-scheduled-tasks`:
+  - `register_project_skill` with `{ "slug": "<slug>" }` (or `path`: `.opencode/skills/<slug>`)
+  - `list_project_skills` to verify what is on disk
+- The mobile app also scans those skill folders for the Abilities / skills list.
+"""
+
     static let rulesMarkdown: String = """
 You are replying in CodeAgents Mobile. The app can render UI widgets embedded in assistant messages.
 
@@ -90,17 +99,29 @@ When the user asks to change this agent's avatar (emoji, image, or clear it), us
 - `clear_agent_avatar` / `get_agent_avatar`
 Do NOT hand-edit `.codeagents/codeagents.json` avatar fields — the MCP merges identity safely.
 If those tools are unavailable, say the Agent Avatar MCP is disconnected and suggest reconnecting it in Abilities → MCP Servers.
+
+\(projectSkillsGuidanceMarkdown)
 """
 
     static func ensuringToolCallGuard(in content: String) -> String {
-        if content.contains("codeagents-ui is NOT a tool") {
+        var result = content
+        if !result.contains("codeagents-ui is NOT a tool") {
+            let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            result = trimmed.isEmpty ? toolCallGuardMarkdown : trimmed + "\n\n" + toolCallGuardMarkdown
+        }
+        return ensuringProjectSkillsGuidance(in: result)
+    }
+
+    /// Appends the project-skills MCP contract when missing (idempotent).
+    static func ensuringProjectSkillsGuidance(in content: String) -> String {
+        if content.contains("register_project_skill") {
             return content
         }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            return toolCallGuardMarkdown
+            return projectSkillsGuidanceMarkdown
         }
-        return trimmed + "\n\n" + toolCallGuardMarkdown
+        return trimmed + "\n\n" + projectSkillsGuidanceMarkdown
     }
 
     /// Ensures aspect files exist and regenerates assembled `AGENTS.md`.
@@ -143,6 +164,14 @@ If those tools are unavailable, say the Agent Avatar MCP is disconnected and sug
             let checkCommand = "[ -f \(agentsPath) ] && echo EXISTS || echo MISSING"
             let output = try await session.execute(checkCommand)
             if output.contains("EXISTS") {
+                // Still inject project-skills MCP guidance into UI aspect when missing.
+                try await ensureProjectSkillsGuidanceIfNeeded(
+                    session: session,
+                    project: project,
+                    uiPathValue: uiPathValue,
+                    personalityPathValue: personalityPathValue,
+                    agentsPathValue: agentsPathValue
+                )
                 return
             }
         }
@@ -191,6 +220,46 @@ If those tools are unavailable, say the Agent Avatar MCP is disconnected and sug
         let assembled = AgentRulesAssembly.assemble(personality: personalityBody, uiRules: uiBody)
 
         try await writeRemoteFile(session: session, path: personalityPathValue, content: personalityBody)
+        try await writeRemoteFile(session: session, path: uiPathValue, content: uiBody)
+        try await writeRemoteFile(session: session, path: agentsPathValue, content: assembled)
+    }
+
+    /// Lightweight patch: if UI aspect / AGENTS.md lacks skills MCP guidance, append and reassemble.
+    private static func ensureProjectSkillsGuidanceIfNeeded(
+        session: SSHSession,
+        project: RemoteProject,
+        uiPathValue: String,
+        personalityPathValue: String,
+        agentsPathValue: String
+    ) async throws {
+        let uiExisting = try await readRemoteFileIfPresent(session: session, path: uiPathValue)
+        let agentsExisting = try await readRemoteFileIfPresent(session: session, path: agentsPathValue)
+
+        // If neither file is readable, skip (do not rewrite blindly).
+        guard uiExisting != nil || agentsExisting != nil else { return }
+
+        let uiText = uiExisting ?? ""
+        let agentsText = agentsExisting ?? ""
+        if uiText.contains("register_project_skill") || agentsText.contains("register_project_skill") {
+            return
+        }
+
+        let personality = try await readRemoteFileIfPresent(session: session, path: personalityPathValue) ?? ""
+        let uiBody: String
+        if !uiText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            uiBody = ensuringToolCallGuard(in: uiText)
+        } else if !agentsText.isEmpty {
+            let extracted = AgentRulesAssembly.extractAspects(from: agentsText)
+            if let ui = extracted.uiRules, !ui.isEmpty {
+                uiBody = ensuringToolCallGuard(in: ui)
+            } else {
+                uiBody = rulesMarkdown
+            }
+        } else {
+            uiBody = rulesMarkdown
+        }
+
+        let assembled = AgentRulesAssembly.assemble(personality: personality, uiRules: uiBody)
         try await writeRemoteFile(session: session, path: uiPathValue, content: uiBody)
         try await writeRemoteFile(session: session, path: agentsPathValue, content: assembled)
     }

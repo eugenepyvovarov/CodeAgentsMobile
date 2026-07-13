@@ -53,16 +53,67 @@ class FileBrowserViewModel {
         }
     }
     
+    /// Whether the browser is inside a subfolder of the project root.
+    var canNavigateUp: Bool {
+        guard !projectRootPath.isEmpty, !currentPath.isEmpty else { return false }
+        let current = normalized(currentPath)
+        let root = normalized(projectRootPath)
+        return current != root && (current.hasPrefix(root + "/") || current.hasPrefix(root + "//"))
+    }
+
+    /// Display name for the folder currently being browsed.
+    var currentFolderName: String {
+        if !canNavigateUp {
+            return "Files"
+        }
+        let name = (currentPath as NSString).lastPathComponent
+        return name.isEmpty ? "Files" : name
+    }
+
+    /// Parent folder name for the up control (project root shows as root label when one level deep).
+    var parentFolderName: String? {
+        guard canNavigateUp else { return nil }
+        let parent = parentDirectoryPath() ?? projectRootPath
+        if normalized(parent) == normalized(projectRootPath) {
+            return nil // caller can show "Files" / project name
+        }
+        let name = (parent as NSString).lastPathComponent
+        return name.isEmpty ? nil : name
+    }
+
     /// Navigate to a specific path
     /// - Parameter path: The path to navigate to
     func navigateTo(path: String) {
         // Ensure we don't navigate above project root
-        if path.hasPrefix(projectRootPath) || path == projectRootPath {
+        let root = normalized(projectRootPath)
+        let target = normalized(path)
+        if target == root || target.hasPrefix(root + "/") || path.hasPrefix(projectRootPath) || path == projectRootPath {
             currentPath = path
             Task {
                 await loadRemoteFiles()
             }
         }
+    }
+
+    /// Move one directory up toward the project root.
+    func navigateUp() {
+        guard let parent = parentDirectoryPath() else { return }
+        navigateTo(path: parent)
+    }
+
+    private func parentDirectoryPath() -> String? {
+        guard canNavigateUp else { return nil }
+        let parent = (currentPath as NSString).deletingLastPathComponent
+        let root = normalized(projectRootPath)
+        let normalizedParent = normalized(parent)
+        if normalizedParent == root || normalizedParent.hasPrefix(root + "/") {
+            return parent.isEmpty ? projectRootPath : parent
+        }
+        return projectRootPath
+    }
+
+    private func normalized(_ path: String) -> String {
+        (path as NSString).standardizingPath
     }
     
     /// Load files from remote server

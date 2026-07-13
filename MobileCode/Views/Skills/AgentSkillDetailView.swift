@@ -59,6 +59,8 @@ struct AgentSkillDetailView: View {
             return "Marketplace"
         case .github:
             return "GitHub"
+        case .remote:
+            return "On agent"
         case .unknown:
             return "Unknown"
         }

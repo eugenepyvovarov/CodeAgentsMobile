@@ -11,6 +11,8 @@ import SwiftData
 enum AgentSkillSource: String, Codable, CaseIterable {
     case marketplace
     case github
+    /// Discovered on the agent host under `.opencode/skills` (or legacy skill roots).
+    case remote
     case unknown
 }
 

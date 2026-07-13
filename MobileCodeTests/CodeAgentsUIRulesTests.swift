@@ -3,14 +3,16 @@ import XCTest
 
 final class CodeAgentsUIRulesTests: XCTestCase {
     func testEnsureRulesFileChecksAgentsMarkdownPrimaryPath() async throws {
-        let session = RulesFakeSSHSession(outputs: ["EXISTS"])
+        // EXISTS; fake reads return unparseable payloads so guidance patch is skipped.
+        let session = RulesFakeSSHSession(outputs: ["EXISTS", "", ""])
         let project = RemoteProject(name: "app", serverId: UUID(), basePath: "/workspace")
 
         try await CodeAgentsUIRules.ensureRulesFile(session: session, project: project, onlyIfMissing: true)
 
-        XCTAssertEqual(session.commands.count, 1)
+        XCTAssertGreaterThanOrEqual(session.commands.count, 1)
         XCTAssertTrue(session.commands[0].contains("/workspace/app/AGENTS.md"))
         XCTAssertFalse(session.commands[0].contains(".claude/rules"))
+        XCTAssertFalse(session.commands.contains(where: { $0.contains("base64 -d") }))
     }
 
     func testEnsureRulesFileWhenMissingWritesAspectsAndAssembledAgents() async throws {
@@ -46,13 +48,14 @@ final class CodeAgentsUIRulesTests: XCTestCase {
     }
 
     func testEnsureRulesFileOnlyIfMissingShortCircuitsWhenAgentsExists() async throws {
-        let session = RulesFakeSSHSession(outputs: ["EXISTS"])
+        let session = RulesFakeSSHSession(outputs: ["EXISTS", "", ""])
         let project = RemoteProject(name: "app", serverId: UUID(), basePath: "/workspace")
 
         try await CodeAgentsUIRules.ensureRulesFile(session: session, project: project, onlyIfMissing: true)
 
-        XCTAssertEqual(session.commands.count, 1)
         XCTAssertTrue(session.commands[0].contains("[ -f"))
+        // Unreadable aspect payloads → no rewrite.
+        XCTAssertFalse(session.commands.contains(where: { $0.contains("base64 -d") }))
     }
 
     func testEnsuringToolCallGuardIdempotent() {
@@ -60,6 +63,13 @@ final class CodeAgentsUIRulesTests: XCTestCase {
         let twice = CodeAgentsUIRules.ensuringToolCallGuard(in: once)
         XCTAssertEqual(once, twice)
         XCTAssertTrue(once.contains("codeagents-ui is NOT a tool"))
+        XCTAssertTrue(once.contains("register_project_skill"))
+    }
+
+    func testRulesMarkdownIncludesProjectSkillsMCPGuidance() {
+        XCTAssertTrue(CodeAgentsUIRules.rulesMarkdown.contains("register_project_skill"))
+        XCTAssertTrue(CodeAgentsUIRules.rulesMarkdown.contains("list_project_skills"))
+        XCTAssertTrue(CodeAgentsUIRules.rulesMarkdown.contains("codeagents-scheduled-tasks"))
     }
 }
 

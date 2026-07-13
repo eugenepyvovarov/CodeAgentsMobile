@@ -2,19 +2,46 @@
 //  PhotoLibraryPicker.swift
 //  CodeAgentsMobile
 //
-//  Purpose: PHPicker wrapper for multi-select image picking.
+//  Purpose: PHPicker wrapper for multi-select image/video picking.
 //
 
+import Photos
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
 struct PhotoLibraryPicker: UIViewControllerRepresentable {
+    enum MediaFilter {
+        case images
+        case videos
+        case imagesAndVideos
+    }
+
     let selectionLimit: Int
     let directoryName: String
-    let onComplete: ([StagedImageAttachment], Error?) -> Void
+    var mediaFilter: MediaFilter = .images
+    /// Legacy image-only callback used by chat/tasks.
+    var onComplete: (([StagedImageAttachment], Error?) -> Void)?
+    /// File-browser callback that supports images + videos.
+    var onUploadItems: (([StagedUploadItem], Error?) -> Void)?
     let onCancel: () -> Void
+
+    init(
+        selectionLimit: Int,
+        directoryName: String,
+        mediaFilter: MediaFilter = .images,
+        onComplete: (([StagedImageAttachment], Error?) -> Void)? = nil,
+        onUploadItems: (([StagedUploadItem], Error?) -> Void)? = nil,
+        onCancel: @escaping () -> Void
+    ) {
+        self.selectionLimit = selectionLimit
+        self.directoryName = directoryName
+        self.mediaFilter = mediaFilter
+        self.onComplete = onComplete
+        self.onUploadItems = onUploadItems
+        self.onCancel = onCancel
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -22,7 +49,14 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var configuration = PHPickerConfiguration(photoLibrary: .shared())
-        configuration.filter = .images
+        switch mediaFilter {
+        case .images:
+            configuration.filter = .images
+        case .videos:
+            configuration.filter = .videos
+        case .imagesAndVideos:
+            configuration.filter = .any(of: [.images, .videos])
+        }
         configuration.selectionLimit = selectionLimit
 
         let picker = PHPickerViewController(configuration: configuration)
@@ -46,13 +80,17 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
             }
 
             Task {
-                var staged: [StagedImageAttachment] = []
+                var images: [StagedImageAttachment] = []
+                var uploads: [StagedUploadItem] = []
                 var firstError: Error?
 
                 for result in results {
                     do {
                         let item = try await stage(result)
-                        staged.append(item)
+                        uploads.append(item)
+                        if item.kind == .image {
+                            images.append(StagedImageAttachment(displayName: item.displayName, localURL: item.localURL))
+                        }
                     } catch {
                         if firstError == nil {
                             firstError = error
@@ -61,40 +99,100 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
                 }
 
                 await MainActor.run {
-                    parent.onComplete(staged, firstError)
+                    if let onUploadItems = parent.onUploadItems {
+                        onUploadItems(uploads, firstError)
+                    } else {
+                        parent.onComplete?(images, firstError)
+                    }
                 }
             }
         }
 
-        private func stage(_ result: PHPickerResult) async throws -> StagedImageAttachment {
-            let suggestedName = result.itemProvider.suggestedName
-            if let url = try await loadFileURL(from: result.itemProvider) {
+        private func stage(_ result: PHPickerResult) async throws -> StagedUploadItem {
+            let preferredName = preferredFilename(for: result)
+
+            if isVideo(result.itemProvider) {
+                let videoTypes = [
+                    UTType.movie.identifier,
+                    UTType.video.identifier,
+                    UTType.mpeg4Movie.identifier,
+                    UTType.quickTimeMovie.identifier
+                ]
+                var videoURL: URL?
+                for typeId in videoTypes {
+                    if let url = try await loadFileURL(from: result.itemProvider, typeIdentifier: typeId) {
+                        videoURL = url
+                        break
+                    }
+                }
+
+                if let url = videoURL {
+                    defer { try? FileManager.default.removeItem(at: url) }
+                    return try MediaUploadStager.stageVideoFile(
+                        at: url,
+                        preferredName: preferredName ?? url.lastPathComponent,
+                        directoryName: parent.directoryName
+                    )
+                }
+                throw ImageAttachmentStagerError.missingImageData
+            }
+
+            // Image path — reuse JPEG stager for size normalization.
+            if let url = try await loadFileURL(from: result.itemProvider, typeIdentifier: UTType.image.identifier) {
                 defer { try? FileManager.default.removeItem(at: url) }
-                return try ImageAttachmentStager.stageImage(
+                let staged = try ImageAttachmentStager.stageImage(
                     at: url,
-                    preferredName: suggestedName ?? url.lastPathComponent,
+                    preferredName: preferredName ?? url.lastPathComponent,
                     directoryName: parent.directoryName
                 )
+                return StagedUploadItem(displayName: staged.displayName, localURL: staged.localURL, kind: .image)
             }
 
             if let image = try await loadUIImage(from: result.itemProvider) {
-                return try ImageAttachmentStager.stageImage(
+                let staged = try ImageAttachmentStager.stageImage(
                     from: image,
-                    preferredName: suggestedName,
+                    preferredName: preferredName,
                     directoryName: parent.directoryName
                 )
+                return StagedUploadItem(displayName: staged.displayName, localURL: staged.localURL, kind: .image)
             }
 
             throw ImageAttachmentStagerError.missingImageData
         }
 
-        private func loadFileURL(from provider: NSItemProvider) async throws -> URL? {
-            guard provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
+        private func preferredFilename(for result: PHPickerResult) -> String? {
+            if let assetId = result.assetIdentifier {
+                let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                if let asset = assets.firstObject {
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    if let original = resources.first?.originalFilename,
+                       !UploadFilename.isLikelyAssetIdentifier(original) {
+                        return original
+                    }
+                }
+            }
+
+            if let suggested = result.itemProvider.suggestedName,
+               !UploadFilename.isLikelyAssetIdentifier(suggested) {
+                return suggested
+            }
+            return nil
+        }
+
+        private func isVideo(_ provider: NSItemProvider) -> Bool {
+            provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.video.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.mpeg4Movie.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.quickTimeMovie.identifier)
+        }
+
+        private func loadFileURL(from provider: NSItemProvider, typeIdentifier: String) async throws -> URL? {
+            guard provider.hasItemConformingToTypeIdentifier(typeIdentifier) else {
                 return nil
             }
 
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL?, Error>) in
-                provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, error in
+                provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, error in
                     if let error {
                         continuation.resume(throwing: error)
                         return
@@ -106,10 +204,11 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
 
                     do {
                         let fileManager = FileManager.default
-                        let stagingDir = fileManager.temporaryDirectory.appendingPathComponent("photo-library-imports", isDirectory: true)
+                        let stagingDir = fileManager.temporaryDirectory
+                            .appendingPathComponent("photo-library-imports", isDirectory: true)
                         try fileManager.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
-                        let name = url.lastPathComponent.isEmpty ? "photo" : url.lastPathComponent
+                        let name = url.lastPathComponent.isEmpty ? "media" : url.lastPathComponent
                         let destination = stagingDir.appendingPathComponent("\(UUID().uuidString)-\(name)")
                         if fileManager.fileExists(atPath: destination.path) {
                             try fileManager.removeItem(at: destination)

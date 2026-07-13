@@ -111,16 +111,11 @@ struct ImageAttachmentStager {
     }
 
     private static func resolvedDisplayName(from preferredName: String?) -> String {
-        let trimmed = preferredName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidate = (trimmed?.isEmpty == false ? trimmed : fallbackName()) ?? fallbackName()
-        let baseName = (candidate as NSString).lastPathComponent
-        let withoutExtension = (baseName as NSString).deletingPathExtension
-        let finalBase = withoutExtension.isEmpty ? fallbackName() : withoutExtension
-        return "\(finalBase).jpg"
-    }
-
-    private static func fallbackName() -> String {
-        "Photo-\(timestampFormatter.string(from: Date()))"
+        UploadFilename.humanDisplayName(
+            preferred: preferredName,
+            fallbackStem: "Photo",
+            preferredExtension: "jpg"
+        )
     }
 
     private static func makeDestinationURL(directoryName: String, filename: String) throws -> URL {
@@ -157,11 +152,4 @@ struct ImageAttachmentStager {
 
         return collapsed.isEmpty ? "photo.jpg" : collapsed
     }
-
-    private static let timestampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter
-    }()
 }

@@ -31,20 +31,29 @@ struct FileNode: Identifiable {
         "sql", "sh", "bash", "zsh",
         "ini", "cfg", "conf", "log", "csv"
     ]
+
+    static let imageFileExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff"
+    ]
+
+    static let videoFileExtensions: Set<String> = [
+        "mp4", "mov", "m4v", "avi", "mkv", "webm"
+    ]
     
     var icon: String {
         if isDirectory {
             return isExpanded ? "folder.fill" : "folder"
-        } else {
-            switch name.split(separator: ".").last?.lowercased() {
-            case "swift": return "swift"
-            case "py": return "doc.text"
-            case "js", "ts": return "doc.text"
-            case "json": return "doc.text"
-            case "md": return "doc.richtext"
-            case "png", "jpg", "jpeg": return "photo"
-            default: return "doc"
-            }
+        }
+        if isImageFile { return "photo" }
+        if isVideoFile { return "film" }
+        switch fileExtension {
+        case "swift": return "swift"
+        case "py": return "doc.text"
+        case "js", "ts", "tsx", "jsx": return "doc.text"
+        case "json": return "curlybraces"
+        case "md", "mdx": return "doc.richtext"
+        case "pdf": return "doc.richtext.fill"
+        default: return "doc"
         }
     }
 
@@ -56,6 +65,20 @@ struct FileNode: Identifiable {
     var isTextFile: Bool {
         guard !isDirectory, let ext = fileExtension else { return false }
         return FileNode.textFileExtensions.contains(ext)
+    }
+
+    var isImageFile: Bool {
+        guard !isDirectory, let ext = fileExtension else { return false }
+        return FileNode.imageFileExtensions.contains(ext)
+    }
+
+    var isVideoFile: Bool {
+        guard !isDirectory, let ext = fileExtension else { return false }
+        return FileNode.videoFileExtensions.contains(ext)
+    }
+
+    var isMediaFile: Bool {
+        isImageFile || isVideoFile
     }
     
     var formattedSize: String? {

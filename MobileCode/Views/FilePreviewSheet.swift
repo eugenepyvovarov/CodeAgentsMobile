@@ -134,15 +134,40 @@ struct FilePreviewSheet: View {
     @ViewBuilder
     private var quickLookContent: some View {
         if isLoading {
-            ProgressView("Loading preview...")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            mediaLoadingState
         } else if let loadErrorMessage {
             errorState(message: loadErrorMessage)
         } else if let previewURL {
             QuickLookPreview(url: previewURL)
+                .ignoresSafeArea(edges: .bottom)
         } else {
             errorState(message: "Preview unavailable.")
         }
+    }
+
+    @ViewBuilder
+    private var mediaLoadingState: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 88, height: 88)
+                Image(systemName: file.isVideoFile ? "film" : (file.isImageFile ? "photo" : "doc"))
+                    .font(.system(size: 32, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+            }
+            ProgressView()
+            Text(file.isVideoFile ? "Loading video…" : (file.isImageFile ? "Loading image…" : "Loading preview…"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if let size = file.formattedSize {
+                Text(size)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func errorState(message: String) -> some View {
