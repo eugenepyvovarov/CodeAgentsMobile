@@ -129,8 +129,12 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
   PRIVATE_KEY_FILE="${ASC_PRIVATE_KEY_FILE:-}"
   if [[ -z "${PRIVATE_KEY_FILE}" ]]; then
     : "${ASC_PRIVATE_KEY_P8:?ASC_PRIVATE_KEY_P8 or ASC_PRIVATE_KEY_FILE is required for asc auth}"
-    PRIVATE_KEY_FILE="$(mktemp "${TMPDIR:-/tmp}/codeagents-asc-key.XXXXXX.p8")"
+    # macOS mktemp requires the XXXXXX suffix at the end of the template. A trailing
+    # ".p8" makes the name fixed, so the second CI run fails with "File exists".
+    PRIVATE_KEY_FILE="$(mktemp "${TMPDIR:-/tmp}/codeagents-asc-key.XXXXXX")"
     printf '%s\n' "${ASC_PRIVATE_KEY_P8}" > "${PRIVATE_KEY_FILE}"
+    # Also clear any stale literal path left by the old broken template.
+    rm -f "${TMPDIR:-/tmp}/codeagents-asc-key.XXXXXX.p8" 2>/dev/null || true
     trap 'rm -f "${PRIVATE_KEY_FILE}"' EXIT
   fi
 
