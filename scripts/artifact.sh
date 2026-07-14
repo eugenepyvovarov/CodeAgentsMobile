@@ -299,6 +299,8 @@ PLIST
       --ipa-path "${DIST_DIR}/CodeAgentsMobile-${RELEASE_VERSION_RESOLVED}-${RELEASE_BUILD_RESOLVED}.ipa" \
       --export-options "${EXPORT_OPTIONS}" \
       --group "${TESTFLIGHT_GROUP}" \
+      --submit \
+      --confirm \
       --wait \
       --poll-interval "${ASC_POLL_INTERVAL:-30s}" \
       --timeout "${ASC_TIMEOUT_RESOLVED}" \
