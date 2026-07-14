@@ -53,7 +53,8 @@ final class ProxyTaskFetchMatchingTests: XCTestCase {
             lastRunAt: nil,
             lastError: nil,
             agentId: "agent-demo",
-            cwd: "/other/path"
+            cwd: "/other/path",
+            clientTaskId: nil
         )
 
         let matched = ProxyTaskService.tasksMatching(
@@ -80,7 +81,8 @@ final class ProxyTaskFetchMatchingTests: XCTestCase {
             lastRunAt: nil,
             lastError: nil,
             agentId: "stale-pre-identity-uuid",
-            cwd: "/root/projects/demo/"
+            cwd: "/root/projects/demo/",
+            clientTaskId: nil
         )
 
         let matched = ProxyTaskService.tasksMatching(
@@ -107,7 +109,8 @@ final class ProxyTaskFetchMatchingTests: XCTestCase {
             lastRunAt: nil,
             lastError: nil,
             agentId: "other-agent",
-            cwd: "/home/codeagent/projects/other"
+            cwd: "/home/codeagent/projects/other",
+            clientTaskId: nil
         )
 
         let matched = ProxyTaskService.tasksMatching(

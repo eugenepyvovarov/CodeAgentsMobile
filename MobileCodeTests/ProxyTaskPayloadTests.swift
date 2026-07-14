@@ -32,6 +32,7 @@ final class ProxyTaskPayloadTests: XCTestCase {
         XCTAssertNil(payload["open_code_session_id"])
         XCTAssertEqual(payload["open_code_session_target"] as? String, "active_agent_chat")
         XCTAssertEqual(payload["title"] as? String, "Daily check")
+        XCTAssertEqual(payload["client_task_id"] as? String, task.id.uuidString.lowercased())
 
         let schedule = try XCTUnwrap(payload["schedule"] as? [String: Any])
         XCTAssertEqual(schedule["frequency"] as? String, "daily")

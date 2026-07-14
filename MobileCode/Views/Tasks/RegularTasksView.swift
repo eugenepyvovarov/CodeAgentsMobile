@@ -21,6 +21,7 @@ struct RegularTasksView: View {
     @State private var showingProviderSettings = false
     @State private var showingNewTask = false
     @State private var editingTask: AgentScheduledTask?
+    @State private var isRefreshInFlight = false
 
     var body: some View {
         let isLocked = providerMismatch != nil
@@ -114,7 +115,6 @@ struct RegularTasksView: View {
         )
         .onAppear {
             refreshProviderMismatch()
-            Task { await refreshTasks() }
         }
         .refreshable {
             await refreshTasks()
@@ -201,6 +201,9 @@ struct RegularTasksView: View {
 
     private func refreshTasks() async {
         guard let project = projectContext.activeProject else { return }
+        guard !isRefreshInFlight else { return }
+        isRefreshInFlight = true
+        defer { isRefreshInFlight = false }
         syncReporter.markSyncing()
 
         do {
@@ -271,14 +274,15 @@ struct RegularTasksView: View {
     }
 
     private func applyRemoteTasks(_ remoteTasks: [AgentTaskRecord], project: RemoteProject) {
-        var localByRemoteId: [String: AgentScheduledTask] = [:]
-        for task in tasks {
-            if let remoteId = task.remoteId {
-                localByRemoteId[remoteId] = task
-            }
+        let localIndex = RegularTaskReconciliation.makeLocalIndex(tasks)
+        var localByRemoteId = localIndex.byRemoteId
+        let localByClientTaskId = localIndex.byClientTaskId
+        var didMutate = !localIndex.duplicates.isEmpty
+
+        for duplicate in localIndex.duplicates {
+            modelContext.delete(duplicate)
         }
 
-        var didMutate = false
         let remoteIds = Set(remoteTasks.map(\.id))
 
         // Drop local copies of remote tasks that disappeared (e.g. one-shots retired after success).
@@ -291,8 +295,12 @@ struct RegularTasksView: View {
         }
 
         for remote in remoteTasks {
-            if let local = localByRemoteId[remote.id] {
+            let clientMatchedLocal = remote.clientTaskId.flatMap {
+                localByClientTaskId[$0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
+            }
+            if let local = localByRemoteId[remote.id] ?? clientMatchedLocal {
                 updateLocalTask(local, from: remote)
+                localByRemoteId[remote.id] = local
                 didMutate = true
                 continue
             }
@@ -499,6 +507,49 @@ struct RegularTasksView: View {
                 userInfo: ["projectId": project.id]
             )
         }
+    }
+}
+
+enum RegularTaskReconciliation {
+    struct LocalIndex {
+        var byRemoteId: [String: AgentScheduledTask]
+        var byClientTaskId: [String: AgentScheduledTask]
+        var duplicates: [AgentScheduledTask]
+    }
+
+    static func makeLocalIndex(_ tasks: [AgentScheduledTask]) -> LocalIndex {
+        var byRemoteId: [String: AgentScheduledTask] = [:]
+        var byClientTaskId: [String: AgentScheduledTask] = [:]
+        var duplicates: [AgentScheduledTask] = []
+
+        for task in tasks {
+            byClientTaskId[task.id.uuidString.lowercased()] = task
+            guard let remoteId = task.remoteId, !remoteId.isEmpty else { continue }
+            guard let existing = byRemoteId[remoteId] else {
+                byRemoteId[remoteId] = task
+                continue
+            }
+
+            let survivor = preferred(existing, task)
+            duplicates.append(survivor === existing ? task : existing)
+            byRemoteId[remoteId] = survivor
+        }
+
+        return LocalIndex(
+            byRemoteId: byRemoteId,
+            byClientTaskId: byClientTaskId,
+            duplicates: duplicates
+        )
+    }
+
+    private static func preferred(
+        _ lhs: AgentScheduledTask,
+        _ rhs: AgentScheduledTask
+    ) -> AgentScheduledTask {
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt < rhs.createdAt ? lhs : rhs
+        }
+        return lhs.id.uuidString < rhs.id.uuidString ? lhs : rhs
     }
 }
 

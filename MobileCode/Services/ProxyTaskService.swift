@@ -33,6 +33,8 @@ struct ProxyTaskRecord {
     let agentId: String?
     /// Project path the task was created against (daemon `cwd`).
     let cwd: String?
+    /// Stable local model id used to reconcile creates after a lost response.
+    let clientTaskId: String?
 }
 
 enum ProxyTaskError: LocalizedError {
@@ -235,6 +237,7 @@ final class ProxyTaskService {
     }
 
     func upsertTask(_ task: AgentScheduledTask, project: RemoteProject) async throws -> ProxyTaskRecord {
+        let isCreate = task.remoteId?.isEmpty ?? true
         do {
             return try await upsertTaskOnce(task, project: project)
         } catch let error as ProxyTaskError where error.isTaskNotFound {
@@ -246,6 +249,12 @@ final class ProxyTaskService {
             task.remoteId = nil
             return try await createTask(task, project: project)
         } catch {
+            // POST create is not safe to repeat against older daemons. Updated
+            // daemons also use client_task_id for idempotency, but avoiding the
+            // transport retry keeps mixed-version deployments safe.
+            if isCreate {
+                throw error
+            }
             // One automatic retry on a fresh daemon SSH session after timeout / transport failure.
             SSHLogger.log(
                 "Agent daemon upsert failed (\(error.localizedDescription)); retrying with fresh session",
@@ -538,6 +547,7 @@ final class ProxyTaskService {
             "conversation_id": conversationId,
             "cwd": project.path,
             "prompt": task.prompt,
+            "client_task_id": task.id.uuidString.lowercased(),
             "enabled": task.isEnabled,
             "time_zone": task.timeZoneId,
             "schedule": schedulePayload(for: task)
@@ -743,7 +753,8 @@ final class ProxyTaskService {
             lastRunAt: lastRun,
             lastError: lastError,
             agentId: stringValue(dict["agent_id"] ?? dict["agentId"]),
-            cwd: stringValue(dict["cwd"] ?? dict["project_path"] ?? dict["projectPath"])
+            cwd: stringValue(dict["cwd"] ?? dict["project_path"] ?? dict["projectPath"]),
+            clientTaskId: stringValue(dict["client_task_id"] ?? dict["clientTaskId"])
         )
     }
 

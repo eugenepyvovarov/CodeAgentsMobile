@@ -267,7 +267,7 @@ enum CodeAgentsDaemonProvisioning {
     static let repositoryName = "codeagents-server-cc-proxy"
     static let repositoryURL = "https://github.com/\(repositoryOwner)/\(repositoryName).git"
     /// Immutable pin — bump intentionally when promoting a known-good daemon revision.
-    static let pinnedInstallCommit = "2b6108daa8bac40dc205b332e10b9bb1c3ff2c24"
+    static let pinnedInstallCommit = "423b620892010cf3cb1601d695a2012e86744545"
     static let installScriptURL = "https://raw.githubusercontent.com/\(repositoryOwner)/\(repositoryName)/\(pinnedInstallCommit)/install.sh"
     static let remoteHeadAPIURL = "https://api.github.com/repos/\(repositoryOwner)/\(repositoryName)/commits/\(pinnedInstallCommit)"
     static let serviceName = "codeagents-daemon"
