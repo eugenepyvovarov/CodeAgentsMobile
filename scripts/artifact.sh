@@ -138,6 +138,28 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
     trap 'rm -f "${PRIVATE_KEY_FILE}"' EXIT
   fi
 
+  "${ASC_BIN}" auth login \
+    --local \
+    --bypass-keychain \
+    --name "CodeAgents CI" \
+    --key-id "${ASC_KEY_ID}" \
+    --issuer-id "${ASC_ISSUER_ID}" \
+    --private-key "${PRIVATE_KEY_FILE}" >/dev/null
+
+  # Reject closed/non-increasing App Store trains before package resolution, signing,
+  # or archive. Apple will not accept TestFlight builds for an approved version train.
+  echo "Checking App Store version train ${RELEASE_VERSION_RESOLVED} before building..." >&2
+  APP_STORE_VERSIONS_JSON="$(
+    "${ASC_BIN}" versions list \
+      --app "${ASC_APP_ID}" \
+      --platform IOS \
+      --paginate \
+      --output json
+  )"
+  printf '%s' "${APP_STORE_VERSIONS_JSON}" | \
+    python3 "${ROOT_DIR}/scripts/lib/testflight_preflight.py" \
+      --version "${RELEASE_VERSION_RESOLVED}" >&2
+
   VERSION_ARG=(--version "${RELEASE_VERSION_RESOLVED}")
   BUILD_ARG=(--build-number "${RELEASE_BUILD_RESOLVED}")
 
@@ -270,14 +292,6 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
 PLIST
   fi
 
-  "${ASC_BIN}" auth login \
-    --local \
-    --bypass-keychain \
-    --name "CodeAgents CI" \
-    --key-id "${ASC_KEY_ID}" \
-    --issuer-id "${ASC_ISSUER_ID}" \
-    --private-key "${PRIVATE_KEY_FILE}" >/dev/null
-
   # Gitea production-artifact jobs are capped at 60m. Archive + upload need headroom, so
   # default ASC processing wait is shorter under Actions than for local runs (45m).
   if [[ -n "${ASC_TIMEOUT:-}" ]]; then
@@ -289,7 +303,8 @@ PLIST
   fi
   echo "Publishing TestFlight (build ${RELEASE_BUILD_RESOLVED}, asc_timeout=${ASC_TIMEOUT_RESOLVED})..." >&2
 
-  ASC_OUTPUT="$(
+  ASC_PUBLISH_LOG="${DIST_DIR}/testflight-publish-${RELEASE_VERSION_RESOLVED}-${RELEASE_BUILD_RESOLVED}.log"
+  if ! ASC_OUTPUT="$(
     "${ASC_BIN}" publish testflight \
       --app "${ASC_APP_ID}" \
       --project "${PROJECT_PATH}" \
@@ -309,7 +324,16 @@ PLIST
       "${VERSION_ARG[@]}" \
       "${BUILD_ARG[@]}" \
       --output json
-  )"
+  2>"${ASC_PUBLISH_LOG}")"; then
+    echo "TestFlight publish failed. Relevant diagnostics:" >&2
+    if ! grep -E \
+      'ITMS-[0-9]+|(^|[[:space:]])error:|ARCHIVE FAILED|EXPORT FAILED|Upload failed|The train version|CFBundleShortVersionString' \
+      "${ASC_PUBLISH_LOG}" | tail -n 80 >&2; then
+      tail -n 80 "${ASC_PUBLISH_LOG}" >&2
+    fi
+    echo "Full publish log: ${ASC_PUBLISH_LOG}" >&2
+    exit 1
+  fi
 
   IPA_PATH="${DIST_DIR}/CodeAgentsMobile-${RELEASE_VERSION_RESOLVED}-${RELEASE_BUILD_RESOLVED}.ipa"
   IPA_SHA_PATH="${IPA_PATH}.sha256"
