@@ -323,8 +323,8 @@ PLIST
       "${ASC_EXPORT_FLAGS[@]}" \
       "${VERSION_ARG[@]}" \
       "${BUILD_ARG[@]}" \
-      --output json
-  2>"${ASC_PUBLISH_LOG}")"; then
+      --output json 2>"${ASC_PUBLISH_LOG}"
+  )"; then
     echo "TestFlight publish failed. Relevant diagnostics:" >&2
     if ! grep -E \
       'ITMS-[0-9]+|(^|[[:space:]])error:|ARCHIVE FAILED|EXPORT FAILED|Upload failed|The train version|CFBundleShortVersionString' \
