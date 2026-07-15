@@ -17,7 +17,7 @@ struct MarkdownTextView: View {
         self.text = text
         self.textColor = textColor
         _cachedAttributedString = State(
-            initialValue: MarkdownTextView.makeAttributedString(from: text, textColor: textColor)
+            initialValue: MarkdownAttributedStringBuilder.make(from: text, textColor: textColor)
         )
     }
     
@@ -25,41 +25,84 @@ struct MarkdownTextView: View {
         Text(cachedAttributedString)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+            .environment(
+                \.openURL,
+                OpenURLAction { url in
+                    guard MarkdownAttributedStringBuilder.isWebURL(url) else {
+                        return .systemAction
+                    }
+                    UIApplication.shared.open(url)
+                    return .handled
+                }
+            )
             .onChange(of: text) { _, newText in
-                cachedAttributedString = MarkdownTextView.makeAttributedString(from: newText, textColor: textColor)
+                cachedAttributedString = MarkdownAttributedStringBuilder.make(from: newText, textColor: textColor)
             }
     }
-    
-    private static func makeAttributedString(from text: String, textColor: Color) -> AttributedString {
+}
+
+enum MarkdownAttributedStringBuilder {
+    static func make(from text: String, textColor: Color = .primary) -> AttributedString {
+        var attributed: AttributedString
+
         do {
-            var attributed = try AttributedString(
+            attributed = try AttributedString(
                 markdown: text,
                 options: AttributedString.MarkdownParsingOptions(
                     interpretedSyntax: .inlineOnlyPreservingWhitespace
                 )
             )
-            
-            // Apply base text color
-            attributed.foregroundColor = textColor
-            
-            // Style code blocks - check for code styling
-            if #available(iOS 15.0, *) {
-                for run in attributed.runs {
-                    // Check if this run has code formatting
-                    if run.inlinePresentationIntent?.contains(.code) == true {
-                        attributed[run.range].font = .system(.body, design: .monospaced)
-                        attributed[run.range].backgroundColor = textColor == .white 
-                            ? Color.white.opacity(0.1) 
-                            : Color.gray.opacity(0.1)
-                        attributed[run.range].foregroundColor = textColor
-                    }
-                }
-            }
-            
-            return attributed
         } catch {
-            // Fallback to plain text if markdown parsing fails
-            return AttributedString(text)
+            attributed = AttributedString(text)
+        }
+
+        addBareWebLinks(to: &attributed)
+        attributed.foregroundColor = textColor
+
+        for run in attributed.runs {
+            if run.inlinePresentationIntent?.contains(.code) == true {
+                attributed[run.range].font = .system(.body, design: .monospaced)
+                attributed[run.range].backgroundColor = textColor == .white
+                    ? Color.white.opacity(0.1)
+                    : Color.gray.opacity(0.1)
+                attributed[run.range].foregroundColor = textColor
+            } else if run.link != nil {
+                attributed[run.range].foregroundColor = .accentColor
+                attributed[run.range].underlineStyle = .single
+            }
+        }
+
+        return attributed
+    }
+
+    static func isWebURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    private static func addBareWebLinks(to attributed: inout AttributedString) {
+        let renderedText = String(attributed.characters)
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue
+        ) else { return }
+
+        let fullRange = NSRange(renderedText.startIndex..<renderedText.endIndex, in: renderedText)
+        for match in detector.matches(in: renderedText, options: [], range: fullRange) {
+            guard let url = match.url,
+                  isWebURL(url),
+                  let stringRange = Range(match.range, in: renderedText),
+                  let lowerBound = AttributedString.Index(stringRange.lowerBound, within: attributed),
+                  let upperBound = AttributedString.Index(stringRange.upperBound, within: attributed) else {
+                continue
+            }
+
+            let attributedRange = lowerBound..<upperBound
+            let alreadySemantic = attributed[attributedRange].runs.contains { run in
+                run.link != nil || run.inlinePresentationIntent?.contains(.code) == true
+            }
+            guard !alreadySemantic else { continue }
+
+            attributed[attributedRange].link = url
         }
     }
 }
