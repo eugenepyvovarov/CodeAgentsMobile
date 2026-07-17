@@ -8,6 +8,7 @@
 import UIKit
 import UserNotifications
 import FirebaseCore
+import FirebaseCrashlytics
 import FirebaseMessaging
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
@@ -76,6 +77,7 @@ enum FirebaseBootstrap {
     @discardableResult
     static func configureIfNeeded() -> Bool {
         if FirebaseApp.app() != nil {
+            configureCrashReporting()
             return true
         }
 
@@ -85,6 +87,17 @@ enum FirebaseBootstrap {
         }
 
         FirebaseApp.configure(options: options)
+        configureCrashReporting()
         return true
+    }
+
+    private static func configureCrashReporting() {
+        #if DEBUG
+        Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(false)
+        #else
+        // Release/TestFlight reports contain Firebase's standard pseudonymous crash diagnostics only.
+        // Do not add user IDs, custom logs, prompts, paths, URLs, or credentials.
+        Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(true)
+        #endif
     }
 }

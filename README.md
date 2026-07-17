@@ -78,9 +78,17 @@ the tool automatically. If `DEVELOPER_DIR` is not set, the scripts default to
 `/Applications/Xcode.app/Contents/Developer` when present. TestFlight mode also
 expects App Store Connect credentials through `ASC_APP_ID`, `TESTFLIGHT_GROUP`,
 `ASC_KEY_ID`, `ASC_ISSUER_ID`, and either `ASC_PRIVATE_KEY_P8` or
-`ASC_PRIVATE_KEY_FILE`.
+`ASC_PRIVATE_KEY_FILE`. Firebase-enabled builds also require
+`MobileCode/GoogleService-Info.plist`; CI can provide it through
+`GOOGLE_SERVICE_INFO_PLIST_BASE64`.
 
 ## Developer Diagnostics
+
+Release and TestFlight builds use Firebase Crashlytics for pseudonymous crash
+diagnostics. Firebase Analytics is not linked, and the app does not attach user
+IDs, custom logs, prompts, URLs, paths, or credentials. Debug builds disable
+Crashlytics collection. See [PRIVACY_POLICY.md](PRIVACY_POLICY.md) for the data
+and retention disclosure.
 
 Debug builds emit lightweight chat recovery timing lines with the
 `[ChatRecoveryTiming]` prefix when chats are reopened or resumed. These logs are
@@ -103,7 +111,8 @@ post-ready background queue; project switches cancel that deferred work before
 it can update stale chat state.
 
 Focused tests: `ClaudeToOpenCodeMigrationTests`, `ChatDeferredStartupTests`,
-OpenCode hydration/session suites under `MobileCodeTests/`.
+`ChatMessageLifetimeTests`, and OpenCode hydration/session suites under
+`MobileCodeTests/`.
 
 Timing metadata is limited to runtime names, project identifiers, operation
 labels, elapsed milliseconds, statuses, booleans, and counts. Do not add prompts,

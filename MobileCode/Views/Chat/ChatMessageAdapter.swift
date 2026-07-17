@@ -10,7 +10,6 @@ import ExyteChat
 
 struct ChatMessageAdapter {
     let exyteMessages: [ExyteChat.Message]
-    private let messageById: [String: Message]
 
     init(
         messages: [Message],
@@ -21,7 +20,6 @@ struct ChatMessageAdapter {
     ) {
         let currentUser = User(id: "user", name: currentUserName, avatarURL: nil, type: .current)
         let assistantUser = User(id: "assistant", name: assistantName, avatarURL: nil, type: .other)
-        var lookup: [String: Message] = [:]
         // ExyteChat uses `createdAt` for ordering. Keep it stable and based on the message timestamp.
         // Add a tiny event-id offset (when available) to break ties without affecting the displayed time.
         let eventIdEpsilon: TimeInterval = 0.000001
@@ -72,15 +70,8 @@ struct ChatMessageAdapter {
             if isStreaming {
                 exyteMessage.triggerRedraw = streamingRedrawToken
             }
-            lookup[exyteMessage.id] = message
             return exyteMessage
         }
-
-        self.messageById = lookup
-    }
-
-    func message(for exyteMessage: ExyteChat.Message) -> Message? {
-        messageById[exyteMessage.id]
     }
 
     // MARK: - ExyteChat Text Sizing

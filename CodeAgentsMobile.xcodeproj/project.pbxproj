@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		32AD1948A9AB4C779243424A /* LanguageSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 01CA14F4BFA848B596A3B728 /* LanguageSupport */; };
+		C71A5A012F1C000100000001 /* FirebaseCrashlytics in Frameworks */ = {isa = PBXBuildFile; productRef = C71A5A022F1C000100000002 /* FirebaseCrashlytics */; };
 		877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 877CE6C72DF8902900B93778 /* NIOSSH */; };
 		87AD5F8C2E1D6B750035A296 /* SwiftASN1 in Frameworks */ = {isa = PBXBuildFile; productRef = 87AD5F8B2E1D6B750035A296 /* SwiftASN1 */; };
 		87CEB3292E156C1F00AC3F71 /* LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 87CEB3282E156C1F00AC3F71 /* LICENSE.txt */; };
@@ -77,6 +78,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C71A5A012F1C000100000001 /* FirebaseCrashlytics in Frameworks */,
 				A5E9B1B311A241139090CED1 /* CodeEditorView in Frameworks */,
 				32AD1948A9AB4C779243424A /* LanguageSupport in Frameworks */,
 				877CE6C82DF8902900B93778 /* NIOSSH in Frameworks */,
@@ -135,6 +137,7 @@
 				877CE6622DF8632600B93778 /* Sources */,
 				877CE6632DF8632600B93778 /* Frameworks */,
 				877CE6642DF8632600B93778 /* Resources */,
+				C71A5A032F1C000100000003 /* Upload Crashlytics Symbols */,
 			);
 			buildRules = (
 			);
@@ -151,6 +154,7 @@
 				87AD5F8B2E1D6B750035A296 /* SwiftASN1 */,
 				87E5A1B02F00000100ABCDEF /* ExyteChat */,
 				1ECBD212526B6D69A1EC7EE4 /* FirebaseMessaging */,
+				C71A5A022F1C000100000002 /* FirebaseCrashlytics */,
 			);
 			productName = CodeAgentsMobile;
 			productReference = 877CE6662DF8632600B93778 /* CodeAgentsMobile.app */;
@@ -279,6 +283,33 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C71A5A032F1C000100000003 /* Upload Crashlytics Symbols */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${PRODUCT_NAME}",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Info.plist",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info.plist",
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)",
+			);
+			name = "Upload Crashlytics Symbols";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${CONFIGURATION}\" = \"Release\" ]; then\n  \"${BUILD_DIR%/Build/*}/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		877CE6622DF8632600B93778 /* Sources */ = {
@@ -473,6 +504,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.6;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -517,6 +552,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.6;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = lifeisgoodlabs.CodeAgentsMobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -723,6 +762,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D7DEF1EFE09463878DB86E1B /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseMessaging;
+		};
+		C71A5A022F1C000100000002 /* FirebaseCrashlytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D7DEF1EFE09463878DB86E1B /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCrashlytics;
 		};
 		4BCD14D8013242E5894BE991 /* CodeEditorView */ = {
 			isa = XCSwiftPackageProductDependency;

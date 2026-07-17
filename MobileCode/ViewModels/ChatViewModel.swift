@@ -360,9 +360,16 @@ class ChatViewModel {
         streamingMessage = nil
         streamingBlocks = []
 
+        // Remove every live SwiftData model from observable UI state before deletion. SwiftUI/ExyteChat
+        // may rebuild synchronously when the context saves; leaving deleted models in `messages` lets the
+        // adapter read invalidated backing storage.
+        let messagesToDelete = messages
+        messages.removeAll()
+        messagesRevision += 1
+
         // Delete persisted messages
         if let modelContext = modelContext {
-            for message in messages {
+            for message in messagesToDelete {
                 modelContext.delete(message)
             }
 
@@ -373,7 +380,6 @@ class ChatViewModel {
             }
         }
 
-        messages.removeAll()
         if let project = ProjectContext.shared.activeProject {
             project.lastSuccessfulClaudeProviderRawValue = nil
         }
@@ -384,7 +390,6 @@ class ChatViewModel {
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
         lastSaveTime = .distantPast
-        messagesRevision += 1
         streamingRedrawToken = UUID()
         stopProxyPolling()
         showSyncRetryIndicator = false

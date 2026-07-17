@@ -65,7 +65,7 @@ struct ChatDetailView: View {
                         }
                         return fallback
                     }
-                    return existing
+                    return existing.detachedForRendering()
                 }()
                 let messageId = sourceMessage.id
                 let bubble = MessageBubble(

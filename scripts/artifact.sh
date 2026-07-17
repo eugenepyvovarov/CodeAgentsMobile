@@ -30,6 +30,10 @@ VERSION_FILE="${CODEAGENTS_VERSION_FILE:-${ROOT_DIR}/VERSIONS.TXT}"
 
 mkdir -p "${DIST_DIR}" "${DERIVED_DATA_PATH}"
 
+if [[ -n "${GOOGLE_SERVICE_INFO_PLIST_BASE64:-}" ]]; then
+  printf '%s' "${GOOGLE_SERVICE_INFO_PLIST_BASE64}" | base64 --decode > "${ROOT_DIR}/MobileCode/GoogleService-Info.plist"
+fi
+
 json_escape() {
   python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 }
@@ -125,6 +129,11 @@ if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
   : "${TESTFLIGHT_GROUP:?TESTFLIGHT_GROUP is required for TestFlight publishing}"
   : "${ASC_KEY_ID:?ASC_KEY_ID is required for asc auth}"
   : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required for asc auth}"
+
+  if [[ ! -f "${ROOT_DIR}/MobileCode/GoogleService-Info.plist" ]]; then
+    echo "MobileCode/GoogleService-Info.plist is required for Firebase Messaging and Crashlytics." >&2
+    exit 1
+  fi
 
   PRIVATE_KEY_FILE="${ASC_PRIVATE_KEY_FILE:-}"
   if [[ -z "${PRIVATE_KEY_FILE}" ]]; then

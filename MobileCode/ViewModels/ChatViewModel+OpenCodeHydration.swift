@@ -360,11 +360,17 @@ extension ChatViewModel {
     func removeTransientOpenCodeMessage(_ message: Message) {
         guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
 
+        let removedMessageID = message.id
         messages.remove(at: index)
+        if streamingMessage?.id == removedMessageID {
+            streamingMessage = nil
+            streamingBlocks = []
+        }
+        messagesRevision += 1
+
         if let modelContext {
             modelContext.delete(message)
             saveChanges()
         }
-        messagesRevision += 1
     }
 }

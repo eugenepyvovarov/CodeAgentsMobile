@@ -151,6 +151,27 @@ final class Message {
         return content
     }
 
+    /// Returns an unmanaged copy for SwiftUI rendering.
+    ///
+    /// ExyteChat can retain row views briefly after a persisted message is removed. Rendering an
+    /// unmanaged copy prevents those outgoing rows from reading invalidated SwiftData backing storage.
+    func detachedForRendering() -> Message {
+        let copy = Message(
+            content: content,
+            role: role,
+            projectId: projectId,
+            originalJSON: originalJSON,
+            isComplete: isComplete,
+            isStreaming: isStreaming
+        )
+        copy.id = id
+        copy.timestamp = timestamp
+        copy.proxyEventId = proxyEventId
+        copy.attachmentsJSON = attachmentsJSON
+        copy.isLocalError = isLocalError
+        return copy
+    }
+
     func fallbackContentBlocks() -> [ContentBlock] {
         guard let data = originalJSON,
               let raw = String(data: data, encoding: .utf8) else {
