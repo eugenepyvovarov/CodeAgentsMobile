@@ -30,6 +30,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     @Published private(set) var currentFCMToken: String?
 
     private let gatewayClient = PushGatewayClient()
+    private let subscriptionSyncCoordinator = PushSubscriptionSyncCoordinator()
     private var modelContainer: ModelContainer?
     private var pendingPayload: PushPayload?
 
@@ -171,49 +172,9 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     }
 
     func refreshSubscriptions() async {
-        await reregisterAllStoredSubscriptionsIfPossible()
-    }
-
-    /// Call after APNs token is set so FCM issues a sendable iOS token.
-    func refreshFCMTokenAfterAPNs() async {
-        guard FirebaseBootstrap.configureIfNeeded() else { return }
-        guard Messaging.messaging().apnsToken != nil else {
-            #if DEBUG
-            SSHLogger.log("Skipping FCM token refresh: APNs token not set yet", level: .warning)
-            #endif
-            return
-        }
-
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            Messaging.messaging().deleteToken { error in
-                if let error {
-                    SSHLogger.log(
-                        "FCM deleteToken failed (continuing): \(error.localizedDescription)",
-                        level: .warning
-                    )
-                }
-                Messaging.messaging().token { token, tokenError in
-                    if let tokenError {
-                        SSHLogger.log(
-                            "FCM token refresh failed: \(tokenError.localizedDescription)",
-                            level: .warning
-                        )
-                    }
-                    let resolved = token?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    Task { @MainActor in
-                        if let resolved, !resolved.isEmpty {
-                            self.currentFCMToken = resolved
-                            #if DEBUG
-                            SSHLogger.log(
-                                "Refreshed FCM token after APNs: \(Self.redactedTokenDescription(resolved))",
-                                level: .info
-                            )
-                            #endif
-                        }
-                        continuation.resume()
-                    }
-                }
-            }
+        await subscriptionSyncCoordinator.request { [weak self] in
+            guard let self else { return }
+            await self.reregisterAllStoredSubscriptionsIfPossible()
         }
     }
 
@@ -1026,7 +987,27 @@ extension PushNotificationsManager: @preconcurrency MessagingDelegate {
             #if DEBUG
             SSHLogger.log("FCM token updated: \(Self.redactedTokenDescription(token))", level: .info)
             #endif
-            await self.reregisterAllStoredSubscriptionsIfPossible()
+            await self.refreshSubscriptions()
+        }
+    }
+}
+
+/// Coalesces token/subscription refresh requests without losing one that arrives during an active pass.
+/// Firebase owns token rotation; this coordinator only serializes idempotent uploads of the current token.
+actor PushSubscriptionSyncCoordinator {
+    private var isRunning = false
+    private var needsAnotherPass = false
+
+    func request(_ operation: @escaping @Sendable () async -> Void) async {
+        needsAnotherPass = true
+        guard !isRunning else { return }
+
+        isRunning = true
+        defer { isRunning = false }
+
+        while needsAnotherPass {
+            needsAnotherPass = false
+            await operation()
         }
     }
 }

@@ -48,10 +48,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         #if DEBUG
         NSLog("APNs device token received (\(deviceToken.count) bytes)")
         #endif
-        // Force a fresh FCM token once APNs is known. Tokens fetched before APNs
-        // is set can be UNREGISTERED at send time even though registration "succeeds".
+        // Firebase owns FCM token rotation. Re-upload its current token after APNs is
+        // associated, but never delete a healthy token as part of routine registration.
         Task {
-            await PushNotificationsManager.shared.refreshFCMTokenAfterAPNs()
             await PushNotificationsManager.shared.refreshSubscriptions()
         }
     }
