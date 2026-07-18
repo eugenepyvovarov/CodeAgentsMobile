@@ -7,14 +7,40 @@
 
 import SwiftUI
 
+enum MCPServerEditMode: Equatable {
+    case existing(scopeHint: MCPServer.MCPScope?)
+    case createProjectOverride
+
+    var shouldLoadDetails: Bool {
+        switch self {
+        case .existing:
+            return true
+        case .createProjectOverride:
+            return false
+        }
+    }
+
+    var scopeHint: MCPServer.MCPScope? {
+        switch self {
+        case .existing(let scopeHint):
+            return scopeHint
+        case .createProjectOverride:
+            return .project
+        }
+    }
+}
+
 struct EditMCPServerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var mcpService = CodingAgentMCPService.shared
-    
-    let project: RemoteProject
+
+    /// Project destination (nil when editing on a bare host via `host`).
+    let project: RemoteProject?
+    /// Host destination (nil when editing on a project via `project`).
+    let host: Server?
     let server: MCPServer
     let onEdit: () -> Void
-    let scopeHint: MCPServer.MCPScope?
+    let editMode: MCPServerEditMode
     
     // Form fields
     @State private var serverName: String
@@ -74,8 +100,9 @@ struct EditMCPServerSheet: View {
     
     init(project: RemoteProject, server: MCPServer, scopeHint: MCPServer.MCPScope? = nil, onEdit: @escaping () -> Void) {
         self.project = project
+        self.host = nil
         self.server = server
-        self.scopeHint = scopeHint
+        self.editMode = .existing(scopeHint: scopeHint)
         self.onEdit = onEdit
         self.originalName = server.name
         
@@ -92,6 +119,62 @@ struct EditMCPServerSheet: View {
         }
         
         // Convert headers dict to array
+        if let headers = server.headers {
+            self._headers = State(initialValue: headers.map { HeaderVar(key: $0.key, value: $0.value) })
+        }
+    }
+
+    /// Create a project override from the supplied host details. There is no
+    /// project entry to load until the user saves.
+    init(
+        project: RemoteProject,
+        hostServerToOverride server: MCPServer,
+        onEdit: @escaping () -> Void
+    ) {
+        self.project = project
+        self.host = nil
+        self.server = server
+        self.editMode = .createProjectOverride
+        self.onEdit = onEdit
+        self.originalName = server.name
+
+        self._serverName = State(initialValue: server.name)
+        self._serverType = State(initialValue: server.isRemote ? .remote : .local)
+        self._command = State(initialValue: server.command ?? "")
+        self._url = State(initialValue: server.url ?? "")
+        self._args = State(initialValue: server.args ?? [])
+        self._scope = State(initialValue: .project)
+        self._originalScope = State(initialValue: .project)
+        self._isLoadingDetails = State(initialValue: false)
+
+        if let env = server.env {
+            self._envVars = State(initialValue: env.map { EnvVar(key: $0.key, value: $0.value) })
+        }
+        if let headers = server.headers {
+            self._headers = State(initialValue: headers.map { HeaderVar(key: $0.key, value: $0.value) })
+        }
+    }
+
+    /// Edit a global MCP server directly on a host (no active project required). Always `.global` scope.
+    init(host: Server, server: MCPServer, onEdit: @escaping () -> Void) {
+        self.project = nil
+        self.host = host
+        self.server = server
+        self.editMode = .existing(scopeHint: .global)
+        self.onEdit = onEdit
+        self.originalName = server.name
+
+        self._serverName = State(initialValue: server.name)
+        self._serverType = State(initialValue: server.isRemote ? .remote : .local)
+        self._command = State(initialValue: server.command ?? "")
+        self._url = State(initialValue: server.url ?? "")
+        self._args = State(initialValue: server.args ?? [])
+        self._scope = State(initialValue: .global)
+        self._originalScope = State(initialValue: .global)
+
+        if let env = server.env {
+            self._envVars = State(initialValue: env.map { EnvVar(key: $0.key, value: $0.value) })
+        }
         if let headers = server.headers {
             self._headers = State(initialValue: headers.map { HeaderVar(key: $0.key, value: $0.value) })
         }
@@ -174,7 +257,11 @@ struct EditMCPServerSheet: View {
             )
         }
         
-        return mcpService.configurationPreview(for: editedServer, scope: scope, in: project)
+        if let project {
+            return mcpService.configurationPreview(for: editedServer, scope: scope, in: project)
+        }
+        // Host-scoped preview — always .global for a bare host.
+        return mcpService.configurationPreview(for: editedServer, scope: .global)
     }
     
     var body: some View {
@@ -412,10 +499,30 @@ struct EditMCPServerSheet: View {
     }
     
     private func loadServerDetails() async {
+        guard editMode.shouldLoadDetails else {
+            originalScope = .project
+            scope = .project
+            isLoadingDetails = false
+            return
+        }
+
         isLoadingDetails = true
-        
+
         do {
-            if let details = try await mcpService.getServerDetails(named: originalName, scope: scopeHint, for: project) {
+            let details: (server: MCPServer, scope: MCPServer.MCPScope)?
+            if let project {
+                details = try await mcpService.getServerDetails(
+                    named: originalName,
+                    scope: editMode.scopeHint,
+                    for: project
+                )
+            } else if let host {
+                let hostServers = try await mcpService.fetchGlobalServers(for: host)
+                details = hostServers.first { $0.name == originalName }.map { ($0, MCPServer.MCPScope.global) }
+            } else {
+                details = nil
+            }
+            if let details {
                 let (detailedServer, serverScope) = details
                 
                 // Update all fields with the detailed information
@@ -493,12 +600,22 @@ struct EditMCPServerSheet: View {
                     )
                 }
                 
-                try await mcpService.editServer(
-                    oldName: originalName,
-                    newServer: editedServer,
-                    scope: scope,  // Use the scope selected by user (which defaults to originalScope)
-                    for: project
-                )
+                if let project {
+                    try await mcpService.editServer(
+                        oldName: originalName,
+                        newServer: editedServer,
+                        scope: scope,  // Use the scope selected by user (which defaults to originalScope)
+                        for: project
+                    )
+                } else if let host {
+                    try await mcpService.editServer(
+                        oldName: originalName,
+                        newServer: editedServer,
+                        on: host
+                    )
+                } else {
+                    throw MCPServiceError.invalidConfiguration("No project or host selected for MCP edit")
+                }
                 
                 await MainActor.run {
                     onEdit()

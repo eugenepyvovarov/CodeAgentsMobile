@@ -113,31 +113,36 @@ struct MCPServer: Identifiable, Equatable {
         }
     }
     
-    /// Server scope for claude mcp add command
+    /// MCP scope: where the server configuration is stored on the remote host.
     enum MCPScope: String, CaseIterable {
-        case project = "project"  // Shared via .mcp.json (default)
-        case local = "local"      // Private to this machine
-        case global = "user"      // Synonym for user-level config in current CLI
-        
+        /// Project-scoped: written to `<project.path>/opencode.json`, shared via SCM with the team.
+        case project = "project"
+        /// Legacy Claude "local" concept. Retained for decoding old configs only; not surfaced in UI.
+        /// OpenCode has no per-machine storage on the phone — every scope lives on the SSH host.
+        case local = "local"
+        /// Host-scoped (formerly "user"): written to `~/.config/opencode/opencode.json` on the host,
+        /// available to every agent that lives on that host.
+        case global = "user"
+
         var displayName: String {
             switch self {
             case .project:
-                return "Agent (Shared)"
+                return "Project (Shared)"
             case .local:
-                return "Local (Private)"
+                return "Local (Legacy)"
             case .global:
-                return "Global (All Agents)"
+                return "Host (all agents on this server)"
             }
         }
-        
+
         var description: String {
             switch self {
             case .project:
-                return "Saved in .mcp.json, shared with team"
+                return "Saved in opencode.json at the project path, shared via SCM"
             case .local:
-                return "Only on this device"
+                return "Legacy Claude concept; not used by OpenCode. Kept for decode compatibility only."
             case .global:
-                return "Available in all your agents"
+                return "Available in all agents on this server (host-level config)"
             }
         }
     }

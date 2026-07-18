@@ -75,6 +75,83 @@ final class CodingAgentMCPService: ObservableObject {
         )
     }
 
+    @discardableResult
+    func disableHostServerForProject(
+        named name: String,
+        hostConfiguration: OpenCodeMCPServerConfiguration,
+        for project: RemoteProject
+    ) async throws -> Bool {
+        try await openCodeService.disableHostServerForProject(
+            named: name,
+            hostConfiguration: hostConfiguration,
+            for: project
+        )
+    }
+
+    // MARK: - Host-scoped MCP management (no RemoteProject required)
+
+    /// Read MCP servers from a host's global OpenCode config without requiring an active project.
+    func fetchGlobalServers(for server: Server) async throws -> [MCPServer] {
+        try await openCodeService.fetchGlobalServers(for: server)
+    }
+
+    /// Raw global configurations (preserves `oauth`/`timeout`) for cross-host copy.
+    func globalServerConfigurations(for server: Server) async throws -> [String: OpenCodeMCPServerConfiguration] {
+        try await openCodeService.globalServerConfigurations(for: server)
+    }
+
+    /// Add a global MCP server to a host (no project required).
+    func addServer(
+        _ server: MCPServer,
+        to host: Server,
+        enabled: Bool? = nil
+    ) async throws {
+        try await openCodeService.addServer(server, to: host, enabled: enabled)
+    }
+
+    /// Write a raw OpenCode MCP configuration to a host's global config (no project required).
+    /// Preserves `oauth`/`timeout`/unknown fields — use for cross-host copies, not `addServer(_:to:)`.
+    @discardableResult
+    func addServerConfiguration(
+        _ configuration: OpenCodeMCPServerConfiguration,
+        named name: String,
+        to host: Server,
+        enabled: Bool? = nil,
+        allowManaged: Bool = false
+    ) async throws -> Bool {
+        try await openCodeService.addServerConfiguration(
+            configuration,
+            named: name,
+            to: host,
+            enabled: enabled,
+            allowManaged: allowManaged
+        )
+    }
+
+    /// Remove a global MCP server from a host (no project required).
+    func removeServer(
+        named name: String,
+        from host: Server,
+        allowManaged: Bool = false
+    ) async throws {
+        try await openCodeService.removeServer(named: name, from: host, allowManaged: allowManaged)
+    }
+
+    /// Rename / replace a global MCP server on a host (no project required).
+    func editServer(
+        oldName: String,
+        newServer: MCPServer,
+        on host: Server,
+        allowManaged: Bool = false
+    ) async throws {
+        try await openCodeService.editServer(
+            oldName: oldName,
+            newServer: newServer,
+            on: host,
+            allowManaged: allowManaged
+        )
+    }
+
     func projectHasServer(named name: String, for project: RemoteProject) async throws -> Bool {
         try await openCodeService.projectHasServer(named: name, for: project)
     }
@@ -125,6 +202,18 @@ final class CodingAgentMCPService: ObservableObject {
         allowManaged: Bool = false
     ) async throws {
         try await openCodeService.removeServer(named: name, scope: scope, for: project, allowManaged: allowManaged)
+    }
+
+    func revertProjectServerOverride(
+        named name: String,
+        restoring hostConfiguration: OpenCodeMCPServerConfiguration,
+        for project: RemoteProject
+    ) async throws {
+        try await openCodeService.revertProjectServerOverride(
+            named: name,
+            restoring: hostConfiguration,
+            for: project
+        )
     }
 
     func editServer(
@@ -262,8 +351,12 @@ final class CodingAgentMCPService: ObservableObject {
         in project: RemoteProject
     ) -> String {
         _ = project
-        _ = scope
-        return openCodeService.configurationPreview(for: server, scope: .project)
+        return openCodeService.configurationPreview(for: server, scope: scope)
+    }
+
+    /// Host-scoped preview (no project required). Always uses `.global` scope for a bare host.
+    func configurationPreview(for server: MCPServer, scope: MCPServer.MCPScope) -> String {
+        openCodeService.configurationPreview(for: server, scope: scope)
     }
 
     func runtimeKind(for project: RemoteProject) -> CodingAgentRuntimeKind {

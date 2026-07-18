@@ -45,7 +45,11 @@ class SSHService: SSHConnectionProviding {
     private var projectServerMap: [UUID: UUID] = [:]
 
     // MARK: - Initialization
-    private init() {}
+
+    /// `internal` (not `private`) so tests can subclass `SSHService` and override
+    /// `getConnection(for:purpose:)` to inject fake sessions. Production callers
+    /// should continue to use `SSHService.shared` via `ServiceManager`.
+    init() {}
 
     // MARK: - Public Methods
 

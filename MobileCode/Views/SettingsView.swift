@@ -93,7 +93,7 @@ struct SettingsView: View {
 
                 Section("MCP & Skills") {
                     NavigationLink {
-                        GlobalMCPServersListView()
+                        HostMCPServersListView()
                     } label: {
                         Label("MCP Servers", systemImage: "server.rack")
                     }

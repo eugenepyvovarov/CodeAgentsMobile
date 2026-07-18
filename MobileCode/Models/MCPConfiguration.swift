@@ -153,6 +153,21 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
         case remote
     }
 
+    private struct DynamicCodingKey: CodingKey, Hashable {
+        let stringValue: String
+        let intValue: Int?
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+            self.intValue = nil
+        }
+
+        init?(intValue: Int) {
+            self.stringValue = String(intValue)
+            self.intValue = intValue
+        }
+    }
+
     struct OAuthConfiguration: Codable, Equatable {
         var value: AnyCodable
 
@@ -186,9 +201,11 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
     var environment: [String: String]?
     var enabled: Bool?
     var timeout: Int?
+    var cwd: String?
     var url: String?
     var headers: [String: String]?
     var oauth: OAuthConfiguration?
+    private(set) var additionalProperties: [String: AnyCodable]
 
     init(
         type: ServerType,
@@ -196,18 +213,22 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
         environment: [String: String]? = nil,
         enabled: Bool? = true,
         timeout: Int? = nil,
+        cwd: String? = nil,
         url: String? = nil,
         headers: [String: String]? = nil,
-        oauth: OAuthConfiguration? = nil
+        oauth: OAuthConfiguration? = nil,
+        additionalProperties: [String: AnyCodable] = [:]
     ) {
         self.type = type
         self.command = command
         self.environment = environment
         self.enabled = enabled
         self.timeout = timeout
+        self.cwd = cwd
         self.url = url
         self.headers = headers
         self.oauth = oauth
+        self.additionalProperties = additionalProperties
     }
 
     init?(server: MCPServer, enabled: Bool = true) {
@@ -231,6 +252,100 @@ struct OpenCodeMCPServerConfiguration: Codable, Equatable {
             environment: server.env?.nilIfEmpty,
             enabled: enabled
         )
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+
+        type = try container.decode(ServerType.self, forKey: Self.key("type"))
+        command = try container.decodeIfPresent([String].self, forKey: Self.key("command"))
+        environment = try container.decodeIfPresent([String: String].self, forKey: Self.key("environment"))
+        enabled = try container.decodeIfPresent(Bool.self, forKey: Self.key("enabled"))
+        timeout = try container.decodeIfPresent(Int.self, forKey: Self.key("timeout"))
+        cwd = try container.decodeIfPresent(String.self, forKey: Self.key("cwd"))
+        url = try container.decodeIfPresent(String.self, forKey: Self.key("url"))
+        headers = try container.decodeIfPresent([String: String].self, forKey: Self.key("headers"))
+        oauth = try container.decodeIfPresent(OAuthConfiguration.self, forKey: Self.key("oauth"))
+
+        additionalProperties = try container.allKeys.reduce(into: [:]) { result, key in
+            guard !Self.knownPropertyNames.contains(key.stringValue) else { return }
+            result[key.stringValue] = try container.decode(AnyCodable.self, forKey: key)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+
+        for (name, value) in additionalProperties where !Self.knownPropertyNames.contains(name) {
+            try container.encode(value, forKey: Self.key(name))
+        }
+        try container.encode(type, forKey: Self.key("type"))
+        try container.encodeIfPresent(command, forKey: Self.key("command"))
+        try container.encodeIfPresent(environment, forKey: Self.key("environment"))
+        try container.encodeIfPresent(enabled, forKey: Self.key("enabled"))
+        try container.encodeIfPresent(timeout, forKey: Self.key("timeout"))
+        try container.encodeIfPresent(cwd, forKey: Self.key("cwd"))
+        try container.encodeIfPresent(url, forKey: Self.key("url"))
+        try container.encodeIfPresent(headers, forKey: Self.key("headers"))
+        try container.encodeIfPresent(oauth, forKey: Self.key("oauth"))
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.normalizedJSONData() == rhs.normalizedJSONData()
+    }
+
+    /// Overlay fields exposed by the editor while retaining compatible advanced
+    /// and forward-compatible OpenCode properties from the original entry.
+    func mergingEditableFields(from server: MCPServer, defaultEnabled: Bool = true) -> Self? {
+        guard let edited = Self(server: server, enabled: enabled ?? defaultEnabled) else {
+            return nil
+        }
+        guard edited.type == type else {
+            return edited
+        }
+
+        var merged = self
+        merged.command = edited.command
+        merged.environment = edited.environment
+        merged.url = edited.url
+        merged.headers = edited.headers
+        merged.enabled = enabled ?? defaultEnabled
+
+        if type == .remote, url != edited.url {
+            // OAuth registration belongs to the endpoint that issued it.
+            merged.oauth = nil
+        }
+
+        return merged
+    }
+
+    private static let knownPropertyNames: Set<String> = [
+        "type",
+        "command",
+        "environment",
+        "enabled",
+        "timeout",
+        "cwd",
+        "url",
+        "headers",
+        "oauth"
+    ]
+
+    private static func key(_ name: String) -> DynamicCodingKey {
+        // All static names and JSON object property names are valid string keys.
+        DynamicCodingKey(stringValue: name)!
+    }
+
+    private func normalizedJSONData() -> Data? {
+        let encoder = JSONEncoder()
+        guard
+            let encoded = try? encoder.encode(self),
+            let object = try? JSONSerialization.jsonObject(with: encoded),
+            JSONSerialization.isValidJSONObject(object)
+        else {
+            return nil
+        }
+        return try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 }
 
@@ -644,21 +759,15 @@ struct OpenCodeMCPConfigDocument {
     }
 
     mutating func setServer(_ server: MCPServer) throws {
-        guard let configuration = OpenCodeMCPServerConfiguration(server: server) else {
+        let configuration = serverConfigurations()[server.name]?.mergingEditableFields(from: server)
+            ?? OpenCodeMCPServerConfiguration(server: server)
+        guard let configuration else {
             throw MCPConfigurationError.encodingFailed
         }
         try setServer(named: server.name, configuration: configuration)
     }
 
     mutating func setServer(named name: String, configuration: OpenCodeMCPServerConfiguration) throws {
-        var configuration = configuration
-        if configuration.oauth == nil,
-           let existing = serverConfigurations()[name],
-           existing.type == configuration.type,
-           existing.url == configuration.url {
-            configuration.oauth = existing.oauth
-        }
-
         let data = try JSONEncoder().encode(configuration)
         guard let object = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
             throw MCPConfigurationError.encodingFailed

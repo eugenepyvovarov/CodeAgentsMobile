@@ -212,6 +212,131 @@ final class OpenCodeMCPConfigurationTests: XCTestCase {
         XCTAssertEqual(updated.serverConfigurations()["context7"]?.oauth, .init(false))
     }
 
+    func testRawConfigurationReplaceDoesNotInheritDestinationOAuth() throws {
+        let targetJSON = """
+        {
+          "mcp": {
+            "context7": {
+              "type": "remote",
+              "url": "https://mcp.context7.com/mcp",
+              "oauth": false,
+              "enabled": true
+            }
+          }
+        }
+        """
+        var target = try OpenCodeMCPConfigDocument(jsonString: targetJSON)
+        let source = OpenCodeMCPServerConfiguration(
+            type: .remote,
+            enabled: true,
+            url: "https://mcp.context7.com/mcp",
+            oauth: nil
+        )
+
+        try target.setServer(named: "context7", configuration: source)
+
+        let restored = try OpenCodeMCPConfigDocument(jsonString: target.toJSONString())
+        XCTAssertNil(restored.serverConfigurations()["context7"]?.oauth)
+    }
+
+    func testServerConfigurationRoundTripPreservesCWDAndUnknownProperties() throws {
+        let json = """
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "mcp": {
+            "filesystem": {
+              "type": "local",
+              "command": ["node", "server.js"],
+              "cwd": "/workspace/tools",
+              "timeout": 45000,
+              "future": {
+                "mode": "strict",
+                "retries": 3
+              },
+              "enabled": true
+            }
+          }
+        }
+        """
+
+        let source = try OpenCodeMCPConfigDocument(jsonString: json)
+        let configuration = try XCTUnwrap(source.serverConfigurations()["filesystem"])
+        XCTAssertEqual(configuration.cwd, "/workspace/tools")
+        let future = try XCTUnwrap(configuration.additionalProperties["future"]?.value as? [String: Any])
+        XCTAssertEqual(future["mode"] as? String, "strict")
+        XCTAssertEqual(future["retries"] as? Int, 3)
+
+        var destination = OpenCodeMCPConfigDocument()
+        try destination.setServer(named: "filesystem", configuration: configuration)
+        let restored = try OpenCodeMCPConfigDocument(jsonString: destination.toJSONString())
+        let restoredConfiguration = try XCTUnwrap(restored.serverConfigurations()["filesystem"])
+        XCTAssertEqual(restoredConfiguration.cwd, "/workspace/tools")
+        XCTAssertEqual(restoredConfiguration.timeout, 45_000)
+        let restoredFuture = try XCTUnwrap(
+            restoredConfiguration.additionalProperties["future"]?.value as? [String: Any]
+        )
+        XCTAssertEqual(restoredFuture["mode"] as? String, "strict")
+        XCTAssertEqual(restoredFuture["retries"] as? Int, 3)
+    }
+
+    func testMergingEditableFieldsPreservesCompatibleAdvancedProperties() throws {
+        let json = """
+        {
+          "type": "remote",
+          "url": "https://example.com/mcp",
+          "headers": { "Old": "value" },
+          "timeout": 30000,
+          "oauth": { "provider": "example" },
+          "future": { "transport": "http2" },
+          "enabled": false
+        }
+        """
+        let original = try JSONDecoder().decode(
+            OpenCodeMCPServerConfiguration.self,
+            from: Data(json.utf8)
+        )
+        let editedServer = MCPServer(
+            name: "renamed",
+            command: nil,
+            args: nil,
+            env: nil,
+            url: "https://example.com/mcp",
+            headers: ["New": "header"]
+        )
+
+        let merged = try XCTUnwrap(original.mergingEditableFields(from: editedServer))
+
+        XCTAssertEqual(merged.headers, ["New": "header"])
+        XCTAssertEqual(merged.enabled, false)
+        XCTAssertEqual(merged.timeout, 30_000)
+        XCTAssertEqual(merged.oauth, .init(["provider": "example"]))
+        let future = try XCTUnwrap(merged.additionalProperties["future"]?.value as? [String: Any])
+        XCTAssertEqual(future["transport"] as? String, "http2")
+    }
+
+    func testMergingEditableFieldsClearsOAuthWhenRemoteEndpointChanges() throws {
+        let original = OpenCodeMCPServerConfiguration(
+            type: .remote,
+            enabled: true,
+            timeout: 30_000,
+            url: "https://old.example/mcp",
+            oauth: .init(["provider": "old"])
+        )
+        let editedServer = MCPServer(
+            name: "remote",
+            command: nil,
+            args: nil,
+            env: nil,
+            url: "https://new.example/mcp",
+            headers: nil
+        )
+
+        let merged = try XCTUnwrap(original.mergingEditableFields(from: editedServer))
+
+        XCTAssertNil(merged.oauth)
+        XCTAssertEqual(merged.timeout, 30_000)
+    }
+
     /// Duplicate Agent must write full configurations so oauth/timeout survive (no MCPServer round-trip).
     func testSetServerNamedPreservesOAuthAndTimeoutOnNewDocument() throws {
         let sourceJSON = """

@@ -10,8 +10,11 @@ import SwiftUI
 struct AddMCPServerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var mcpService = CodingAgentMCPService.shared
-    
-    let project: RemoteProject
+
+    /// Project destination (nil when adding to a bare host via `host`).
+    let project: RemoteProject?
+    /// Host destination (nil when adding to a project via `project`).
+    let host: Server?
     let onAdd: () -> Void
     
     // Form fields
@@ -109,13 +112,26 @@ struct AddMCPServerSheet: View {
             )
         }
         
-        return mcpService.configurationPreview(for: server, scope: scope, in: project)
+        if let project {
+            return mcpService.configurationPreview(for: server, scope: scope, in: project)
+        }
+        // Host-scoped preview — scope is always .global for a bare host.
+        return mcpService.configurationPreview(for: server, scope: .global)
     }
     
     init(project: RemoteProject, initialScope: MCPServer.MCPScope = .local, onAdd: @escaping () -> Void) {
         self.project = project
+        self.host = nil
         self.onAdd = onAdd
         _scope = State(initialValue: initialScope)
+    }
+
+    /// Add a global MCP server directly to a host (no active project required).
+    init(host: Server, onAdd: @escaping () -> Void) {
+        self.project = nil
+        self.host = host
+        self.onAdd = onAdd
+        _scope = State(initialValue: .global)
     }
 
     var body: some View {
@@ -385,8 +401,14 @@ struct AddMCPServerSheet: View {
                     )
                 }
                 
-                try await mcpService.addServer(server, scope: scope, for: project)
-                
+                if let project {
+                    try await mcpService.addServer(server, scope: scope, for: project)
+                } else if let host {
+                    try await mcpService.addServer(server, to: host)
+                } else {
+                    throw MCPServiceError.invalidConfiguration("No project or host selected for MCP server")
+                }
+
                 await MainActor.run {
                     onAdd()
                     dismiss()
