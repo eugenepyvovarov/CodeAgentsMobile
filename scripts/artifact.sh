@@ -118,6 +118,11 @@ if [[ -z "${RELEASE_BUILD_RESOLVED}" ]]; then
 fi
 
 RELEASE_TAG="${CODEAGENTS_RELEASE_TAG:-v${RELEASE_VERSION_RESOLVED}-${RELEASE_BUILD_RESOLVED}}"
+XCODE_BUILD_SETTINGS_JSON="$(
+  python3 "${ROOT_DIR}/scripts/lib/xcode_build_metadata.py" \
+    --version "${RELEASE_VERSION_RESOLVED}" \
+    --build-number "${RELEASE_BUILD_RESOLVED}"
+)"
 
 if [[ "${MODE}" == "production" || "${MODE}" == "testflight" ]]; then
   if ! command -v "${ASC_BIN}" >/dev/null 2>&1; then
@@ -404,7 +409,8 @@ xcbmcp_run_json simulator build \
   --scheme "${SCHEME}" \
   --simulator-name "${SIMULATOR_NAME}" \
   --configuration Debug \
-  --derived-data-path "${DERIVED_DATA_PATH}" >/dev/null
+  --derived-data-path "${DERIVED_DATA_PATH}" \
+  --json "${XCODE_BUILD_SETTINGS_JSON}" >/dev/null
 
 APP_PATH="${DERIVED_DATA_PATH}/Build/Products/Debug-iphonesimulator/${SCHEME}.app"
 if [[ ! -d "${APP_PATH}" ]]; then

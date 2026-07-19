@@ -22,6 +22,7 @@ CONFIGURATION="${CODEAGENTS_CONFIGURATION:-Debug}"
 DERIVED_DATA_PATH="${CODEAGENTS_DERIVED_DATA_PATH:-${ROOT_DIR}/.build/opencode-ci/DerivedData}"
 
 "${ROOT_DIR}/scripts/test-xcodebuildmcp-fixtures.sh"
+python3 "${ROOT_DIR}/scripts/tests/test_xcode_build_metadata.py"
 
 xcbmcp_require_min_version
 

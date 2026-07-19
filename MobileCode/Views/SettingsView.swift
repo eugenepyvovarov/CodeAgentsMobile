@@ -19,12 +19,15 @@ struct SettingsView: View {
     @State private var showingAddServer = false
     @State private var showingCloudProviders = false
     @State private var showingImportSSHKey = false
+    @State private var showingAuthorSupport = false
     @State private var selectedProvider: ServerProvider?
     @State private var selectedSSHKey: SSHKey?
 
     private var appVersionString: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        AppVersionMetadata.current.displayString
     }
+
+    private let authorSupportPromptSchedule = AuthorSupportPromptSchedule()
     
     var body: some View {
         NavigationStack {
@@ -114,6 +117,13 @@ struct SettingsView: View {
                         Text(appVersionString)
                             .foregroundColor(.secondary)
                     }
+
+                    Button {
+                        showingAuthorSupport = true
+                    } label: {
+                        Label("Support CodeAgents", systemImage: "heart")
+                    }
+                    .accessibilityIdentifier("settings-support-codeagents-button")
                     
                     Link(destination: URL(string: "https://github.com/eugenepyvovarov/CodeAgentsMobile")!) {
                         HStack {
@@ -150,6 +160,17 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingImportSSHKey) {
                 AddSSHKeySheet()
+            }
+            .sheet(isPresented: $showingAuthorSupport) {
+                AuthorSupportPromptSheet(
+                    onNeverShowAgain: {
+                        authorSupportPromptSchedule.optOutPermanently()
+                        showingAuthorSupport = false
+                    },
+                    onMaybeLater: {
+                        showingAuthorSupport = false
+                    }
+                )
             }
             .sheet(item: $selectedProvider) { provider in
                 EditCloudProviderView(provider: provider)

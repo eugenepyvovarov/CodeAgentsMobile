@@ -59,6 +59,21 @@
 - `screenshots/`: Visual assets used in README and PRs
 - `VERSIONS.TXT`: Release marketing version
 
+### Version and build numbers
+
+- `VERSIONS.TXT` is the source of truth for `MARKETING_VERSION`.
+- Gitea's production-artifact workflow run number is the source of truth for
+  `CURRENT_PROJECT_VERSION`; `.gitea/workflows/production-artifact.yml` exports
+  it as `OPENCODE_PRODUCTION_ARTIFACT_RUN_NUMBER`.
+- `scripts/artifact.sh` must inject both resolved values into the built bundle.
+  Do not create timestamp build numbers or manually increment the committed
+  fallback build number for agent-driven releases.
+- Settings displays the bundled values as `Version (Build)`. When diagnosing a
+  reported build, verify both values from the built `.app` or installed app.
+- For local physical-device builds, use the committed fallback build number
+  unless reproducing a specific Gitea artifact. Never label a local build with
+  a Gitea run number unless it was built from that run's exact source revision.
+
 ## Build, Test, and Development Commands
 - Open in Xcode: `open CodeAgentsMobile.xcodeproj`
 - **Preferred validation (matches OpenCode automation):** `./scripts/ci.sh`
