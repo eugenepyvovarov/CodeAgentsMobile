@@ -10,13 +10,13 @@ follow the author on X first, followed by optional open-source sponsorship links
 
 Present a polished SwiftUI sheet from the app root with this copy:
 
-> **Help CodeAgents grow**
+> **Thanks for using CodeAgents**
 >
-> CodeAgents is independently developed and open source. If it’s useful to you,
-> following the author helps more people discover it. You can also support the
-> time spent maintaining and improving the project.
+> CodeAgents is independently built and shared as open source. If it’s useful,
+> following the author helps more people discover it. You can also support
+> ongoing development.
 >
-> No pressure—thank you for using CodeAgents.
+> No pressure—thanks for being here.
 
 Actions appear in this order:
 

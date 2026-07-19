@@ -6,7 +6,12 @@ final class CodeAgentsMobileUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--reset-ui-test-defaults"]
+        app.launchArguments = [
+            "--ui-testing",
+            "--reset-ui-test-defaults",
+            "-authorSupportPrompt.neverShowAgain.v1",
+            "YES",
+        ]
         app.launch()
     }
 

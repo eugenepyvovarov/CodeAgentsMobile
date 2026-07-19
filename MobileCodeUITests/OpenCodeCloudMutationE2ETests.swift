@@ -66,7 +66,12 @@ final class OpenCodeCloudMutationE2ETests: XCTestCase {
 
     private func launchApp(config: CloudE2EConfiguration, autofillCloudServer: Bool) {
         app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--reset-ui-test-defaults"]
+        app.launchArguments = [
+            "--ui-testing",
+            "--reset-ui-test-defaults",
+            "-authorSupportPrompt.neverShowAgain.v1",
+            "YES",
+        ]
 
         var launchEnvironment: [String: String] = [:]
         launchEnvironment["MOBILECODE_E2E_AUTOFILL_CLOUD_SERVER"] = autofillCloudServer ? "1" : "0"

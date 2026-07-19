@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UserNotifications
 
 struct ContentView: View {
     @StateObject private var navigationState = AppNavigationState.shared
@@ -15,6 +16,9 @@ struct ContentView: View {
     @StateObject private var cloudInitMonitor = CloudInitMonitor.shared
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showingAuthorSupportPrompt = false
+
+    private let authorSupportPromptSchedule = AuthorSupportPromptSchedule()
     
     var body: some View {
         Group {
@@ -62,6 +66,7 @@ struct ContentView: View {
                 // App became active - start monitoring
                 startCloudInitMonitoring()
                 Task {
+                    await presentAuthorSupportPromptIfNeeded()
                     // Warm OpenCode SSH early so chat reopen reuses a pooled login.
                     await OpenCodeInstallerService.shared.warmActiveProjectConnectionIfNeeded()
                     await PushNotificationsManager.shared.syncDeliveredReplyFinishedNotifications()
@@ -88,6 +93,7 @@ struct ContentView: View {
             seedAIProvidersEvidenceStateIfNeeded()
             seedSettingsListsEvidenceStateIfNeeded()
             seedChatOpenDeferredStartupEvidenceStateIfNeeded()
+            await presentAuthorSupportPromptIfNeeded()
             await PushNotificationsManager.shared.ensureAppDefaultPush(modelContext: modelContext)
             UnreadBadgeService.refreshAppIconBadge(using: modelContext)
         }
@@ -96,6 +102,33 @@ struct ContentView: View {
         .task {
             await runBackgroundAgentsUnreadSoftSyncLoop()
         }
+        .sheet(isPresented: $showingAuthorSupportPrompt) {
+            AuthorSupportPromptSheet(
+                onNeverShowAgain: {
+                    authorSupportPromptSchedule.optOutPermanently()
+                    showingAuthorSupportPrompt = false
+                },
+                onMaybeLater: {
+                    showingAuthorSupportPrompt = false
+                }
+            )
+        }
+    }
+
+    @MainActor
+    private func presentAuthorSupportPromptIfNeeded(at date: Date = Date()) async {
+        let notificationSettings = await UNUserNotificationCenter.current().notificationSettings()
+        guard notificationSettings.authorizationStatus != .notDetermined else {
+            return
+        }
+
+        guard !showingAuthorSupportPrompt,
+              authorSupportPromptSchedule.shouldPresent(at: date) else {
+            return
+        }
+
+        authorSupportPromptSchedule.recordPresentation(at: date)
+        showingAuthorSupportPrompt = true
     }
 
     /// Periodic soft hydrate for agents other than the open chat.
