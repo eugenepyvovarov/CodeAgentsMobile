@@ -7,8 +7,11 @@ function normalizeString(value: unknown): string | null {
 }
 
 function removeCodeAgentsUIBlocks(input: string): string {
-  const openingFencePattern = /^[ \t]*```[ \t]*(?:codeagents-ui|codeagents_ui)\b[^\r\n]*(?:\r?\n|$)/gim;
-  const closingFencePattern = /^[ \t]*```[^\r\n]*(?:\r?\n|$)/gm;
+  // Match the marker rather than a complete line. Current clients preserve
+  // newlines, but older clients flattened the whole reply before sending it,
+  // producing inline fences such as "summary ```codeagents-ui {...} ```".
+  const openingFencePattern = /```[ \t]*(?:codeagents-ui|codeagents_ui)\b/gim;
+  const closingFencePattern = /```/gm;
 
   let result = "";
   let cursor = 0;

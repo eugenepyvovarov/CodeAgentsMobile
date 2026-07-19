@@ -23,6 +23,84 @@ enum ReplyFinishedPushEventKey {
     static let renderableAssistantCount = "renderableAssistantCount"
 }
 
+/// Produces a compact, plain-text notification preview without leaking
+/// render-only `codeagents_ui` JSON into Notification Center.
+enum NotificationPreviewText {
+    static func normalize(_ text: String?, maxLength: Int = 160) -> String? {
+        guard let text else { return nil }
+
+        let segments = CodeAgentsUIBlockExtractor.segments(from: text)
+        let prose = segments.compactMap { segment -> String? in
+            guard case .markdown(let markdown) = segment else { return nil }
+            let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        let candidate: String
+        if !prose.isEmpty {
+            candidate = prose.joined(separator: "\n")
+        } else if let widgetSummary = firstWidgetSummary(in: segments) {
+            candidate = widgetSummary
+        } else {
+            return nil
+        }
+
+        let collapsed = candidate
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return nil }
+        if collapsed.count <= maxLength { return collapsed }
+
+        let end = collapsed.index(collapsed.startIndex, offsetBy: max(0, maxLength - 1))
+        return String(collapsed[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    private static func firstWidgetSummary(in segments: [CodeAgentsUIRenderSegment]) -> String? {
+        for segment in segments {
+            guard case .ui(let block) = segment else { continue }
+
+            if let title = nonEmpty(block.title) {
+                return title
+            }
+
+            for element in block.elements {
+                if let summary = summary(for: element) {
+                    return summary
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func summary(for element: CodeAgentsUIElement) -> String? {
+        switch element {
+        case .card(let card):
+            if let title = nonEmpty(card.title) { return title }
+            if let subtitle = nonEmpty(card.subtitle) { return subtitle }
+            return card.content.lazy.compactMap(summary).first
+        case .markdown(let markdown):
+            return nonEmpty(markdown.text)
+        case .image(let image):
+            return nonEmpty(image.caption) ?? nonEmpty(image.alt)
+        case .gallery(let gallery):
+            return nonEmpty(gallery.caption)
+        case .video(let video):
+            return nonEmpty(video.caption)
+        case .table(let table):
+            return nonEmpty(table.caption) ?? table.columns.lazy.compactMap(nonEmpty).first
+        case .chart(let chart):
+            return nonEmpty(chart.title) ?? nonEmpty(chart.subtitle)
+        }
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 @MainActor
 final class PushNotificationsManager: NSObject, ObservableObject {
     static let shared = PushNotificationsManager()
@@ -354,15 +432,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     }
 
     private nonisolated static func normalizedPreview(_ text: String?, maxLen: Int = 160) -> String? {
-        guard let text else { return nil }
-        let collapsed = text
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard !collapsed.isEmpty else { return nil }
-        if collapsed.count <= maxLen { return collapsed }
-        let end = collapsed.index(collapsed.startIndex, offsetBy: max(0, maxLen - 1))
-        return String(collapsed[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        NotificationPreviewText.normalize(text, maxLength: maxLen)
     }
 
     private func postLocalReplyFinishedNotification(

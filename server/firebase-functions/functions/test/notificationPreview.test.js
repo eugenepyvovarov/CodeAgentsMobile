@@ -52,6 +52,17 @@ test("drops an unclosed CodeAgents UI fence through the end of the preview", () 
   assert.equal(sanitizeNotificationPreview(preview), "Human-readable summary.");
 });
 
+test("removes a CodeAgents UI block flattened inline by older clients", () => {
+  const preview = [
+    "Fresh check complete. **1 alert.**",
+    "``` codeagents-ui",
+    "{\"type\":\"codeagents_ui\",\"version\":1,\"title\":\"Domain status\"}",
+    "```",
+  ].join(" ");
+
+  assert.equal(sanitizeNotificationPreview(preview), "Fresh check complete. **1 alert.**");
+});
+
 test("preserves non-CodeAgents fenced content", () => {
   const preview = [
     "Here is the command:",
