@@ -431,7 +431,7 @@ final class OpenCodeChatMapperTests: XCTestCase {
             "parts": [{"type":"text","text":"hello","id":"prt_user","messageID":"msg_user","sessionID":"ses_fixture"}]
           },
           {
-            "info": {"role":"assistant","id":"msg_assistant","sessionID":"ses_fixture","time":{"created":2}},
+            "info": {"role":"assistant","id":"msg_assistant","sessionID":"ses_fixture","time":{"created":2,"completed":3}},
             "parts": [{"type":"text","text":"reply","id":"prt_assistant","messageID":"msg_assistant","sessionID":"ses_fixture"}]
           }
         ]
@@ -446,10 +446,27 @@ final class OpenCodeChatMapperTests: XCTestCase {
         XCTAssertEqual(hydrated[1].runtimeMessageID, "msg_assistant")
         XCTAssertEqual(hydrated[1].role, .assistant)
         XCTAssertEqual(hydrated[1].text, "reply")
+        XCTAssertTrue(hydrated[1].isComplete)
         XCTAssertNotNil(hydrated[1].originalPayload)
 
         XCTAssertEqual(try XCTUnwrap(hydrated[0].createdAt).timeIntervalSince1970, 1, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(hydrated[1].createdAt).timeIntervalSince1970, 2, accuracy: 0.001)
+    }
+
+    func testHydratedAssistantPreservesUnfinishedFinality() throws {
+        let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [
+          {
+            "info": {"role":"assistant","id":"msg_assistant","sessionID":"ses_fixture","time":{"created":2}},
+            "parts": [{"type":"text","text":"partial","id":"prt_assistant","messageID":"msg_assistant","sessionID":"ses_fixture"}]
+          }
+        ]
+        """.utf8))
+
+        let hydrated = OpenCodeChatMapper.hydratedMessages(from: messages)
+
+        XCTAssertEqual(hydrated.count, 1)
+        XCTAssertFalse(hydrated[0].isComplete)
     }
 
     func testHydratedMessagesConvertOpenCodeMillisecondTimestamps() throws {
@@ -545,5 +562,40 @@ final class OpenCodeChatMapperTests: XCTestCase {
         """
         let core = OpenCodeChatMapper.normalizedUserPromptForDedupe(raw)
         XCTAssertEqual(core, "can you translate the text on the paper?")
+    }
+
+    func testReplyFinalityRequiresMatchingParentCompletedAndRenderableText() throws {
+        let messages = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [
+          {
+            "info": {"role":"assistant","id":"msg_partial","parentID":"msg_expected","sessionID":"ses_fixture","time":{"created":1}},
+            "parts": [{"type":"text","id":"prt_partial","messageID":"msg_partial","sessionID":"ses_fixture","text":"partial"}]
+          },
+          {
+            "info": {"role":"assistant","id":"msg_other","parentID":"msg_other_prompt","sessionID":"ses_fixture","time":{"created":1,"completed":2}},
+            "parts": [{"type":"text","id":"prt_other","messageID":"msg_other","sessionID":"ses_fixture","text":"other final"}]
+          }
+        ]
+        """.utf8))
+
+        XCTAssertFalse(
+            OpenCodeReplyFinality.hasFinalizedRenderableAssistant(
+                in: messages,
+                parentMessageID: "msg_expected"
+            )
+        )
+        XCTAssertTrue(
+            OpenCodeReplyFinality.hasFinalizedRenderableAssistant(
+                in: messages,
+                parentMessageID: "msg_other_prompt"
+            )
+        )
+        XCTAssertEqual(
+            OpenCodeReplyFinality.finalizedRenderableAssistantMessageIDs(
+                in: messages,
+                parentMessageID: "msg_other_prompt"
+            ),
+            ["msg_other"]
+        )
     }
 }

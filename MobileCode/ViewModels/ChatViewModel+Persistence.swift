@@ -171,9 +171,13 @@ extension ChatViewModel {
     /// Update message content
     func updateMessage(_ message: Message, with content: String) {
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
+            let previousContent = messages[index].content
             messages[index].content = content
             saveChanges()
             messagesRevision += 1
+            if messages[index].role == .assistant, previousContent != content {
+                noteOpenCodeReplyMessageContentChanged(messageID: messages[index].id)
+            }
         }
     }
 
@@ -188,6 +192,8 @@ extension ChatViewModel {
     ) {
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
             let existing = messages[index]
+            let previousContent = existing.content
+            let previousOriginalJSON = existing.originalJSON
             let hadOriginalJSON = existing.originalJSON != nil
             existing.content = content
             if let originalJSON = originalJSON {
@@ -217,6 +223,10 @@ extension ChatViewModel {
                 saveChanges()
             }
             messagesRevision += 1
+            if existing.role == .assistant,
+               previousContent != content || previousOriginalJSON != existing.originalJSON {
+                noteOpenCodeReplyMessageContentChanged(messageID: existing.id)
+            }
         }
     }
 

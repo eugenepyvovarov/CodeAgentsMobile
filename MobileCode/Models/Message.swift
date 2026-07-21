@@ -33,6 +33,10 @@ final class Message {
 
     /// App-generated error notice (upload failure, etc.) — rendered as an error banner, not an assistant reply.
     var isLocalError: Bool = false
+
+    /// Strong finality proof for canonical OpenCode unread cursors. UI cleanup may
+    /// stop a spinner, but only terminal SSE or REST `time.completed` sets this.
+    var openCodeRuntimeFinalized: Bool = false
     
     init(content: String = "", role: MessageRole = .user, projectId: UUID? = nil, originalJSON: Data? = nil, isComplete: Bool = true, isStreaming: Bool = false) {
         self.id = UUID()
@@ -44,6 +48,7 @@ final class Message {
         self.isComplete = isComplete
         self.isStreaming = isStreaming
         self.isLocalError = false
+        self.openCodeRuntimeFinalized = false
     }
 
     /// Whether this message should use the dedicated error banner UI.

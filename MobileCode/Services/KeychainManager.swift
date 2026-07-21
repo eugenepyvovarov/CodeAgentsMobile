@@ -299,12 +299,14 @@ class KeychainManager {
     /// Store the per-server push secret (CODEAGENTS_PUSH_SECRET)
     func storePushSecret(_ secret: String, for serverId: UUID) throws {
         let data = secret.data(using: .utf8)!
-        try store(data: data, for: pushSecretKey(for: serverId))
+        try store(data: data, for: pushSecretKey(for: serverId), backgroundAccessible: true)
     }
 
     /// Retrieve the per-server push secret (CODEAGENTS_PUSH_SECRET)
     func retrievePushSecret(for serverId: UUID) throws -> String {
-        let data = try retrieve(for: pushSecretKey(for: serverId))
+        let key = pushSecretKey(for: serverId)
+        let data = try retrieve(for: key)
+        migrateToBackgroundAccessibilityIfNeeded(for: key)
         guard let secret = String(data: data, encoding: .utf8) else {
             throw KeychainError.invalidData
         }
@@ -328,13 +330,14 @@ class KeychainManager {
 
     /// Stable identifier for this app install, used for device registration docs in Firestore.
     func getOrCreatePushInstallationId() throws -> String {
-        if let existing = try? retrievePushInstallationId() {
+        do {
+            let existing = try retrievePushInstallationId()
             return existing
+        } catch KeychainError.itemNotFound {
+            let fresh = UUID().uuidString.lowercased()
+            try storePushInstallationId(fresh)
+            return fresh
         }
-
-        let fresh = UUID().uuidString.lowercased()
-        try storePushInstallationId(fresh)
-        return fresh
     }
     
     // MARK: - SSH Key Methods
@@ -487,11 +490,12 @@ class KeychainManager {
 
     private func storePushInstallationId(_ value: String) throws {
         let data = value.data(using: .utf8)!
-        try store(data: data, for: "push_installation_id")
+        try store(data: data, for: "push_installation_id", backgroundAccessible: true)
     }
 
     private func retrievePushInstallationId() throws -> String {
         let data = try retrieve(for: "push_installation_id")
+        migrateToBackgroundAccessibilityIfNeeded(for: "push_installation_id")
         guard let value = String(data: data, encoding: .utf8) else {
             throw KeychainError.invalidData
         }
@@ -500,22 +504,32 @@ class KeychainManager {
     
     
     /// Store data in keychain
-    private func store(data: Data, for key: String, syncToiCloud: Bool = false) throws {
-        var query: [String: Any] = [
+    private func store(
+        data: Data,
+        for key: String,
+        syncToiCloud: Bool = false,
+        backgroundAccessible: Bool = false
+    ) throws {
+        var identityQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: syncToiCloud ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrAccount as String: key
         ]
-        
-        // Enable iCloud sync if requested
         if syncToiCloud {
-            query[kSecAttrSynchronizable as String] = true
+            identityQuery[kSecAttrSynchronizable as String] = true
         }
-        
-        // Try to delete existing item first
-        SecItemDelete(query as CFDictionary)
+
+        // Delete by identity rather than accessibility so migrating an existing item
+        // cannot leave a duplicate with its old protection class.
+        SecItemDelete(identityQuery as CFDictionary)
+
+        var query = identityQuery
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = syncToiCloud
+            ? kSecAttrAccessibleAfterFirstUnlock
+            : (backgroundAccessible
+                ? kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                : kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
         
         // Add new item
         let status = SecItemAdd(query as CFDictionary, nil)
@@ -523,6 +537,20 @@ class KeychainManager {
         guard status == errSecSuccess else {
             throw KeychainError.unknown(status)
         }
+    }
+
+    /// Push completion work is allowed to finish after the screen locks. Upgrade
+    /// existing device-local push credentials on their next successful unlocked read.
+    private func migrateToBackgroundAccessibilityIfNeeded(for key: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: key
+        ]
+        let attributes: [String: Any] = [
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     }
     
     /// Retrieve data from keychain

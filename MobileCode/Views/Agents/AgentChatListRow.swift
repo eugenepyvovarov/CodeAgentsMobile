@@ -20,12 +20,35 @@ struct AgentChatListRow: View {
 
     // MARK: - Environment / state
 
-    @Environment(\.modelContext) private var modelContext
     @StateObject private var projectContext = ProjectContext.shared
     @State private var isActivating = false
-    @State private var preview: AgentChatPreview?
 
     @Query private var servers: [Server]
+    @Query private var previewMessages: [Message]
+
+    init(
+        project: RemoteProject,
+        isEditing: Bool = false,
+        onEdit: (() -> Void)? = nil,
+        onDuplicate: (() -> Void)? = nil,
+        onDelete: (() -> Void)? = nil
+    ) {
+        self.project = project
+        self.isEditing = isEditing
+        self.onEdit = onEdit
+        self.onDuplicate = onDuplicate
+        self.onDelete = onDelete
+
+        let projectId = project.id
+        var descriptor = FetchDescriptor<Message>(
+            predicate: #Predicate { message in
+                message.projectId == projectId
+            },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        descriptor.fetchLimit = 12
+        _previewMessages = Query(descriptor)
+    }
 
     // MARK: - Computed
 
@@ -41,63 +64,65 @@ struct AgentChatListRow: View {
         hasUnread ? .semibold : .regular
     }
 
-    private var previewText: String {
+    private struct Presentation {
+        let previewText: String
+        let activity: AgentChatPreview.Activity
+        let timestampText: String?
+    }
+
+    private func makePresentation() -> Presentation {
+        let preview = AgentChatPreviewLoader.preview(fromNewestFirst: previewMessages)
+        let previewText: String
         if let preview {
-            return preview.listLine
+            previewText = preview.listLine
+        } else if let server {
+            previewText = "\(server.username)@\(server.host)"
+        } else {
+            previewText = "No messages yet"
         }
-        if let server {
-            return "\(server.username)@\(server.host)"
-        }
-        return "No messages yet"
-    }
 
-    private var previewActivity: AgentChatPreview.Activity {
-        preview?.activity ?? .none
-    }
-
-    private var timestampText: String? {
+        let timestampText: String?
         if let preview {
-            return AgentChatListTimestamp.format(preview.timestamp)
+            timestampText = AgentChatListTimestamp.format(preview.timestamp)
+        } else if let lastMessageAt = project.lastMessageAt {
+            timestampText = AgentChatListTimestamp.format(lastMessageAt)
+        } else {
+            timestampText = AgentChatListTimestamp.format(project.createdAt)
         }
-        if let lastMessageAt = project.lastMessageAt {
-            return AgentChatListTimestamp.format(lastMessageAt)
-        }
-        return AgentChatListTimestamp.format(project.createdAt)
-    }
 
-    private var previewReloadKey: String {
-        let stamp = project.lastMessageAt?.timeIntervalSince1970 ?? project.createdAt.timeIntervalSince1970
-        return "\(project.id.uuidString)-\(stamp)-\(project.lastKnownUnreadCursor)-\(project.lastReadUnreadCursor)"
+        return Presentation(
+            previewText: previewText,
+            activity: preview?.activity ?? .none,
+            timestampText: timestampText
+        )
     }
 
     // MARK: - Body
 
     var body: some View {
+        let presentation = makePresentation()
         Group {
             if isEditing {
-                editingContent
+                editingContent(presentation: presentation)
             } else {
                 Button {
                     Task { await activateProject() }
                 } label: {
-                    rowContent
+                    rowContent(presentation: presentation)
                 }
                 .buttonStyle(.plain)
                 .disabled(isActivating)
                 .opacity(isActivating ? 0.65 : 1)
             }
         }
-        .task(id: previewReloadKey) {
-            preview = AgentChatPreviewLoader.load(projectId: project.id, in: modelContext)
-        }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilitySummary)
+        .accessibilityLabel(accessibilitySummary(presentation: presentation))
         .accessibilityIdentifier("agent-chat-row-\(project.id.uuidString)")
     }
 
     // MARK: - Subviews
 
-    private var rowContent: some View {
+    private func rowContent(presentation: Presentation) -> some View {
         HStack(alignment: .center, spacing: 12) {
             AgentAvatarView(
                 project: project,
@@ -113,7 +138,7 @@ struct AgentChatListRow: View {
 
                     Spacer(minLength: 8)
 
-                    if let timestampText {
+                    if let timestampText = presentation.timestampText {
                         Text(timestampText)
                             .font(.caption)
                             .foregroundStyle(hasUnread ? Color.accentColor : Color.secondary)
@@ -122,7 +147,7 @@ struct AgentChatListRow: View {
                 }
 
                 HStack(alignment: .center, spacing: 8) {
-                    previewLine
+                    previewLine(presentation: presentation)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     trailingChrome
@@ -134,25 +159,25 @@ struct AgentChatListRow: View {
         .contentShape(Rectangle())
     }
 
-    private var previewLine: some View {
+    private func previewLine(presentation: Presentation) -> some View {
         HStack(spacing: 5) {
-            if let symbol = previewActivity.systemImage {
+            if let symbol = presentation.activity.systemImage {
                 Image(systemName: symbol)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.secondary)
                     .accessibilityHidden(true)
             }
 
-            Text(previewText)
+            Text(presentation.previewText)
                 .font(.subheadline.weight(hasUnread ? .medium : .regular))
                 .foregroundStyle(hasUnread ? Color.primary.opacity(0.75) : Color.secondary)
                 .lineLimit(1)
         }
     }
 
-    private var editingContent: some View {
+    private func editingContent(presentation: Presentation) -> some View {
         HStack(spacing: 10) {
-            rowContent
+            rowContent(presentation: presentation)
             editActions
         }
     }
@@ -210,13 +235,13 @@ struct AgentChatListRow: View {
         .buttonStyle(.borderless)
     }
 
-    private var accessibilitySummary: String {
+    private func accessibilitySummary(presentation: Presentation) -> String {
         var parts = [project.displayTitle]
         if hasUnread {
             parts.append("\(project.unreadCount) unread")
         }
-        parts.append(previewText)
-        if let timestampText {
+        parts.append(presentation.previewText)
+        if let timestampText = presentation.timestampText {
             parts.append(timestampText)
         }
         return parts.joined(separator: ", ")

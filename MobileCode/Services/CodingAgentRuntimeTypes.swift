@@ -125,6 +125,25 @@ struct CodingAgentRuntimeHydratedMessage: Equatable {
     let text: String
     let createdAt: Date?
     let originalPayload: Data?
+    let isComplete: Bool
+
+    init(
+        runtimeMessageID: String,
+        runtimePartIDs: [String],
+        role: MessageRole,
+        text: String,
+        createdAt: Date?,
+        originalPayload: Data?,
+        isComplete: Bool = true
+    ) {
+        self.runtimeMessageID = runtimeMessageID
+        self.runtimePartIDs = runtimePartIDs
+        self.role = role
+        self.text = text
+        self.createdAt = createdAt
+        self.originalPayload = originalPayload
+        self.isComplete = isComplete
+    }
 }
 
 enum CodingAgentRuntimeError: LocalizedError {
@@ -196,7 +215,8 @@ extension CodingAgentRuntimeService {
             previousState: state,
             observedState: state,
             storedState: state,
-            diff: OpenCodeHydrationDiffer.diff(local: state, remote: state)
+            diff: OpenCodeHydrationDiffer.diff(local: state, remote: state),
+            canonicalAssistantCount: nil
         )
     }
 

@@ -74,6 +74,12 @@ struct ChatMessageAdapter {
         }
     }
 
+    static func lastRenderableMessageID(in messages: [Message]) -> UUID? {
+        messages.last(where: { message in
+            !isSessionInfoMessage(message) && !isSessionCompleteMessage(message)
+        })?.id
+    }
+
     // MARK: - ExyteChat Text Sizing
 
     private static func condensedSizingTextIfNeeded(from content: String) -> String? {

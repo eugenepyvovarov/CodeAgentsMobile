@@ -16,6 +16,7 @@ extension ChatViewModel {
         updateMessageWithJSON(message, content: content, originalJSON: originalJSON, replaceOriginalJSON: true)
         message.isStreaming = !chunk.isComplete
         message.isComplete = chunk.isComplete
+        message.openCodeRuntimeFinalized = chunk.isComplete && !chunk.isError
 
         if chunk.isComplete, let project = ProjectContext.shared.activeProject {
             prefetchCodeAgentsUIMedia(in: project, messages: [message])
@@ -29,8 +30,9 @@ extension ChatViewModel {
             originalJSON: hydrated.originalPayload,
             replaceOriginalJSON: true
         )
-        message.isStreaming = false
-        message.isComplete = true
+        message.isStreaming = !hydrated.isComplete
+        message.isComplete = hydrated.isComplete
+        message.openCodeRuntimeFinalized = hydrated.isComplete
     }
 
 
@@ -258,6 +260,9 @@ extension ChatViewModel {
             if let originalPayload = hydrated.originalPayload {
                 updateMessageWithJSON(message, content: hydrated.text, originalJSON: originalPayload, replaceOriginalJSON: true)
             }
+            message.isComplete = hydrated.isComplete
+            message.isStreaming = !hydrated.isComplete
+            message.openCodeRuntimeFinalized = hydrated.isComplete
             existingRuntimeMessageIDs.insert(hydrated.runtimeMessageID)
             insertedMessages += 1
         }
@@ -278,6 +283,7 @@ extension ChatViewModel {
                 "status": .status(.complete)
             ]
         )
+        noteOpenCodeHydrationApplied()
     }
 
     func timingStatus(for sessionStatus: CodingAgentRuntimeSessionState.Status) -> ChatRecoveryTiming.Status {
@@ -309,6 +315,12 @@ extension ChatViewModel {
             streamingMessage = nil
             streamingBlocks = []
             for message in messages where message.isStreaming {
+                // REST message metadata is the finality authority for persisted
+                // OpenCode rows. The status sample was taken before hydration and may
+                // already be stale if a new async prompt started in between.
+                if OpenCodePersistedMessageMetadata.runtimeMessageID(from: message) != nil {
+                    continue
+                }
                 message.isStreaming = false
                 message.isComplete = true
             }
@@ -321,23 +333,7 @@ extension ChatViewModel {
     }
 
     func openCodeRuntimeMessageID(from message: Message) -> String? {
-        guard let originalJSON = message.originalJSON,
-              let raw = String(data: originalJSON, encoding: .utf8) else {
-            return nil
-        }
-
-        for line in raw.split(whereSeparator: \.isNewline) {
-            guard let data = String(line).data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                  let opencode = json["opencode"] as? [String: Any],
-                  let messageID = opencode["messageID"] as? String,
-                  !messageID.isEmpty else {
-                continue
-            }
-            return messageID
-        }
-
-        return nil
+        OpenCodePersistedMessageMetadata.runtimeMessageID(from: message)
     }
 
     func hasLocalUserMessage(matching text: String) -> Bool {

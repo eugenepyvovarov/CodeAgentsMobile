@@ -429,10 +429,14 @@ struct OpenCodeHydrationState: Equatable {
         var digests: [String: String] = [:]
         var ids = Set<String>()
         for message in messages {
+            let isComplete = message.info.role != "assistant" || message.info.time?.completed != nil
             for part in message.parts {
                 guard let partID = part.payload.id else { continue }
                 ids.insert(partID)
-                digests[partID] = OpenCodeHydrationDiffer.partDigest(for: part)
+                digests[partID] = OpenCodeHydrationDiffer.partDigest(
+                    for: part,
+                    messageIsComplete: isComplete
+                )
             }
         }
         partIDs = ids
@@ -494,6 +498,8 @@ struct OpenCodeHydrationResult: Equatable {
     let observedState: OpenCodeHydrationState
     let storedState: OpenCodeHydrationState
     let diff: OpenCodeHydrationDiff
+    /// Present only when the fetch is known to cover the entire session.
+    let canonicalAssistantCount: Int?
 }
 
 struct OpenCodeHydrationDiff: Equatable {
@@ -501,22 +507,29 @@ struct OpenCodeHydrationDiff: Equatable {
     let removedMessageIDs: Set<String>
     let addedPartIDs: Set<String>
     let removedPartIDs: Set<String>
+    let updatedPartIDs: Set<String>
 
     var hasChanges: Bool {
         !addedMessageIDs.isEmpty
             || !removedMessageIDs.isEmpty
             || !addedPartIDs.isEmpty
             || !removedPartIDs.isEmpty
+            || !updatedPartIDs.isEmpty
     }
 }
 
 enum OpenCodeHydrationDiffer {
     static func diff(local: OpenCodeHydrationState, remote: OpenCodeHydrationState) -> OpenCodeHydrationDiff {
-        OpenCodeHydrationDiff(
+        let sharedPartIDs = local.partIDs.intersection(remote.partIDs)
+        let updatedPartIDs = Set(sharedPartIDs.filter { partID in
+            local.partDigests[partID] != remote.partDigests[partID]
+        })
+        return OpenCodeHydrationDiff(
             addedMessageIDs: remote.messageIDs.subtracting(local.messageIDs),
             removedMessageIDs: local.messageIDs.subtracting(remote.messageIDs),
             addedPartIDs: remote.partIDs.subtracting(local.partIDs),
-            removedPartIDs: local.partIDs.subtracting(remote.partIDs)
+            removedPartIDs: local.partIDs.subtracting(remote.partIDs),
+            updatedPartIDs: updatedPartIDs
         )
     }
 
@@ -533,12 +546,13 @@ enum OpenCodeHydrationDiffer {
                 return true
             }
 
+            let isComplete = message.info.role != "assistant" || message.info.time?.completed != nil
             for part in message.parts {
                 guard let partID = part.payload.id else { continue }
                 if !local.partIDs.contains(partID) {
                     return true
                 }
-                let remoteDigest = partDigest(for: part)
+                let remoteDigest = partDigest(for: part, messageIsComplete: isComplete)
                 if local.partDigests[partID] != remoteDigest {
                     return true
                 }
@@ -560,7 +574,7 @@ enum OpenCodeHydrationDiffer {
     }
 
     /// Stable, non-sensitive fingerprint of part content for change detection.
-    static func partDigest(for part: OpenCodeMessagePart) -> String {
+    static func partDigest(for part: OpenCodeMessagePart, messageIsComplete: Bool) -> String {
         let payload = part.payload
         let text = payload.text ?? ""
         let tool = payload.tool ?? ""
@@ -573,7 +587,8 @@ enum OpenCodeHydrationDiffer {
         }
         let errorFlag = payload.error != nil ? "1" : "0"
         // FNV-1a 64-bit over a compact metadata string (no raw secrets logged).
-        let material = "\(payload.type)|\(tool)|\(stateStatus)|\(text.count)|\(outputLen)|\(errorFlag)|\(text)"
+        let completionFlag = messageIsComplete ? "1" : "0"
+        let material = "\(payload.type)|\(tool)|\(stateStatus)|\(text.count)|\(outputLen)|\(errorFlag)|\(completionFlag)|\(text)"
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in material.utf8 {
             hash ^= UInt64(byte)

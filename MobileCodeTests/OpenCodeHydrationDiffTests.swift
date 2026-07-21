@@ -55,6 +55,26 @@ final class OpenCodeHydrationDiffTests: XCTestCase {
         XCTAssertTrue(selected.isEmpty)
     }
 
+    func testDiffSelectionIncludesCompletionOnlyTransition() throws {
+        let unfinished = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [{"info":{"id":"msg_existing","role":"assistant","sessionID":"ses_fixture","time":{"created":1}},"parts":[{"type":"text","id":"prt_existing","messageID":"msg_existing","sessionID":"ses_fixture","text":"same text"}]}]
+        """.utf8))
+        let completed = try JSONDecoder().decode([OpenCodeSessionMessage].self, from: Data("""
+        [{"info":{"id":"msg_existing","role":"assistant","sessionID":"ses_fixture","time":{"created":1,"completed":2}},"parts":[{"type":"text","id":"prt_existing","messageID":"msg_existing","sessionID":"ses_fixture","text":"same text"}]}]
+        """.utf8))
+        let local = OpenCodeHydrationState(messages: unfinished)
+
+        let selected = OpenCodeHydrationDiffer.messagesNeedingHydration(
+            local: local,
+            remoteMessages: completed
+        )
+        let diff = OpenCodeHydrationDiffer.diff(local: local, remoteMessages: completed)
+
+        XCTAssertEqual(selected.map(\.info.id), ["msg_existing"])
+        XCTAssertEqual(diff.updatedPartIDs, ["prt_existing"])
+        XCTAssertTrue(diff.hasChanges)
+    }
+
     func testBoundedStateMergingKeepsOutOfWindowIDs() throws {
         let remote = try messages([
             ("msg_recent", ["prt_recent"])

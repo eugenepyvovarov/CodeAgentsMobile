@@ -18,6 +18,7 @@ import {
 } from "./limits";
 import { sanitizeNotificationPreview } from "./notificationPreview";
 import { enforceNewServerNamespaceLimit, enforceRequestRateLimits } from "./rateLimit";
+import { buildReplyFinishedDataPayload, excludeInstallation } from "./replyFinished";
 
 admin.initializeApp();
 
@@ -276,6 +277,23 @@ export const triggerReplyFinished = onRequest(
         ? sanitizeNotificationPreview(body["message_preview"], 240)
         : null;
       const renderableAssistantCount = normalizeInt(body["renderable_assistant_count"]);
+      const assistantMessageCursor = normalizeInt(body["assistant_message_cursor"]);
+      const cursorVersion = normalizeInt(body["cursor_version"]);
+      const excludedInstallationId = normalizeBoundedString(
+        body["exclude_installation_id"],
+        LIMITS.maxInstallationIdLength,
+        "exclude_installation_id"
+      );
+      const excludedFCMToken = normalizeBoundedString(
+        body["exclude_fcm_token"],
+        LIMITS.maxFcmTokenLength,
+        "exclude_fcm_token"
+      );
+      const completionId = normalizeBoundedString(
+        body["completion_id"],
+        LIMITS.maxCompletionIdLength,
+        "completion_id"
+      );
 
       if (!cwd) {
         res.status(400).json({ error: "bad_request" });
@@ -290,19 +308,33 @@ export const triggerReplyFinished = onRequest(
       // Do not create server/agent namespaces from trigger alone (abuse surface).
       const serverSnap = await serverRef.get();
       if (!serverSnap.exists) {
-        res.status(200).json({ ok: true, attempted: 0, sent: 0, reason: "unknown_server" });
+        res.status(200).json({
+          ok: true,
+          attempted: 0,
+          sent: 0,
+          excluded: 0,
+          reason: "unknown_server",
+        });
         return;
       }
 
       const devicesSnap = await agentRef.collection("devices").get();
+      const registeredDevices = devicesSnap.docs.map((doc) => ({
+        installationId: doc.id,
+        fcmToken: doc.data().fcmToken as unknown,
+      }));
+      const selectedDevices = excludeInstallation(
+        registeredDevices,
+        excludedInstallationId,
+        excludedFCMToken
+      );
       const devices: DeviceRegistration[] = [];
-      for (const doc of devicesSnap.docs) {
-        const data = doc.data();
-        const token = typeof data.fcmToken === "string" ? data.fcmToken.trim() : "";
+      for (const device of selectedDevices.included) {
+        const token = typeof device.fcmToken === "string" ? device.fcmToken.trim() : "";
         if (!token || token.length > LIMITS.maxFcmTokenLength) {
           continue;
         }
-        devices.push({ installationId: doc.id, fcmToken: token });
+        devices.push({ installationId: device.installationId, fcmToken: token });
       }
 
       const agentSnap = await agentRef.get();
@@ -318,24 +350,27 @@ export const triggerReplyFinished = onRequest(
       }
 
       if (!devices.length) {
-        res.status(200).json({ ok: true, attempted: 0, sent: 0 });
+        res.status(200).json({
+          ok: true,
+          attempted: 0,
+          sent: 0,
+          excluded: selectedDevices.excluded,
+        });
         return;
       }
 
       // Never put cwd path fragments on the lock screen.
       const titleText = agentDisplayName || "CodeAgents";
       const bodyText = messagePreview ?? "Reply ready";
-      const dataPayload: Record<string, string> = {
-        type: "reply_finished",
-        server_key: serverKey,
+      const dataPayload = buildReplyFinishedDataPayload({
+        serverKey,
         cwd,
-      };
-      if (conversationId) {
-        dataPayload["conversation_id"] = conversationId;
-      }
-      if (renderableAssistantCount !== null) {
-        dataPayload["renderable_assistant_count"] = String(renderableAssistantCount);
-      }
+        conversationId,
+        renderableAssistantCount,
+        assistantMessageCursor,
+        cursorVersion,
+        completionId,
+      });
 
       const messaging = getMessaging();
 
@@ -401,6 +436,7 @@ export const triggerReplyFinished = onRequest(
         ok: true,
         attempted,
         sent,
+        excluded: selectedDevices.excluded,
         pruned: invalidInstallationIds.length,
         preview_included: includePreview && Boolean(messagePreview),
       };

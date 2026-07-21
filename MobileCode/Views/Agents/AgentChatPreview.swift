@@ -169,21 +169,11 @@ enum AgentChatListTimestamp {
 
 /// Load the latest useful message for an agent from SwiftData.
 enum AgentChatPreviewLoader {
-    @MainActor
-    static func load(
-        projectId: UUID,
-        in context: ModelContext
-    ) -> AgentChatPreview? {
-        var descriptor = FetchDescriptor<Message>(
-            predicate: #Predicate { message in
-                message.projectId == projectId
-            },
-            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
-        )
-        // Skip a few empty/error shells to find a real preview.
-        descriptor.fetchLimit = 12
-
-        let messages = (try? context.fetch(descriptor)) ?? []
+    /// Select a preview from messages ordered newest first.
+    ///
+    /// Keeping selection separate from persistence lets SwiftUI rows observe a
+    /// project-scoped `@Query` and immediately reflect in-place message updates.
+    static func preview(fromNewestFirst messages: [Message]) -> AgentChatPreview? {
         for message in messages {
             if message.presentsAsLocalError { continue }
 
@@ -220,5 +210,23 @@ enum AgentChatPreviewLoader {
             )
         }
         return nil
+    }
+
+    @MainActor
+    static func load(
+        projectId: UUID,
+        in context: ModelContext
+    ) -> AgentChatPreview? {
+        var descriptor = FetchDescriptor<Message>(
+            predicate: #Predicate { message in
+                message.projectId == projectId
+            },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        // Skip a few empty/error shells to find a real preview.
+        descriptor.fetchLimit = 12
+
+        let messages = (try? context.fetch(descriptor)) ?? []
+        return preview(fromNewestFirst: messages)
     }
 }

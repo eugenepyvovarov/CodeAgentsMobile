@@ -15,6 +15,11 @@ extension Notification.Name {
     static let agentsUnreadDidChange = Notification.Name("agentsUnreadDidChange")
 }
 
+enum OpenCodeUnreadCursorSchema {
+    /// v2 counts unique finalized OpenCode assistant runtime message IDs per session.
+    static let currentVersion = 2
+}
+
 /// Pure totals for unread badges (unit-testable without UIKit).
 enum UnreadBadgeMath {
     /// Sum of per-agent unread counts, optionally excluding one project (e.g. the open chat).
@@ -41,16 +46,55 @@ enum UnreadBadgeMath {
     /// Count non-empty assistant bubbles (soft-sync / interactive completion).
     /// Prefer structured content when present; fall back to plain text.
     static func renderableAssistantCount(in messages: [Message]) -> Int {
-        messages.reduce(0) { partial, message in
-            guard message.role == .assistant else { return partial }
+        renderableAssistantMessages(in: messages).count
+    }
+
+    /// Canonical unread cursor unit shared by live streaming, hydration, and the daemon:
+    /// one unique finalized OpenCode assistant runtime message in the active session.
+    /// A single runtime message can produce several local tool/text rows, so UI rows
+    /// must never be used as the cross-device cursor.
+    static func finalizedOpenCodeAssistantCount(in messages: [Message], sessionID: String) -> Int {
+        finalizedOpenCodeAssistantMessageIDs(in: messages, sessionID: sessionID).count
+    }
+
+    static func finalizedOpenCodeAssistantMessageIDs(
+        in messages: [Message],
+        sessionID: String
+    ) -> Set<String> {
+        guard let sessionID = OpenCodeSessionID.sanitize(sessionID) else { return [] }
+        return Set(messages.compactMap { message in
+            guard isFinalizedOpenCodeAssistant(message, sessionID: sessionID) else { return nil }
+            return OpenCodePersistedMessageMetadata.runtimeMessageID(from: message)
+        })
+    }
+
+    /// App notices are assistant-colored rows but never proof that a remote OpenCode
+    /// reply hydrated. Require a finalized row carrying runtime + session metadata.
+    static func isFinalizedOpenCodeAssistant(_ message: Message, sessionID: String) -> Bool {
+        guard message.role == .assistant,
+              !message.isLocalError,
+              message.isComplete,
+              !message.isStreaming,
+              message.openCodeRuntimeFinalized,
+              OpenCodePersistedMessageMetadata.hasRenderableAssistantText(message),
+              OpenCodePersistedMessageMetadata.runtimeMessageID(from: message) != nil,
+              let expectedSessionID = OpenCodeSessionID.sanitize(sessionID),
+              let messageSessionID = OpenCodeSessionID.sanitize(
+                  OpenCodePersistedMessageMetadata.sessionID(from: message)
+              ) else {
+            return false
+        }
+        return messageSessionID == expectedSessionID
+    }
+
+    private static func renderableAssistantMessages(in messages: [Message]) -> [Message] {
+        messages.filter { message in
+            guard message.role == .assistant else { return false }
             if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return partial + 1
+                return true
             }
             // Tool-only assistant rows still count as a bubble once complete.
-            if message.isComplete, message.originalJSON != nil {
-                return partial + 1
-            }
-            return partial
+            return message.isComplete && message.originalJSON != nil
         }
     }
 }

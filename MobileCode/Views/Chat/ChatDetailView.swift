@@ -11,8 +11,22 @@ import ExyteChat
 import UIKit
 import UniformTypeIdentifiers
 
+private struct ChatViewportFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .null
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
+private struct ReplyMessageFrameObservation: Equatable {
+    let frame: CGRect
+    let replyRevision: Int
+    let layoutRevision: Int
+}
+
 struct ChatDetailView: View {
     @Bindable var viewModel: ChatViewModel
+    @Environment(\.scenePhase) private var scenePhase
     let assistantLabel: String
     /// Soft OpenCode connect pill (e.g. "Connecting 1/5") — orange, non-blocking.
     var openCodeConnectingLine: String? = nil
@@ -34,8 +48,14 @@ struct ChatDetailView: View {
     @State private var isUploadingAttachments = false
     @State private var showAttachmentError = false
     @State private var attachmentErrorMessage = ""
-    @State private var isBottomMessageVisible = false
+    @State private var bottomMessageFrame: CGRect = .null
+    @State private var bottomMessageID: UUID?
+    @State private var bottomMessageLayoutRevision: Int?
     @State private var shouldAutoScrollToUnreadBottom = false
+    @State private var chatViewportFrame: CGRect = .null
+    @State private var composerFrame: CGRect = .null
+    @State private var changedAssistantFrames: [UUID: ReplyMessageFrameObservation] = [:]
+    @State private var replyVisibilityWorkItems: [UUID: DispatchWorkItem] = [:]
 
     var body: some View {
         let _ = viewModel.messagesRevision
@@ -68,6 +88,9 @@ struct ChatDetailView: View {
                     return existing.detachedForRendering()
                 }()
                 let messageId = sourceMessage.id
+                let isAssistantMessage = sourceMessage.role == .assistant
+                let layoutRevision = viewModel.messagesRevision
+                let pendingReplyRevision = viewModel.openCodeReplyPendingMessageRevisions[messageId]
                 let bubble = MessageBubble(
                     message: sourceMessage,
                     userLabel: userLabel,
@@ -81,19 +104,76 @@ struct ChatDetailView: View {
                     }
                 )
 
-                if message.id == lastRenderedMessageId {
-                    return AnyView(bubble
-                        .onAppear {
-                            isBottomMessageVisible = true
-                            attemptMarkAsRead()
+                let visibilityTrackedBubble = bubble
+                    .background {
+                        if isAssistantMessage,
+                           let pendingReplyRevision {
+                            GeometryReader { proxy in
+                                let frame = proxy.frame(in: .global)
+                                Color.clear
+                                    .onAppear {
+                                        reportChangedAssistantFrame(
+                                            messageID: messageId,
+                                            replyRevision: pendingReplyRevision,
+                                            layoutRevision: layoutRevision,
+                                            frame: frame
+                                        )
+                                    }
+                                    .onChange(of: frame) { _, newFrame in
+                                        reportChangedAssistantFrame(
+                                            messageID: messageId,
+                                            replyRevision: pendingReplyRevision,
+                                            layoutRevision: layoutRevision,
+                                            frame: newFrame
+                                        )
+                                    }
+                                    .onDisappear {
+                                        reportChangedAssistantFrame(
+                                            messageID: messageId,
+                                            replyRevision: pendingReplyRevision,
+                                            layoutRevision: layoutRevision,
+                                            frame: .null
+                                        )
+                                    }
+                            }
+                            .id("reply-\(messageId.uuidString)-\(pendingReplyRevision)-\(layoutRevision)")
                         }
-                        .onDisappear {
-                            isBottomMessageVisible = false
+                    }
+
+                if message.id == lastRenderedMessageId {
+                    return AnyView(visibilityTrackedBubble
+                        .background {
+                            GeometryReader { proxy in
+                                let frame = proxy.frame(in: .global)
+                                Color.clear
+                                    .onAppear {
+                                        reportBottomMessageFrame(
+                                            messageID: messageId,
+                                            layoutRevision: layoutRevision,
+                                            frame: frame
+                                        )
+                                    }
+                                    .onChange(of: frame) { _, newFrame in
+                                        reportBottomMessageFrame(
+                                            messageID: messageId,
+                                            layoutRevision: layoutRevision,
+                                            frame: newFrame
+                                        )
+                                    }
+                                    .onDisappear {
+                                        reportBottomMessageFrame(
+                                            messageID: messageId,
+                                            layoutRevision: layoutRevision,
+                                            frame: .null
+                                        )
+                                    }
+                            }
+                            .id("bottom-\(messageId.uuidString)-\(layoutRevision)")
                         }
                     )
                 }
 
-                return AnyView(bubble)
+                return AnyView(visibilityTrackedBubble)
             },
             inputViewBuilder: { (text: Binding<String>, _: InputViewAttachments, state: InputViewState, _: InputViewStyle, action: @escaping (InputViewAction) -> Void, _: () -> Void) in
                 ExyteChatInputComposer(
@@ -134,6 +214,11 @@ struct ChatDetailView: View {
                     },
                     onRemoveAttachment: { attachmentId in
                         attachments.removeAll(where: { $0.id == attachmentId })
+                    },
+                    onFrameChange: { frame in
+                        composerFrame = frame
+                        schedulePendingReplyVisibilityRecording()
+                        attemptMarkAsRead()
                     },
                     onSend: {
                         action(.send)
@@ -181,21 +266,40 @@ struct ChatDetailView: View {
 
         let chatLifecycle = AnyView(
             chat
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: ChatViewportFramePreferenceKey.self,
+                            value: proxy.frame(in: .global)
+                        )
+                    }
+                }
                 .onAppear {
                     isVisible = true
                     viewModel.refreshProviderMismatch(for: projectContext.activeProject)
                     shouldAutoScrollToUnreadBottom = (projectContext.activeProject?.unreadCount ?? 0) > 0
                     maybeAutoScrollToBottomForUnread()
                     attemptMarkAsRead()
+                    schedulePendingReplyVisibilityRecording()
                 }
                 .onDisappear {
                     isVisible = false
+                    replyVisibilityWorkItems.values.forEach { $0.cancel() }
+                    replyVisibilityWorkItems.removeAll()
                     scrollToBottomWorkItem?.cancel()
                     scrollToBottomWorkItem = nil
                     followUpScrollWorkItem?.cancel()
                     followUpScrollWorkItem = nil
-                    isBottomMessageVisible = false
+                    bottomMessageFrame = .null
+                    bottomMessageID = nil
+                    bottomMessageLayoutRevision = nil
+                    composerFrame = .null
+                    changedAssistantFrames.removeAll()
                     shouldAutoScrollToUnreadBottom = false
+                }
+                .onPreferenceChange(ChatViewportFramePreferenceKey.self) { frame in
+                    chatViewportFrame = frame
+                    schedulePendingReplyVisibilityRecording()
                 }
         )
 
@@ -204,6 +308,24 @@ struct ChatDetailView: View {
                 .onChange(of: viewModel.messages.count) { _, _ in
                     maybeAutoScrollToBottomForUnread()
                     attemptMarkAsRead()
+                }
+                .onChange(of: viewModel.messagesRevision) { _, _ in
+                    schedulePendingReplyVisibilityRecording()
+                }
+                .onChange(of: viewModel.openCodeReplyOutputRevision) { _, _ in
+                    schedulePendingReplyVisibilityRecording()
+                    attemptMarkAsRead()
+                }
+                .onChange(of: viewModel.openCodeHydrationRevision) { _, _ in
+                    attemptMarkAsRead()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        schedulePendingReplyVisibilityRecording()
+                    } else {
+                        replyVisibilityWorkItems.values.forEach { $0.cancel() }
+                        replyVisibilityWorkItems.removeAll()
+                    }
                 }
                 .onChange(of: viewModel.isProcessing) { _, isProcessing in
                     if !isProcessing {
@@ -228,7 +350,13 @@ struct ChatDetailView: View {
                 .onChange(of: projectContext.activeProject?.id) { _, _ in
                     selectedSkill = nil
                     attachments = []
-                    isBottomMessageVisible = false
+                    bottomMessageFrame = .null
+                    bottomMessageID = nil
+                    bottomMessageLayoutRevision = nil
+                    composerFrame = .null
+                    changedAssistantFrames.removeAll()
+                    replyVisibilityWorkItems.values.forEach { $0.cancel() }
+                    replyVisibilityWorkItems.removeAll()
                     viewModel.refreshProviderMismatch(for: projectContext.activeProject)
                     attemptMarkAsRead()
                 }
@@ -398,7 +526,132 @@ struct ChatDetailView: View {
     }
 
     private var canMarkAsRead: Bool {
-        isVisible
+        guard canRecordReplyVisibility,
+              isTailVisible(bottomMessageFrame),
+              let bottomMessageID,
+              bottomMessageLayoutRevision == viewModel.messagesRevision,
+              bottomMessageID == ChatMessageAdapter.lastRenderableMessageID(in: viewModel.messages),
+              viewModel.openCodeReplyPendingMessageIDs.isEmpty,
+              viewModel.isUnreadHydrationRequirementSatisfied,
+              let bottomMessage = viewModel.messages.first(where: { $0.id == bottomMessageID }),
+              let project = projectContext.activeProject else { return false }
+
+        let unreadSession = OpenCodeSessionID.sanitize(project.unreadConversationId)
+        let currentSession = OpenCodeSessionID.sanitize(project.openCodeSessionId)
+        guard let unreadSession, let currentSession, unreadSession == currentSession else { return false }
+        return UnreadBadgeMath.isFinalizedOpenCodeAssistant(
+            bottomMessage,
+            sessionID: currentSession
+        )
+    }
+
+    private var canRecordReplyVisibility: Bool {
+        OpenCodeReplyVisibilityPolicy.shouldRecord(
+            isViewVisible: isVisible,
+            isSceneActive: scenePhase == .active,
+            isChatTabSelected: AppNavigationState.shared.selectedTab == .chat,
+            viewModelProjectID: viewModel.projectId,
+            activeProjectID: projectContext.activeProject?.id
+        )
+    }
+
+    private func isTailVisible(_ frame: CGRect) -> Bool {
+        guard !chatViewportFrame.isNull,
+              !chatViewportFrame.isEmpty,
+              !frame.isNull,
+              !frame.isEmpty else { return false }
+        let tolerance: CGFloat = 2
+        let visibleBottom: CGFloat
+        if !composerFrame.isNull,
+           !composerFrame.isEmpty,
+           composerFrame.minY > chatViewportFrame.minY,
+           composerFrame.minY < chatViewportFrame.maxY {
+            visibleBottom = composerFrame.minY
+        } else {
+            visibleBottom = chatViewportFrame.maxY
+        }
+        return frame.maxY >= chatViewportFrame.minY - tolerance
+            && frame.maxY <= visibleBottom + tolerance
+    }
+
+    private func schedulePendingReplyVisibilityRecording() {
+        for messageID in viewModel.openCodeReplyPendingMessageIDs {
+            scheduleReplyVisibilityRecording(messageID: messageID)
+        }
+    }
+
+    private func scheduleReplyVisibilityRecording(messageID: UUID) {
+        replyVisibilityWorkItems[messageID]?.cancel()
+        replyVisibilityWorkItems.removeValue(forKey: messageID)
+        guard canRecordReplyVisibility,
+              let pendingReplyRevision = viewModel.openCodeReplyPendingMessageRevisions[messageID],
+              let observation = changedAssistantFrames[messageID],
+              observation.replyRevision == pendingReplyRevision,
+              observation.layoutRevision == viewModel.messagesRevision,
+              isTailVisible(observation.frame) else { return }
+
+        // Record after the next layout/render pass. The content mutation arrives before
+        // ExyteChat has necessarily reconfigured the message cell.
+        let workItem = DispatchWorkItem { [weak viewModel] in
+            guard let viewModel,
+                  canRecordReplyVisibility,
+                  viewModel.openCodeReplyPendingMessageRevisions[messageID] == pendingReplyRevision,
+                  let currentObservation = changedAssistantFrames[messageID],
+                  currentObservation.replyRevision == pendingReplyRevision,
+                  currentObservation.layoutRevision == viewModel.messagesRevision,
+                  isTailVisible(currentObservation.frame) else { return }
+            _ = viewModel.recordVisibleOpenCodeReplyRevision(messageID: messageID)
+            attemptMarkAsRead()
+            replyVisibilityWorkItems.removeValue(forKey: messageID)
+        }
+        replyVisibilityWorkItems[messageID] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
+    }
+
+    private func reportChangedAssistantFrame(
+        messageID: UUID,
+        replyRevision: Int,
+        layoutRevision: Int,
+        frame: CGRect
+    ) {
+        DispatchQueue.main.async {
+            if frame.isNull || frame.isEmpty {
+                if let current = changedAssistantFrames[messageID],
+                   current.replyRevision == replyRevision,
+                   current.layoutRevision == layoutRevision {
+                    changedAssistantFrames.removeValue(forKey: messageID)
+                }
+            } else {
+                changedAssistantFrames[messageID] = ReplyMessageFrameObservation(
+                    frame: frame,
+                    replyRevision: replyRevision,
+                    layoutRevision: layoutRevision
+                )
+            }
+            scheduleReplyVisibilityRecording(messageID: messageID)
+        }
+    }
+
+    private func reportBottomMessageFrame(
+        messageID: UUID,
+        layoutRevision: Int,
+        frame: CGRect
+    ) {
+        DispatchQueue.main.async {
+            if frame.isNull || frame.isEmpty {
+                if bottomMessageID == messageID,
+                   bottomMessageLayoutRevision == layoutRevision {
+                    bottomMessageID = nil
+                    bottomMessageLayoutRevision = nil
+                    bottomMessageFrame = .null
+                }
+            } else {
+                bottomMessageID = messageID
+                bottomMessageLayoutRevision = layoutRevision
+                bottomMessageFrame = frame
+            }
+            attemptMarkAsRead()
+        }
     }
 
     private func attemptMarkAsRead() {
@@ -608,6 +861,7 @@ private struct ExyteChatInputComposer: View {
     let onAddCamera: () -> Void
     let onClearSkill: () -> Void
     let onRemoveAttachment: (UUID) -> Void
+    let onFrameChange: (CGRect) -> Void
     let onSend: () -> Void
     private var canSend: Bool {
         if selectedSkillName != nil || !attachments.isEmpty {
@@ -709,6 +963,21 @@ private struct ExyteChatInputComposer: View {
         )
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .background {
+            GeometryReader { proxy in
+                let frame = proxy.frame(in: .global)
+                Color.clear
+                    .onAppear {
+                        onFrameChange(frame)
+                    }
+                    .onChange(of: frame) { _, newFrame in
+                        onFrameChange(newFrame)
+                    }
+                    .onDisappear {
+                        onFrameChange(.null)
+                    }
+            }
+        }
     }
 }
 

@@ -109,21 +109,42 @@ struct TriggerReplyFinishedPayload: Codable {
     let cwd: String
     let conversation_id: String?
     let message_preview: String?
+    /// Legacy UI-bubble count retained for already-installed app builds.
     let renderable_assistant_count: Int?
+    /// v2 absolute cursor: unique finalized, renderable OpenCode assistant messages.
+    let assistant_message_cursor: Int?
+    let cursor_version: Int?
     /// Gateway defaults lock-screen body to "Reply ready" unless this is true.
     let include_preview: Bool
+    /// Omit only the installation that rendered this exact final interactive reply.
+    let exclude_installation_id: String?
+    /// Covers stale registrations when the installation document has not been stored yet.
+    let exclude_fcm_token: String?
+    /// Stable identity for deduping duplicate APNs callback paths on recipients.
+    let completion_id: String?
 
     init(
         cwd: String,
         conversationId: String?,
         messagePreview: String?,
-        renderableAssistantCount: Int?,
-        includePreview: Bool = false
+        legacyRenderableAssistantCount: Int?,
+        assistantMessageCursor: Int? = nil,
+        includePreview: Bool = false,
+        excludeInstallationId: String? = nil,
+        excludeFCMToken: String? = nil,
+        completionId: String? = nil
     ) {
         self.cwd = cwd
         self.conversation_id = conversationId
         self.message_preview = messagePreview
-        self.renderable_assistant_count = renderableAssistantCount
+        self.renderable_assistant_count = legacyRenderableAssistantCount
+        self.assistant_message_cursor = assistantMessageCursor
+        self.cursor_version = assistantMessageCursor == nil
+            ? nil
+            : OpenCodeUnreadCursorSchema.currentVersion
         self.include_preview = includePreview
+        self.exclude_installation_id = excludeInstallationId
+        self.exclude_fcm_token = excludeFCMToken
+        self.completion_id = completionId
     }
 }

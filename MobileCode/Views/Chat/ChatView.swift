@@ -195,6 +195,15 @@ struct ChatView: View {
             guard let projectId = notification.userInfo?[ReplyFinishedPushEventKey.projectId] as? UUID else { return }
             guard projectContext.activeProject?.id == projectId else { return }
             let conversationId = notification.userInfo?[ReplyFinishedPushEventKey.conversationId] as? String
+            let assistantCount = notification.userInfo?[ReplyFinishedPushEventKey.renderableAssistantCount] as? Int
+            let cursorVersion = notification.userInfo?[ReplyFinishedPushEventKey.cursorVersion] as? Int
+            if projectContext.activeProject?.unreadCount ?? 0 > 0,
+               cursorVersion == OpenCodeUnreadCursorSchema.currentVersion {
+                viewModel.requireHydrationForUnreadReply(
+                    sessionID: conversationId,
+                    minimumAssistantMessageCount: assistantCount
+                )
+            }
             Task {
                 await viewModel.refreshProxyEvents(conversationId: conversationId)
             }

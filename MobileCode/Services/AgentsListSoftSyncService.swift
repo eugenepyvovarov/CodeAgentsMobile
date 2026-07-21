@@ -125,15 +125,16 @@ enum AgentsListUnreadCursor {
     /// Cursor update after an interactive OpenCode reply fully finishes.
     ///
     /// Unlike soft-poll first-bind (history is treated as already seen), a finished
-    /// reply while the user is **not** viewing the chat must leave at least the
-    /// latest turn unread so list badges / app-icon counts stay honest.
+    /// reply whose final output was not actually seen must leave at least the latest
+    /// turn unread so list badges / app-icon counts stay honest. Chat selection alone
+    /// is not sufficient evidence that the final output was seen.
     static func applyingInteractiveReplyFinished(
         lastKnown: Int,
         lastRead: Int,
         unreadConversationId: String?,
         sessionId: String,
         absoluteAssistantCount: Int,
-        isViewingChat: Bool
+        wasFinalOutputSeen: Bool
     ) -> (lastKnown: Int, lastRead: Int, unreadConversationId: String)? {
         let sessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sessionId.isEmpty else { return nil }
@@ -162,11 +163,12 @@ enum AgentsListUnreadCursor {
             conversation = conversation ?? sessionId
         }
 
-        if isViewingChat {
-            // Live viewer: catch up read cursor so this agent does not badge itself.
-            read = known
+        if wasFinalOutputSeen {
+            // Seeing this completion proves only the supplied absolute count was read.
+            // `known` may already include a newer reply learned from another device.
+            read = max(read, min(absolute, known))
         } else {
-            // Off-screen completion: never end at 0 unread when there is history.
+            // Unseen completion: never end at 0 unread when there is history.
             // First-bind baselining sets known==read; a finished reply must leave a gap.
             known = max(known, absolute)
             if known > 0, read >= known {
@@ -179,6 +181,47 @@ enum AgentsListUnreadCursor {
             lastRead: max(0, min(read, known)),
             unreadConversationId: conversation ?? sessionId
         )
+    }
+}
+
+enum AgentsListAssistantFinality {
+    /// Keep migration unread detection scoped to IDs observed by the initial bounded poll.
+    /// Hydrated IDs let a reply inserted incomplete on poll N count when it finishes on poll N+1.
+    static func migrationBoundedCandidateRuntimeMessageIDs(
+        isCursorMigration: Bool,
+        previousHydrationMessageIDs: Set<String>,
+        initialBoundedAddedMessageIDs: Set<String>,
+        initialBoundedHydratedMessageIDs: Set<String>
+    ) -> Set<String> {
+        guard isCursorMigration, !previousHydrationMessageIDs.isEmpty else {
+            return []
+        }
+        return initialBoundedAddedMessageIDs.union(initialBoundedHydratedMessageIDs)
+    }
+
+    static func shouldCountAsNew(
+        runtimeMessageID: String,
+        existedBeforeHydration: Bool,
+        wasRuntimeFinalized: Bool,
+        wasLocallyIncompleteOrStreaming: Bool,
+        hydratedRole: MessageRole,
+        hydratedIsComplete: Bool,
+        hydratedText: String,
+        isCursorMigration: Bool,
+        migrationBoundedCandidateRuntimeMessageIDs: Set<String>
+    ) -> Bool {
+        guard hydratedRole == .assistant,
+              hydratedIsComplete,
+              !hydratedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        if isCursorMigration {
+            guard migrationBoundedCandidateRuntimeMessageIDs.contains(runtimeMessageID) else {
+                return false
+            }
+            return !existedBeforeHydration || wasLocallyIncompleteOrStreaming
+        }
+        return !existedBeforeHydration || !wasRuntimeFinalized
     }
 }
 
@@ -240,10 +283,32 @@ final class AgentsListSoftSyncService {
             }
 
             do {
-                let result = try await runtime.hydrateMessages(
+                let initialBoundedResult = try await runtime.hydrateMessages(
                     for: project,
                     mode: .initialBounded(limit: messageFetchLimit)
                 )
+                let isCursorMigration =
+                    project.unreadCursorVersion != OpenCodeUnreadCursorSchema.currentVersion
+                let migrationBoundedCandidateIDs =
+                    AgentsListAssistantFinality.migrationBoundedCandidateRuntimeMessageIDs(
+                        isCursorMigration: isCursorMigration,
+                        previousHydrationMessageIDs: initialBoundedResult.previousState.messageIDs,
+                        initialBoundedAddedMessageIDs: initialBoundedResult.diff.addedMessageIDs,
+                        initialBoundedHydratedMessageIDs: Set(
+                            initialBoundedResult.hydratedMessages.map(\.runtimeMessageID)
+                        )
+                    )
+                var result = initialBoundedResult
+                // A full page is not proof of an absolute session total. When the
+                // bounded poll sees a newly finalized reply, pay for one unbounded
+                // snapshot before changing the cross-device unread cursor.
+                if result.canonicalAssistantCount == nil,
+                   result.hydratedMessages.contains(where: {
+                       $0.role == .assistant && $0.isComplete
+                           && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                   }) {
+                    result = try await runtime.hydrateMessages(for: project, mode: .fullRefresh)
+                }
                 lastMessageCheckAt[project.id] = Date()
 
                 let previousUnread = project.unreadCount
@@ -251,8 +316,30 @@ final class AgentsListSoftSyncService {
                     result,
                     project: project,
                     sessionId: sessionId,
+                    migrationBoundedCandidateRuntimeMessageIDs: migrationBoundedCandidateIDs,
                     modelContext: modelContext
                 )
+                // Persist merged rows/cursors before advancing hydration anchors. If
+                // the app dies between these saves, the next poll safely repeats work
+                // instead of leaving anchors ahead of durable messages.
+                try modelContext.save()
+                let previousHydrationState = project.openCodeHydrationState
+                project.updateOpenCodeHydrationState(
+                    result.storedState,
+                    updateModifiedTimestamp: false
+                )
+                do {
+                    try modelContext.save()
+                } catch {
+                    project.updateOpenCodeHydrationState(
+                        previousHydrationState,
+                        updateModifiedTimestamp: false
+                    )
+                    SSHLogger.log(
+                        "Agents soft message sync anchor save failed: \(error.localizedDescription)",
+                        level: .warning
+                    )
+                }
                 results.append(applied)
 
                 if applied.insertedMessages > 0 || applied.newAssistantMessages > 0 || applied.unreadCount != previousUnread {
@@ -282,17 +369,6 @@ final class AgentsListSoftSyncService {
             }
         }
 
-        if !results.isEmpty {
-            do {
-                try modelContext.save()
-            } catch {
-                SSHLogger.log(
-                    "Agents soft message sync save failed: \(error.localizedDescription)",
-                    level: .warning
-                )
-            }
-        }
-
         UnreadBadgeService.refreshAppIconBadge(using: modelContext)
         return results
     }
@@ -303,9 +379,11 @@ final class AgentsListSoftSyncService {
         _ result: OpenCodeHydrationResult,
         project: RemoteProject,
         sessionId: String,
+        migrationBoundedCandidateRuntimeMessageIDs: Set<String>,
         modelContext: ModelContext
     ) -> AgentsListMessageSyncResult {
         let projectId = project.id
+        let isCursorMigration = project.unreadCursorVersion != OpenCodeUnreadCursorSchema.currentVersion
         let existingMessages = (try? modelContext.fetch(
             FetchDescriptor<Message>(
                 predicate: #Predicate { message in
@@ -345,20 +423,31 @@ final class AgentsListSoftSyncService {
                 if let existing = existingMessages.first(where: {
                     Self.runtimeMessageID(from: $0) == hydrated.runtimeMessageID
                 }) {
-                    let wasEmpty = existing.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let wasRuntimeFinalized = existing.openCodeRuntimeFinalized
+                    let wasLocallyIncompleteOrStreaming = !existing.isComplete || existing.isStreaming
                     if !hydrated.text.isEmpty, existing.content != hydrated.text {
                         existing.content = hydrated.text
                         updated += 1
-                        // Streaming placeholder → finished text: count as a new assistant for delta logs.
-                        if existing.role == .assistant, wasEmpty {
-                            newAssistants += 1
-                        }
                     }
                     if let payload = hydrated.originalPayload {
                         existing.originalJSON = payload
                     }
-                    existing.isComplete = true
-                    existing.isStreaming = false
+                    existing.isComplete = hydrated.isComplete
+                    existing.isStreaming = !hydrated.isComplete
+                    existing.openCodeRuntimeFinalized = hydrated.isComplete
+                    if AgentsListAssistantFinality.shouldCountAsNew(
+                        runtimeMessageID: hydrated.runtimeMessageID,
+                        existedBeforeHydration: true,
+                        wasRuntimeFinalized: wasRuntimeFinalized,
+                        wasLocallyIncompleteOrStreaming: wasLocallyIncompleteOrStreaming,
+                        hydratedRole: hydrated.role,
+                        hydratedIsComplete: hydrated.isComplete,
+                        hydratedText: hydrated.text,
+                        isCursorMigration: isCursorMigration,
+                        migrationBoundedCandidateRuntimeMessageIDs: migrationBoundedCandidateRuntimeMessageIDs
+                    ) {
+                        newAssistants += 1
+                    }
                 }
                 runtimeIDs.insert(hydrated.runtimeMessageID)
                 continue
@@ -371,12 +460,13 @@ final class AgentsListSoftSyncService {
                 role: hydrated.role,
                 projectId: projectId,
                 originalJSON: hydrated.originalPayload,
-                isComplete: true,
-                isStreaming: false
+                isComplete: hydrated.isComplete,
+                isStreaming: !hydrated.isComplete
             )
             if let createdAt = hydrated.createdAt {
                 message.timestamp = createdAt
             }
+            message.openCodeRuntimeFinalized = hydrated.isComplete
             modelContext.insert(message)
             allMessages.append(message)
             runtimeIDs.insert(hydrated.runtimeMessageID)
@@ -388,45 +478,62 @@ final class AgentsListSoftSyncService {
                 }
             }
             inserted += 1
-            if hydrated.role == .assistant,
-               !hydrated.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if AgentsListAssistantFinality.shouldCountAsNew(
+                runtimeMessageID: hydrated.runtimeMessageID,
+                existedBeforeHydration: false,
+                wasRuntimeFinalized: false,
+                wasLocallyIncompleteOrStreaming: false,
+                hydratedRole: hydrated.role,
+                hydratedIsComplete: hydrated.isComplete,
+                hydratedText: hydrated.text,
+                isCursorMigration: isCursorMigration,
+                migrationBoundedCandidateRuntimeMessageIDs: migrationBoundedCandidateRuntimeMessageIDs
+            ) {
                 newAssistants += 1
             }
         }
 
-        // Absolute total after merge — catches updates of already-inserted streaming placeholders
-        // that the insert-only delta used to miss (leave chat mid-answer → no badge).
-        let absoluteAssistants = UnreadBadgeMath.renderableAssistantCount(in: allMessages)
-        let previousConversation = project.unreadConversationId?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let isUnreadUninitialized =
-            (previousConversation == nil || previousConversation?.isEmpty == true)
-            && project.lastKnownUnreadCursor == 0
-            && project.lastReadUnreadCursor == 0
+        // Only a fetch known to cover the entire session can move the v2 absolute
+        // cursor. Never relabel a bounded local merge as a cross-device total.
+        if let absoluteAssistants = result.canonicalAssistantCount {
+            if project.unreadCursorVersion != OpenCodeUnreadCursorSchema.currentVersion {
+                project.unreadCursorVersion = OpenCodeUnreadCursorSchema.currentVersion
+                project.unreadConversationId = nil
+                project.lastKnownUnreadCursor = 0
+                project.lastReadUnreadCursor = 0
+            }
 
-        if isUnreadUninitialized, newAssistants > 0, absoluteAssistants > 0 {
-            // First soft-poll that also discovered new assistant content: baseline prior
-            // history as read, but keep the newly discovered assistants as unread.
-            project.unreadConversationId = sessionId
-            project.lastKnownUnreadCursor = absoluteAssistants
-            project.lastReadUnreadCursor = max(0, absoluteAssistants - newAssistants)
-        } else if let cursors = AgentsListUnreadCursor.applyingAbsolute(
-            lastKnown: project.lastKnownUnreadCursor,
-            lastRead: project.lastReadUnreadCursor,
-            unreadConversationId: project.unreadConversationId,
-            sessionId: sessionId,
-            absoluteAssistantCount: absoluteAssistants
-        ) {
-            project.lastKnownUnreadCursor = cursors.lastKnown
-            project.lastReadUnreadCursor = cursors.lastRead
-            project.unreadConversationId = cursors.unreadConversationId
+            let previousConversation = project.unreadConversationId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let isUnreadUninitialized =
+                (previousConversation == nil || previousConversation?.isEmpty == true)
+                && project.lastKnownUnreadCursor == 0
+                && project.lastReadUnreadCursor == 0
+
+            if isUnreadUninitialized, newAssistants > 0, absoluteAssistants > 0 {
+                // First canonical poll that also discovered new finalized content:
+                // baseline older history as read while keeping the new replies unread.
+                project.unreadConversationId = sessionId
+                project.lastKnownUnreadCursor = absoluteAssistants
+                project.lastReadUnreadCursor = max(0, absoluteAssistants - newAssistants)
+            } else if let cursors = AgentsListUnreadCursor.applyingAbsolute(
+                lastKnown: project.lastKnownUnreadCursor,
+                lastRead: project.lastReadUnreadCursor,
+                unreadConversationId: project.unreadConversationId,
+                sessionId: sessionId,
+                absoluteAssistantCount: absoluteAssistants
+            ) {
+                project.lastKnownUnreadCursor = cursors.lastKnown
+                project.lastReadUnreadCursor = cursors.lastRead
+                project.unreadConversationId = cursors.unreadConversationId
+            }
         }
 
         // Unread/metadata updates must not reorder the Agents list.
         // Only real chat messages advance `lastMessageAt` (above).
 
         let latestPreview = allMessages
-            .filter { $0.role == .assistant }
+            .filter { UnreadBadgeMath.isFinalizedOpenCodeAssistant($0, sessionID: sessionId) }
             .sorted { $0.timestamp < $1.timestamp }
             .last(where: { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
             .content
@@ -437,7 +544,7 @@ final class AgentsListSoftSyncService {
             updatedMessages: updated,
             newAssistantMessages: newAssistants,
             unreadCount: project.unreadCount,
-            absoluteAssistantCount: absoluteAssistants,
+            absoluteAssistantCount: result.canonicalAssistantCount ?? project.lastKnownUnreadCursor,
             latestAssistantPreview: latestPreview
         )
     }

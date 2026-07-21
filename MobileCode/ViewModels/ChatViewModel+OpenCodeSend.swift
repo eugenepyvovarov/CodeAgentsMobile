@@ -8,12 +8,13 @@
 import SwiftUI
 import Observation
 import SwiftData
+import UIKit
 
 extension ChatViewModel {
     /// True while an OpenCode `/event` consumer is attached for this chat.
     var isOpenCodeEventStreamActive: Bool {
         guard let openCodeSendTask else { return false }
-        return !openCodeSendTask.isCancelled
+        return isProcessing && !openCodeSendTask.isCancelled
     }
 
     func abortCurrentResponse() async {
@@ -23,6 +24,7 @@ extension ChatViewModel {
         openCodeSendTask = nil
         // Invalidate generation so any lingering stream consumer exits without mutating UI.
         openCodeSendGeneration = UUID()
+        clearAllOpenCodeReplyObservations()
 
         do {
             try await runtimeRegistry.runtime(for: .openCode).abort(project: project)
@@ -324,6 +326,7 @@ extension ChatViewModel {
         clearStaleOpenCodeStreamingAnchor(on: project)
 
         let assistantMessage = createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
+        beginOpenCodeReplyObservation(generation: sendGeneration, initialMessageID: assistantMessage.id)
         streamingMessage = assistantMessage
         streamingRedrawToken = UUID()
         isProcessing = true
@@ -335,9 +338,9 @@ extension ChatViewModel {
         // finishes the reply, persists messages, and updates unread / notifications.
         // Background task: without this, iOS freezes the process when the user switches
         // apps and the reply never completes → no push.
-        beginOpenCodeSendBackgroundExecution()
+        let backgroundTaskID = beginOpenCodeSendBackgroundExecution()
         let sendTask = Task { @MainActor in
-            defer { self.endOpenCodeSendBackgroundExecution() }
+            defer { self.endOpenCodeSendBackgroundExecution(backgroundTaskID) }
             await self.consumeOpenCodeSendStream(
                 text: text,
                 project: project,
@@ -405,6 +408,7 @@ extension ChatViewModel {
         projectID: UUID,
         generation: UUID
     ) async {
+        var retainUnseenObservation = false
         do {
             let runtime = runtimeRegistry.runtime(for: .openCode)
             let stream = runtime.sendMessage(text, in: project, messageId: nil, mcpServers: cachedMCPServers)
@@ -413,6 +417,7 @@ extension ChatViewModel {
             var toolMessagesByPartID: [String: Message] = [:]
             var textMessagesByPartID: [String: Message] = [:]
             var textMessagesByMessageID: [String: Message] = [:]
+            var exactSubmittedReplyRuntimeIDs = Set<String>()
             var assistantMessageIsTransientProgress = false
             var assistantMessageWasRemoved = false
             // Placeholder may be removed; keep a live target for late progress/errors after soft-steer.
@@ -423,6 +428,11 @@ extension ChatViewModel {
                 guard ownsOpenCodeWork(projectID: projectID, generation: generation, kind: .send) else { break }
 
                 let chunkType = chunk.metadata?["type"] as? String
+                if chunk.metadata?["opencodeSubmittedReply"] as? Bool == true,
+                   let runtimeMessageID = chunk.metadata?["opencodeMessageId"] as? String,
+                   !runtimeMessageID.isEmpty {
+                    exactSubmittedReplyRuntimeIDs.insert(runtimeMessageID)
+                }
 
                 if chunkType == "tool_permission" {
                     handleToolPermissionChunk(chunk, project: project)
@@ -457,6 +467,7 @@ extension ChatViewModel {
                         )
                         toolMessagesByPartID[partID] = toolMessage
                     }
+                    registerOpenCodeReplyMessage(toolMessage, generation: generation)
                     project.activeStreamingMessageId = toolMessage.id
                     isProcessing = true
 
@@ -484,6 +495,7 @@ extension ChatViewModel {
                     let progressTarget = activeAssistantPlaceholder
                         ?? createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
                     activeAssistantPlaceholder = progressTarget
+                    registerOpenCodeReplyMessage(progressTarget, generation: generation)
                     updateMessage(progressTarget, with: chunk.content)
                     progressTarget.isStreaming = true
                     progressTarget.isComplete = false
@@ -502,6 +514,7 @@ extension ChatViewModel {
                     let errorTarget = activeAssistantPlaceholder
                         ?? lastTextMessage
                         ?? createMessage(content: "", role: .assistant, isComplete: false, isStreaming: true)
+                    registerOpenCodeReplyMessage(errorTarget, generation: generation)
                     updateMessage(errorTarget, with: errorText)
                     errorTarget.isStreaming = false
                     errorTarget.isComplete = true
@@ -540,6 +553,7 @@ extension ChatViewModel {
                     if let partID {
                         textMessagesByPartID[partID] = targetMessage
                     }
+                    registerOpenCodeReplyMessage(targetMessage, generation: generation)
                     updateOpenCodeMessage(targetMessage, with: chunk)
                     project.activeStreamingMessageId = targetMessage.id
                     isProcessing = true
@@ -547,6 +561,7 @@ extension ChatViewModel {
                     if let placeholder = activeAssistantPlaceholder,
                        targetMessage.id != placeholder.id,
                        assistantMessageIsTransientProgress || placeholder.content.isEmpty {
+                        unregisterOpenCodeReplyMessage(placeholder, generation: generation)
                         removeTransientOpenCodeMessage(placeholder)
                         assistantMessageIsTransientProgress = false
                         assistantMessageWasRemoved = true
@@ -577,6 +592,10 @@ extension ChatViewModel {
                 }
             }
 
+            guard ownsOpenCodeWork(projectID: projectID, generation: generation, kind: .send) else {
+                return
+            }
+
             if Task.isCancelled {
                 finalizeOpenCodeStreamingMessages(markerForEmpty: nil)
             } else if !didReceiveAnswerText {
@@ -586,7 +605,8 @@ extension ChatViewModel {
                 if let placeholder = activeAssistantPlaceholder, !assistantMessageWasRemoved {
                     updateMessage(placeholder, with: fallback)
                 } else {
-                    _ = createMessage(content: fallback, role: .assistant)
+                    let fallbackMessage = createMessage(content: fallback, role: .assistant)
+                    registerOpenCodeReplyMessage(fallbackMessage, generation: generation)
                 }
             }
 
@@ -607,34 +627,110 @@ extension ChatViewModel {
             project.updateLastModified()
             saveChanges()
 
+            // End stream-owned UI state before any notification I/O. The gateway can be
+            // slow or unavailable and must never keep "still processing" visible or
+            // route a new prompt into a stream that already ended.
+            streamingMessage = nil
+            streamingBlocks = []
+            isProcessing = false
+            showActiveSessionIndicator = false
+
             // When the user left this chat (agents list / other agent), bump unread and
             // fire the same reply_finished path scheduled jobs use.
             if !Task.isCancelled {
-                let preview = messages
-                    .filter { $0.role == .assistant }
-                    .sorted { $0.timestamp < $1.timestamp }
-                    .last(where: {
-                        !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    })?
-                    .content
-                let absolute = UnreadBadgeMath.renderableAssistantCount(in: messages)
-                // activeServer is nil on agents list; resolve by project.serverId.
-                let server = ProjectContext.shared.activeServer
-                    ?? ServerManager.shared.server(withId: project.serverId)
-                await PushNotificationsManager.shared.notifyInteractiveReplyFinished(
-                    project: project,
-                    server: server,
-                    messagePreview: preview,
-                    absoluteAssistantCount: absolute
+                guard let sessionID = OpenCodeSessionID.sanitize(project.openCodeSessionId) else {
+                    clearOpenCodeReplyObservation(generation: generation)
+                    return
+                }
+                let completedReplyRuntimeIDs = finalizedOpenCodeReplyRuntimeMessageIDs(
+                    generation: generation,
+                    sessionID: sessionID
                 )
-                saveChanges()
+                let exactCompletedReplyRuntimeIDs = completedReplyRuntimeIDs.intersection(
+                    exactSubmittedReplyRuntimeIDs
+                )
+
+                // Local fallback/errors are assistant-colored UI, not a completed
+                // OpenCode reply. Never reopen unread or schedule a late notification
+                // for old history when this send produced no finalized runtime message.
+                if exactCompletedReplyRuntimeIDs.isEmpty {
+                    clearOpenCodeReplyObservation(generation: generation)
+                } else {
+                    let canonicalSessionID = OpenCodeSessionID.sanitize(
+                        project.openCodeCanonicalAssistantSessionId
+                    )
+                    let canonicalAssistantIDs = Set(project.openCodeCanonicalAssistantMessageIds)
+                    guard canonicalSessionID == sessionID,
+                          exactCompletedReplyRuntimeIDs.isSubset(of: canonicalAssistantIDs) else {
+                        // Stream teardown performs an unbounded REST snapshot before
+                        // returning. If that proof failed, do not label a bounded local
+                        // count as an absolute cross-device cursor.
+                        SSHLogger.log(
+                            "Reply notification skipped: canonical assistant cursor unavailable",
+                            level: .warning
+                        )
+                        clearOpenCodeReplyObservation(generation: generation)
+                        return
+                    }
+                    let preview = messages
+                        .filter {
+                            UnreadBadgeMath.isFinalizedOpenCodeAssistant($0, sessionID: sessionID)
+                                && exactCompletedReplyRuntimeIDs.contains(
+                                    OpenCodePersistedMessageMetadata.runtimeMessageID(from: $0) ?? ""
+                                )
+                        }
+                        .sorted { $0.timestamp < $1.timestamp }
+                        .last(where: {
+                            !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        })?
+                        .content
+                    let absolute = canonicalAssistantIDs.count
+                    let server = serverForCompletedReply(project)
+
+                    // Give the final Exyte cell one render/layout pass. ChatDetailView uses
+                    // the same small settle window before confirming that every changed
+                    // reply row's tail was actually inside the visible chat viewport.
+                    if UIApplication.shared.applicationState == .active {
+                        try? await Task.sleep(nanoseconds: 75_000_000)
+                    }
+                    guard !Task.isCancelled else {
+                        clearOpenCodeReplyObservation(generation: generation)
+                        return
+                    }
+                    let wasFinalOutputSeen = wasFinalOpenCodeReplyOutputSeen(generation: generation)
+                    if wasFinalOutputSeen {
+                        clearOpenCodeReplyObservation(generation: generation)
+                    } else {
+                        // Keep unresolved per-row evidence until the user actually renders
+                        // it (or leaves this project). Removing it on a timer would turn
+                        // "not observed" into read eligibility as soon as the timer fired.
+                        retainUnseenObservation = true
+                        retainUnseenOpenCodeReplyObservation(generation: generation)
+                    }
+
+                    await PushNotificationsManager.shared.notifyInteractiveReplyFinished(
+                        project: project,
+                        server: server,
+                        messagePreview: preview,
+                        legacyRenderableAssistantCount: UnreadBadgeMath.renderableAssistantCount(in: messages),
+                        absoluteAssistantCount: absolute,
+                        wasFinalOutputSeen: wasFinalOutputSeen,
+                        completionId: generation.uuidString
+                    )
+                    saveChanges()
+                }
             }
         } catch is CancellationError {
-            finalizeOpenCodeStreamingMessages(markerForEmpty: nil)
-            project.activeStreamingMessageId = nil
-            project.updateLastModified()
-            saveChanges()
+            if ownsOpenCodeWork(projectID: projectID, generation: generation, kind: .send) {
+                finalizeOpenCodeStreamingMessages(markerForEmpty: nil)
+                project.activeStreamingMessageId = nil
+                project.updateLastModified()
+                saveChanges()
+            }
         } catch {
+            guard ownsOpenCodeWork(projectID: projectID, generation: generation, kind: .send) else {
+                return
+            }
             let errorText = "Failed to get OpenCode response: \(error.localizedDescription)"
             if assistantMessage.isStreaming || assistantMessage.content.isEmpty {
                 updateMessage(assistantMessage, with: errorText)
@@ -648,9 +744,30 @@ extension ChatViewModel {
             saveChanges()
         }
 
-        streamingMessage = nil
-        streamingBlocks = []
-        isProcessing = false
-        showActiveSessionIndicator = false
+        if ownsOpenCodeWork(projectID: projectID, generation: generation, kind: .send) {
+            streamingMessage = nil
+            streamingBlocks = []
+            isProcessing = false
+            showActiveSessionIndicator = false
+            if !retainUnseenObservation {
+                clearOpenCodeReplyObservation(generation: generation)
+            }
+        }
+    }
+
+    private func serverForCompletedReply(_ project: RemoteProject) -> Server? {
+        if let activeServer = ProjectContext.shared.activeServer,
+           activeServer.id == project.serverId {
+            return activeServer
+        }
+        if let loadedServer = ServerManager.shared.server(withId: project.serverId) {
+            return loadedServer
+        }
+        guard let modelContext else { return nil }
+        let serverID = project.serverId
+        let descriptor = FetchDescriptor<Server>(
+            predicate: #Predicate { server in server.id == serverID }
+        )
+        return (try? modelContext.fetch(descriptor))?.first
     }
 }

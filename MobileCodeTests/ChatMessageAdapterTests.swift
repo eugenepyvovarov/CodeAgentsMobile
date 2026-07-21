@@ -36,4 +36,15 @@ final class ChatMessageAdapterTests: XCTestCase {
         let firstMessage = try XCTUnwrap(adapter.exyteMessages.first, "Expected one adapter message")
         XCTAssertEqual(firstMessage.text, "...")
     }
+
+    func testLastRenderableMessageIDExcludesHiddenSessionRows() {
+        let visible = Message(content: "Done", role: .assistant)
+        let hiddenResult = Message(content: "", role: .assistant)
+        hiddenResult.originalJSON = #"{"type":"result","subtype":"success"}"#.data(using: .utf8)
+
+        XCTAssertEqual(
+            ChatMessageAdapter.lastRenderableMessageID(in: [visible, hiddenResult]),
+            visible.id
+        )
+    }
 }

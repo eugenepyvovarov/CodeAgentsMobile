@@ -1,4 +1,5 @@
 import XCTest
+import SwiftData
 @testable import CodeAgentsMobile
 
 final class AgentChatPreviewTests: XCTestCase {
@@ -100,6 +101,67 @@ final class AgentChatPreviewTests: XCTestCase {
         )
         XCTAssertEqual(preview.listLine, "Using tools…")
         XCTAssertNotNil(preview.activity.systemImage)
+    }
+
+    func testPreviewSelectorReflectsInPlaceStreamingCompletion() throws {
+        let message = Message(
+            content: "",
+            role: .assistant,
+            projectId: UUID(),
+            isComplete: false,
+            isStreaming: true
+        )
+
+        let streaming = try XCTUnwrap(
+            AgentChatPreviewLoader.preview(fromNewestFirst: [message])
+        )
+        XCTAssertEqual(streaming.listLine, "Typing…")
+        XCTAssertTrue(streaming.isStreaming)
+
+        message.content = "Final answer"
+        message.isStreaming = false
+        message.isComplete = true
+
+        let completed = try XCTUnwrap(
+            AgentChatPreviewLoader.preview(fromNewestFirst: [message])
+        )
+        XCTAssertEqual(completed.listLine, "Final answer")
+        XCTAssertFalse(completed.isStreaming)
+    }
+
+    @MainActor
+    func testPersistedLoaderReflectsInPlaceStreamingCompletion() throws {
+        let schema = Schema([Message.self])
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = container.mainContext
+        let projectId = UUID()
+        let message = Message(
+            content: "",
+            role: .assistant,
+            projectId: projectId,
+            isComplete: false,
+            isStreaming: true
+        )
+        context.insert(message)
+        try context.save()
+
+        XCTAssertEqual(
+            AgentChatPreviewLoader.load(projectId: projectId, in: context)?.listLine,
+            "Typing…"
+        )
+
+        message.content = "Persisted final answer"
+        message.isStreaming = false
+        message.isComplete = true
+        try context.save()
+
+        let completed = try XCTUnwrap(
+            AgentChatPreviewLoader.load(projectId: projectId, in: context)
+        )
+        XCTAssertEqual(completed.listLine, "Persisted final answer")
+        XCTAssertFalse(completed.isStreaming)
+        withExtendedLifetime(container) {}
     }
 
     func testTimestampTodayIsTimeOnly() {

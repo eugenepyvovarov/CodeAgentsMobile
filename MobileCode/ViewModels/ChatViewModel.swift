@@ -41,10 +41,16 @@ class ChatViewModel {
     /// Used to drive auto-scroll while streaming.
     var messagesRevision = 0
 
+    /// Ephemeral per-send observation used to avoid notifying this installation for
+    /// final output it already rendered. Other registered installations still notify.
+    var openCodeReplyObservations: [UUID: OpenCodeReplyObservation] = [:]
+    var retainedUnseenOpenCodeReplyGenerations: Set<UUID> = []
+    var openCodeReplyVisibilityRevision = 0
+
     /// Keeps the process alive long enough for an in-flight OpenCode reply to finish
     /// after the user backgrounds the app, so we can still fire the completion push.
-    var openCodeSendBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
-    
+    var openCodeSendBackgroundTaskIDs: Set<UIBackgroundTaskIdentifier> = []
+
     /// Model context for persistence
     var modelContext: ModelContext?
     
@@ -91,6 +97,11 @@ class ChatViewModel {
 
     /// Generation token for hydration work. Invalidated on project switch / clear / session replace.
     var openCodeHydrationGeneration: UUID = UUID()
+
+    /// A remote reply may raise unread before its message has hydrated. Reading is
+    /// eligible only after the canonical pushed message count is present locally.
+    var openCodeHydrationRevision = 0
+    var unreadContentRequirement: OpenCodeUnreadContentRequirement?
 
     /// Track if configuration is in progress to prevent race conditions
     var isConfiguring = false
@@ -218,7 +229,10 @@ class ChatViewModel {
         openCodeSendTask?.cancel()
         openCodeSendTask = nil
         openCodeSendGeneration = UUID()
+        clearAllOpenCodeReplyObservations()
         openCodeHydrationGeneration = UUID()
+        openCodeHydrationRevision = 0
+        unreadContentRequirement = nil
 
         // Reset the flag when project changes
         if self.projectId != projectId {
@@ -249,6 +263,15 @@ class ChatViewModel {
         // Local-first: render persisted messages before remote recovery / migration side effects.
         loadMessages()
         let configuredProject = ProjectContext.shared.activeProject
+        if let configuredProject,
+           configuredProject.id == projectId,
+           configuredProject.unreadCount > 0,
+           configuredProject.unreadCursorVersion == OpenCodeUnreadCursorSchema.currentVersion {
+            requireHydrationForUnreadReply(
+                sessionID: configuredProject.unreadConversationId,
+                minimumAssistantMessageCount: configuredProject.lastKnownUnreadCursor
+            )
+        }
         // Chat is OpenCode-only after Claude→OpenCode migration.
         providerMismatch = nil
 
@@ -351,6 +374,7 @@ class ChatViewModel {
         openCodeSendTask?.cancel()
         openCodeSendTask = nil
         openCodeSendGeneration = UUID()
+        clearAllOpenCodeReplyObservations()
         openCodeFullHydrationTask?.cancel()
         openCodeFullHydrationTask = nil
         openCodeHydrationGeneration = UUID()
@@ -427,6 +451,162 @@ class ChatViewModel {
             return openCodeHydrationGeneration == generation
         }
     }
+
+    var openCodeReplyOutputRevision: Int {
+        openCodeReplyVisibilityRevision
+    }
+
+    var openCodeReplyPendingMessageIDs: Set<UUID> {
+        openCodeReplyObservations.values.reduce(into: Set<UUID>()) { result, observation in
+            result.formUnion(observation.pendingMessageIDs)
+        }
+    }
+
+    var openCodeReplyPendingMessageRevisions: [UUID: Int] {
+        openCodeReplyObservations.values.reduce(into: [UUID: Int]()) { result, observation in
+            for (messageID, revision) in observation.pendingMessageRevisions {
+                result[messageID] = max(result[messageID] ?? 0, revision)
+            }
+        }
+    }
+
+    func beginOpenCodeReplyObservation(generation: UUID, initialMessageID: UUID) {
+        var observation = OpenCodeReplyObservation()
+        observation.begin(
+            generation: generation,
+            initialMessageID: initialMessageID
+        )
+        openCodeReplyObservations[generation] = observation
+        openCodeReplyVisibilityRevision += 1
+    }
+
+    func registerOpenCodeReplyMessage(_ message: Message, generation: UUID) {
+        guard var observation = openCodeReplyObservations[generation] else { return }
+        let revisionBefore = observation.outputRevision
+        observation.registerMessage(
+            generation: generation,
+            messageID: message.id,
+            hasVisibleContent: !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
+        openCodeReplyObservations[generation] = observation
+        if observation.outputRevision != revisionBefore {
+            openCodeReplyVisibilityRevision += 1
+        }
+    }
+
+    func noteOpenCodeReplyMessageContentChanged(messageID: UUID) {
+        for generation in Array(openCodeReplyObservations.keys) {
+            guard var observation = openCodeReplyObservations[generation],
+                  observation.contains(messageID: messageID) else { continue }
+            observation.noteContentChange(generation: generation, messageID: messageID)
+            openCodeReplyObservations[generation] = observation
+            openCodeReplyVisibilityRevision += 1
+        }
+    }
+
+    func unregisterOpenCodeReplyMessage(_ message: Message, generation: UUID) {
+        guard var observation = openCodeReplyObservations[generation] else { return }
+        observation.removeMessage(generation: generation, messageID: message.id)
+        openCodeReplyObservations[generation] = observation
+        openCodeReplyVisibilityRevision += 1
+    }
+
+    /// Called by ChatDetailView only when the message whose assistant content changed
+    /// is actually in the rendered viewport.
+    @discardableResult
+    func recordVisibleOpenCodeReplyRevision(messageID: UUID) -> Bool {
+        var didCompleteObservation = false
+        var resolvedRetainedGenerations: [UUID] = []
+        for generation in Array(openCodeReplyObservations.keys) {
+            guard var observation = openCodeReplyObservations[generation],
+                  observation.contains(messageID: messageID) else { continue }
+            let wasSeenBefore = observation.wasFinalOutputSeen(generation: generation)
+            observation.recordVisible(generation: generation, messageID: messageID)
+            let isSeenNow = observation.wasFinalOutputSeen(generation: generation)
+            openCodeReplyObservations[generation] = observation
+            didCompleteObservation = didCompleteObservation || (!wasSeenBefore && isSeenNow)
+            if isSeenNow, retainedUnseenOpenCodeReplyGenerations.contains(generation) {
+                resolvedRetainedGenerations.append(generation)
+            }
+        }
+        for generation in resolvedRetainedGenerations {
+            openCodeReplyObservations.removeValue(forKey: generation)
+            retainedUnseenOpenCodeReplyGenerations.remove(generation)
+        }
+        openCodeReplyVisibilityRevision += 1
+        return didCompleteObservation
+    }
+
+    func wasFinalOpenCodeReplyOutputSeen(generation: UUID) -> Bool {
+        openCodeReplyObservations[generation]?.wasFinalOutputSeen(generation: generation) == true
+    }
+
+    func finalizedOpenCodeReplyRuntimeMessageIDs(
+        generation: UUID,
+        sessionID: String
+    ) -> Set<String> {
+        guard let observation = openCodeReplyObservations[generation] else { return [] }
+        let localMessageIDs = observation.registeredMessageIDs
+        return UnreadBadgeMath.finalizedOpenCodeAssistantMessageIDs(
+            in: messages.filter { localMessageIDs.contains($0.id) },
+            sessionID: sessionID
+        )
+    }
+
+    func clearOpenCodeReplyObservation(generation: UUID) {
+        let didRemoveObservation = openCodeReplyObservations.removeValue(forKey: generation) != nil
+        let didRemoveRetention = retainedUnseenOpenCodeReplyGenerations.remove(generation) != nil
+        guard didRemoveObservation || didRemoveRetention else { return }
+        openCodeReplyVisibilityRevision += 1
+    }
+
+    func retainUnseenOpenCodeReplyObservation(generation: UUID) {
+        guard openCodeReplyObservations[generation] != nil else { return }
+        retainedUnseenOpenCodeReplyGenerations.insert(generation)
+    }
+
+    func clearAllOpenCodeReplyObservations() {
+        guard !openCodeReplyObservations.isEmpty else { return }
+        openCodeReplyObservations.removeAll()
+        retainedUnseenOpenCodeReplyGenerations.removeAll()
+        openCodeReplyVisibilityRevision += 1
+    }
+
+    func requireHydrationForUnreadReply(
+        sessionID: String?,
+        minimumAssistantMessageCount: Int?
+    ) {
+        guard let incoming = OpenCodeUnreadContentRequirement(
+            sessionID: sessionID,
+            minimumAssistantMessageCount: minimumAssistantMessageCount
+        ) else { return }
+
+        if let current = unreadContentRequirement,
+           current.sessionID == incoming.sessionID {
+            unreadContentRequirement = OpenCodeUnreadContentRequirement(
+                sessionID: current.sessionID,
+                minimumAssistantMessageCount: max(
+                    current.minimumAssistantMessageCount,
+                    incoming.minimumAssistantMessageCount
+                )
+            )
+        } else {
+            unreadContentRequirement = incoming
+        }
+    }
+
+    func noteOpenCodeHydrationApplied() {
+        openCodeHydrationRevision += 1
+    }
+
+    var isUnreadHydrationRequirementSatisfied: Bool {
+        guard let unreadContentRequirement else { return true }
+        return unreadContentRequirement.isSatisfied(by: messages)
+    }
+
+    func clearUnreadHydrationRequirement() {
+        unreadContentRequirement = nil
+    }
 }
 
 enum OpenCodeWorkOwnershipKind {
@@ -453,8 +633,10 @@ extension ChatViewModel {
         }
 
         let target = project.lastKnownUnreadCursor
+        PushNotificationsManager.shared.dismissLocalReplyFinishedNotification(for: project.id)
         guard target > project.lastReadUnreadCursor else { return }
         project.lastReadUnreadCursor = target
+        clearUnreadHydrationRequirement()
         saveChanges()
         if let modelContext {
             UnreadBadgeService.refreshAppIconBadge(using: modelContext)
@@ -517,25 +699,24 @@ extension ChatViewModel {
     }
 
     /// Request extra runtime so an OpenCode reply can finish after the user leaves the app.
-    func beginOpenCodeSendBackgroundExecution() {
-        endOpenCodeSendBackgroundExecution()
+    func beginOpenCodeSendBackgroundExecution() -> UIBackgroundTaskIdentifier {
         var taskId = UIBackgroundTaskIdentifier.invalid
-        taskId = UIApplication.shared.beginBackgroundTask(withName: "opencode-send-stream") {
-            // Expiration handler: end immediately (required by UIKit).
-            UIApplication.shared.endBackgroundTask(taskId)
-            Task { @MainActor [weak self] in
-                if self?.openCodeSendBackgroundTaskID == taskId {
-                    self?.openCodeSendBackgroundTaskID = .invalid
-                }
+        taskId = UIApplication.shared.beginBackgroundTask(withName: "opencode-send-stream") { [weak self] in
+            // UIKit invokes expiration handlers on the main thread and requires the
+            // background task to end before this callback returns.
+            MainActor.assumeIsolated {
+                self?.endOpenCodeSendBackgroundExecution(taskId)
             }
         }
-        openCodeSendBackgroundTaskID = taskId
+        if taskId != .invalid {
+            openCodeSendBackgroundTaskIDs.insert(taskId)
+        }
+        return taskId
     }
 
-    func endOpenCodeSendBackgroundExecution() {
-        let taskId = openCodeSendBackgroundTaskID
-        guard taskId != .invalid else { return }
-        openCodeSendBackgroundTaskID = .invalid
+    func endOpenCodeSendBackgroundExecution(_ taskId: UIBackgroundTaskIdentifier) {
+        guard taskId != .invalid,
+              openCodeSendBackgroundTaskIDs.remove(taskId) != nil else { return }
         UIApplication.shared.endBackgroundTask(taskId)
     }
 

@@ -21,6 +21,192 @@ enum ReplyFinishedPushEventKey {
     static let cwd = "cwd"
     static let conversationId = "conversationId"
     static let renderableAssistantCount = "renderableAssistantCount"
+    static let cursorVersion = "cursorVersion"
+}
+
+enum ReplyFinishedSessionRelationship: Equatable {
+    case noIncomingSession
+    case adoptable
+    case matching
+    case conflicting
+}
+
+enum ReplyFinishedSessionPolicy {
+    static func relationship(currentSessionId: String?, incomingSessionId: String?) -> ReplyFinishedSessionRelationship {
+        guard normalized(incomingSessionId) != nil else { return .noIncomingSession }
+        guard let incoming = OpenCodeSessionID.sanitize(incomingSessionId) else {
+            // Non-OpenCode/legacy task identifiers may still drive project refresh,
+            // but are never authority to replace the live OpenCode chat session.
+            return .noIncomingSession
+        }
+        let current = OpenCodeSessionID.sanitize(currentSessionId)
+        guard let current else { return .adoptable }
+        return current == incoming ? .matching : .conflicting
+    }
+
+    static func cursorSessionId(incomingSessionId: String?, incomingAssistantCount: Int?) -> String? {
+        guard let incomingAssistantCount, incomingAssistantCount >= 0 else { return nil }
+        return OpenCodeSessionID.sanitize(incomingSessionId)
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum ReplyFinishedTapDestination: Equatable {
+    case chat
+    case tasks
+}
+
+enum ReplyFinishedTapPolicy {
+    static func destination(for relationship: ReplyFinishedSessionRelationship) -> ReplyFinishedTapDestination {
+        switch relationship {
+        case .adoptable, .matching:
+            return .chat
+        case .noIncomingSession, .conflicting:
+            return .tasks
+        }
+    }
+}
+
+enum ReplyFinishedPresentationPolicy {
+    static func shouldSuppress(
+        applicationIsActive: Bool,
+        isActiveChat: Bool,
+        currentSessionId: String?,
+        unreadConversationId: String?,
+        payloadSessionId: String?,
+        currentCursorVersion: Int? = OpenCodeUnreadCursorSchema.currentVersion,
+        payloadCursorVersion: Int? = OpenCodeUnreadCursorSchema.currentVersion,
+        lastReadCursor: Int,
+        incomingAssistantCount: Int?
+    ) -> Bool {
+        guard applicationIsActive else { return false }
+
+        let current = OpenCodeSessionID.sanitize(currentSessionId)
+        let unread = OpenCodeSessionID.sanitize(unreadConversationId)
+        let incoming = OpenCodeSessionID.sanitize(payloadSessionId)
+        _ = isActiveChat
+
+        // After the user navigates back, the durable read cursor is the evidence that
+        // this exact session/count was already consumed before APNs arrived.
+        guard currentCursorVersion == OpenCodeUnreadCursorSchema.currentVersion,
+              payloadCursorVersion == OpenCodeUnreadCursorSchema.currentVersion,
+              let current,
+              let incoming,
+              let unread,
+              current == incoming,
+              incoming == unread,
+              let incomingAssistantCount,
+              incomingAssistantCount >= 0 else {
+            return false
+        }
+        return incomingAssistantCount <= max(0, lastReadCursor)
+    }
+}
+
+@MainActor
+protocol ReplyFinishedNotificationScheduling: AnyObject {
+    func addReplyFinishedNotification(_ request: UNNotificationRequest) async throws
+    func removePendingReplyFinishedNotifications(withIdentifiers identifiers: [String])
+    func removeDeliveredReplyFinishedNotifications(withIdentifiers identifiers: [String])
+}
+
+extension UNUserNotificationCenter: ReplyFinishedNotificationScheduling {
+    func addReplyFinishedNotification(_ request: UNNotificationRequest) async throws {
+        try await add(request)
+    }
+
+    func removePendingReplyFinishedNotifications(withIdentifiers identifiers: [String]) {
+        removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
+    func removeDeliveredReplyFinishedNotifications(withIdentifiers identifiers: [String]) {
+        removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+}
+
+/// Serializes revocable local reply alerts so a read/dismiss that happens while
+/// `UNUserNotificationCenter.add` is suspended cannot lose the cancellation race.
+@MainActor
+final class ReplyFinishedLocalNotificationCoordinator {
+    private let center: ReplyFinishedNotificationScheduling
+    private let defaults: UserDefaults
+    private var activeIdentifiersByProject: [UUID: Set<String>] = [:]
+    private let storageKey = "reply_finished_local_notification_ids_v1"
+
+    init(
+        center: ReplyFinishedNotificationScheduling = UNUserNotificationCenter.current(),
+        defaults: UserDefaults = .standard
+    ) {
+        self.center = center
+        self.defaults = defaults
+        if let stored = defaults.dictionary(forKey: storageKey) as? [String: [String]] {
+            activeIdentifiersByProject = stored.reduce(into: [:]) { result, entry in
+                guard let projectID = UUID(uuidString: entry.key) else { return }
+                result[projectID] = Set(entry.value)
+            }
+        }
+    }
+
+    @discardableResult
+    func replace(
+        projectID: UUID,
+        request: UNNotificationRequest,
+        isStillUnread: @MainActor @escaping () -> Bool
+    ) async throws -> Bool {
+        let previous = activeIdentifiersByProject[projectID] ?? []
+        if !previous.isEmpty {
+            remove(Array(previous))
+        }
+        activeIdentifiersByProject[projectID] = [request.identifier]
+        persistIdentifiers()
+
+        do {
+            try await center.addReplyFinishedNotification(request)
+        } catch {
+            if activeIdentifiersByProject[projectID] == [request.identifier] {
+                activeIdentifiersByProject.removeValue(forKey: projectID)
+                persistIdentifiers()
+            }
+            throw error
+        }
+
+        guard activeIdentifiersByProject[projectID]?.contains(request.identifier) == true,
+              isStillUnread() else {
+            remove([request.identifier])
+            if activeIdentifiersByProject[projectID] == [request.identifier] {
+                activeIdentifiersByProject.removeValue(forKey: projectID)
+                persistIdentifiers()
+            }
+            return false
+        }
+        return true
+    }
+
+    func dismiss(projectID: UUID) {
+        var identifiers = activeIdentifiersByProject.removeValue(forKey: projectID) ?? []
+        persistIdentifiers()
+        // Remove the identifier used by builds before completion-specific IDs.
+        identifiers.insert("reply-finished-\(projectID.uuidString)")
+        remove(Array(identifiers))
+    }
+
+    private func remove(_ identifiers: [String]) {
+        guard !identifiers.isEmpty else { return }
+        center.removePendingReplyFinishedNotifications(withIdentifiers: identifiers)
+        center.removeDeliveredReplyFinishedNotifications(withIdentifiers: identifiers)
+    }
+
+    private func persistIdentifiers() {
+        let stored = activeIdentifiersByProject.reduce(into: [String: [String]]()) { result, entry in
+            result[entry.key.uuidString] = Array(entry.value)
+        }
+        defaults.set(stored, forKey: storageKey)
+    }
 }
 
 /// Produces a compact, plain-text notification preview without leaking
@@ -109,8 +295,15 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
     private let gatewayClient = PushGatewayClient()
     private let subscriptionSyncCoordinator = PushSubscriptionSyncCoordinator()
+    private let localNotificationCoordinator = ReplyFinishedLocalNotificationCoordinator()
     private var modelContainer: ModelContainer?
     private var pendingPayload: PushPayload?
+    private var pendingLocalPayload: LocalReplyFinishedPayload?
+    private var recentReplyFinishedDeliveryKeys: [String: Date] = [:]
+    private var recentReplyFinishedPresentationKeys: [String: Date] = [:]
+
+    private let replyFinishedDeliveryDedupeTTL: TimeInterval = 60 * 60
+    private let replyFinishedDeliveryDedupeLimit = 384
 
     private let subscriptionsStorageKey = "push_subscriptions_v1"
     /// Avoid re-running full server SSH push provisioning on every foreground.
@@ -127,7 +320,13 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             pendingPayload = nil
             Task { @MainActor in
                 _ = await applyReplyFinishedUpdateIfPossible(payload: payload)
-                await routeToChat(payload: payload)
+                await routeTappedReply(payload: payload)
+            }
+        }
+        if let payload = pendingLocalPayload {
+            pendingLocalPayload = nil
+            Task { @MainActor in
+                await routeTappedLocalReply(payload)
             }
         }
     }
@@ -226,7 +425,24 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         )
     }
 
-    func handleLaunchOrTap(userInfo: [AnyHashable: Any]) {
+    func handleLaunchOrTap(
+        userInfo: [AnyHashable: Any],
+        requestIdentifier: String? = nil
+    ) {
+        if let requestIdentifier,
+           let localPayload = LocalReplyFinishedPayload(
+               userInfo: userInfo,
+               requestIdentifier: requestIdentifier
+           ) {
+            guard modelContainer != nil else {
+                pendingLocalPayload = localPayload
+                return
+            }
+            Task {
+                await routeTappedLocalReply(localPayload)
+            }
+            return
+        }
         guard let payload = PushPayload(userInfo: userInfo) else { return }
         guard modelContainer != nil else {
             pendingPayload = payload
@@ -234,12 +450,16 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         }
         Task {
             _ = await applyReplyFinishedUpdateIfPossible(payload: payload)
-            await routeToChat(payload: payload)
+            await routeTappedReply(payload: payload)
         }
     }
 
     func handleRemoteNotification(userInfo: [AnyHashable: Any]) async -> Bool {
         guard let payload = PushPayload(userInfo: userInfo) else { return false }
+        guard claimReplyFinishedDeliveryIfNeeded(payload) else { return true }
+        // Local requests are scheduled only after the source project cursor was saved.
+        // Reapplying them as remote pushes would install a needless hydration gate.
+        if payload.isLocal { return true }
         // Warm SSH as soon as a reply-finished push lands (even if user has not tapped yet).
         if payload.type == "reply_finished", let server = serverMatchingPush(payload: payload) {
             Task {
@@ -268,8 +488,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         var didApply = false
         for notification in notifications {
             let userInfo = notification.request.content.userInfo
-            guard let payload = PushPayload(userInfo: userInfo) else { continue }
-            if await applyReplyFinishedUpdateIfPossible(payload: payload) {
+            if await handleRemoteNotification(userInfo: userInfo) {
                 didApply = true
             }
         }
@@ -286,25 +505,28 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         project: RemoteProject,
         server: Server?,
         messagePreview: String?,
-        absoluteAssistantCount: Int
+        legacyRenderableAssistantCount: Int,
+        absoluteAssistantCount: Int,
+        wasFinalOutputSeen: Bool,
+        completionId: String
     ) async {
-        let sessionId = project.openCodeSessionId?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let sessionId, !sessionId.isEmpty else { return }
+        guard let sessionId = OpenCodeSessionID.sanitize(project.openCodeSessionId) else { return }
+
+        if project.unreadCursorVersion != OpenCodeUnreadCursorSchema.currentVersion {
+            project.unreadCursorVersion = OpenCodeUnreadCursorSchema.currentVersion
+            project.unreadConversationId = nil
+            project.lastKnownUnreadCursor = 0
+            project.lastReadUnreadCursor = 0
+        }
 
         let absolute = max(0, absoluteAssistantCount)
-        // Unread: only mark fully read when the user is actively watching this chat.
-        // Push delivery is independent (see below) so a mis-detected "viewing" state
-        // cannot swallow the gateway call after the user left the app.
-        let viewing = isViewingChat(for: project)
-
         if let cursors = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
             lastKnown: project.lastKnownUnreadCursor,
             lastRead: project.lastReadUnreadCursor,
             unreadConversationId: project.unreadConversationId,
             sessionId: sessionId,
             absoluteAssistantCount: absolute,
-            isViewingChat: viewing
+            wasFinalOutputSeen: wasFinalOutputSeen
         ) {
             project.lastKnownUnreadCursor = cursors.lastKnown
             project.lastReadUnreadCursor = cursors.lastRead
@@ -317,20 +539,60 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         // (background ModelContext saves do not always refresh the shared reference).
         syncActiveProjectUnreadCursors(from: project)
 
+        // Persist the read cursor before awaiting the gateway. A self-FCM delivery can
+        // otherwise race this method on another callback and resurrect an unread badge.
         if let modelContainer {
-            UnreadBadgeService.refreshAppIconBadge(using: ModelContext(modelContainer))
+            do {
+                try modelContainer.mainContext.save()
+            } catch {
+                SSHLogger.log(
+                    "Failed to save interactive reply cursor: \(error.localizedDescription)",
+                    level: .warning
+                )
+            }
+            UnreadBadgeService.refreshAppIconBadge(using: modelContainer.mainContext)
         }
 
         let preview = Self.normalizedPreview(messagePreview)
+        let sourceInstallationId: String?
+        do {
+            sourceInstallationId = try KeychainManager.shared.getOrCreatePushInstallationId()
+        } catch {
+            sourceInstallationId = nil
+            SSHLogger.log(
+                "Reply push skipped for other installations: installation identity unavailable",
+                level: .warning
+            )
+        }
 
-        // Always hit the gateway so FCM can surface the reply when the app is
-        // backgrounded/suspended. Foreground banner for the open chat is suppressed in
-        // `willPresent` via `shouldSuppressForegroundNotification`.
-        var gatewaySucceeded = false
+        // This installation never receives remote multicast for its own interactive
+        // completion. A revocable local request handles its unread notification while
+        // every other registered installation still receives FCM.
+        if !wasFinalOutputSeen {
+            await postLocalReplyFinishedNotification(
+                project: project,
+                server: server,
+                title: agentDisplayName(for: project, server: server),
+                body: preview ?? "Reply ready",
+                conversationId: sessionId,
+                legacyRenderableAssistantCount: legacyRenderableAssistantCount,
+                absoluteAssistantCount: absolute,
+                completionId: completionId
+            )
+        }
+
+        // Notify every other registered installation through the gateway.
         if let server,
+           let sourceInstallationId,
            let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id)
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !secret.isEmpty {
+            let sourceFCMToken: String?
+            if let currentFCMToken {
+                sourceFCMToken = currentFCMToken
+            } else {
+                sourceFCMToken = await fetchFCMToken()
+            }
             do {
                 try await gatewayClient.triggerReplyFinished(
                     secret: secret,
@@ -338,15 +600,18 @@ final class PushNotificationsManager: NSObject, ObservableObject {
                         cwd: project.path,
                         conversationId: sessionId,
                         messagePreview: preview,
-                        renderableAssistantCount: absolute,
+                        legacyRenderableAssistantCount: max(0, legacyRenderableAssistantCount),
+                        assistantMessageCursor: absolute,
                         // Gateway ignores message_preview unless this is true (lock-screen default is "Reply ready").
-                        includePreview: preview != nil
+                        includePreview: preview != nil,
+                        excludeInstallationId: sourceInstallationId,
+                        excludeFCMToken: sourceFCMToken,
+                        completionId: completionId
                     )
                 )
-                gatewaySucceeded = true
                 #if DEBUG
                 SSHLogger.log(
-                    "Interactive reply_finished gateway ok for \(project.displayTitle) viewing=\(viewing) appState=\(UIApplication.shared.applicationState.rawValue)",
+                    "Interactive reply_finished gateway ok for \(project.displayTitle) finalSeen=\(wasFinalOutputSeen) appState=\(UIApplication.shared.applicationState.rawValue)",
                     level: .info
                 )
                 #endif
@@ -358,18 +623,6 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             }
         }
 
-        // Local banner only when the gateway did not deliver (missing secret / network)
-        // and the user is not actively watching this chat.
-        if !gatewaySucceeded, !viewing {
-            await postLocalReplyFinishedNotification(
-                project: project,
-                server: server,
-                title: agentDisplayName(for: project, server: server),
-                body: preview ?? "Reply ready",
-                conversationId: sessionId,
-                absoluteAssistantCount: absolute
-            )
-        }
     }
 
     /// Soft-sync found higher unread for an agent the user is not viewing.
@@ -380,17 +633,23 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         preview: String?
     ) async {
         guard newUnread > previousUnread else { return }
-        guard !isViewingChat(for: project) else { return }
 
         let sessionId = project.openCodeSessionId?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let server = fetchServer(withId: project.serverId)
+        let legacyCount: Int
+        if let modelContainer {
+            legacyCount = estimateRenderableBubbleCount(for: project, in: modelContainer.mainContext)
+        } else {
+            legacyCount = project.lastKnownUnreadCursor
+        }
         await postLocalReplyFinishedNotification(
             project: project,
             server: server,
             title: agentDisplayName(for: project, server: server),
             body: Self.normalizedPreview(preview) ?? "Reply ready",
             conversationId: sessionId,
+            legacyRenderableAssistantCount: legacyCount,
             absoluteAssistantCount: project.lastKnownUnreadCursor
         )
     }
@@ -441,12 +700,21 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         title: String,
         body: String,
         conversationId: String?,
-        absoluteAssistantCount: Int
+        legacyRenderableAssistantCount: Int,
+        absoluteAssistantCount: Int,
+        completionId: String? = nil
     ) async {
         guard await hasNotificationDeliveryPermission() else { return }
 
-        // Suppress only when user is inside this chat (same rule as FCM willPresent).
-        if isViewingChat(for: project) { return }
+        let normalizedConversationId = conversationId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedUnreadConversationId = project.unreadConversationId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedConversationId?.isEmpty == false,
+           normalizedConversationId == normalizedUnreadConversationId,
+           absoluteAssistantCount <= max(0, project.lastReadUnreadCursor) {
+            return
+        }
 
         let content = UNMutableNotificationContent()
         content.title = title
@@ -458,12 +726,21 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             "type": "reply_finished",
             "cwd": project.path,
             "local": "1",
+            "project_id": project.id.uuidString,
+            "server_id": project.serverId.uuidString,
+            "cursor_version": String(OpenCodeUnreadCursorSchema.currentVersion),
         ]
         if let conversationId, !conversationId.isEmpty {
             userInfo["conversation_id"] = conversationId
         }
+        if legacyRenderableAssistantCount >= 0 {
+            userInfo["renderable_assistant_count"] = String(legacyRenderableAssistantCount)
+        }
         if absoluteAssistantCount >= 0 {
-            userInfo["renderable_assistant_count"] = String(absoluteAssistantCount)
+            userInfo["assistant_message_cursor"] = String(absoluteAssistantCount)
+        }
+        if let completionId, !completionId.isEmpty {
+            userInfo["completion_id"] = completionId
         }
         if let server,
            let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id)
@@ -473,21 +750,39 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         }
         content.userInfo = userInfo
 
+        let requestIdentity = completionId ?? UUID().uuidString
         let request = UNNotificationRequest(
-            identifier: "reply-finished-\(project.id.uuidString)",
+            identifier: "reply-finished-\(project.id.uuidString)-\(requestIdentity)",
             content: content,
-            trigger: nil
+            // Leave a short cancellation window so rendering/reading the final bubble
+            // can revoke the request before the OS presents it.
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         )
         do {
-            try await UNUserNotificationCenter.current().add(request)
-            // Drive the same in-app refresh path FCM uses (hydrate + badge).
-            _ = await handleRemoteNotification(userInfo: userInfo)
+            let didSchedule = try await localNotificationCoordinator.replace(
+                projectID: project.id,
+                request: request,
+                isStillUnread: {
+                    let unreadConversationId = project.unreadConversationId?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let expectedConversationId = conversationId?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return expectedConversationId?.isEmpty != false
+                        || unreadConversationId != expectedConversationId
+                        || absoluteAssistantCount > max(0, project.lastReadUnreadCursor)
+                }
+            )
+            guard didSchedule else { return }
         } catch {
             SSHLogger.log(
                 "Local reply_finished notification failed: \(error.localizedDescription)",
                 level: .warning
             )
         }
+    }
+
+    func dismissLocalReplyFinishedNotification(for projectID: UUID) {
+        localNotificationCoordinator.dismiss(projectID: projectID)
     }
 
     private nonisolated static func redactedTokenDescription(_ token: String) -> String {
@@ -616,7 +911,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
 
     private func fetchServer(withId serverId: UUID) -> Server? {
         guard let modelContainer else { return nil }
-        let context = ModelContext(modelContainer)
+        let context = modelContainer.mainContext
         let descriptor = FetchDescriptor<Server>(
             predicate: #Predicate { server in
                 server.id == serverId
@@ -628,17 +923,85 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     /// Resolve the server that owns a push payload via hashed push secret.
     private func serverMatchingPush(payload: PushPayload) -> Server? {
         guard let modelContainer else { return nil }
-        let context = ModelContext(modelContainer)
-        let servers: [Server]
-        do {
-            servers = try context.fetch(FetchDescriptor<Server>())
-        } catch {
-            return nil
-        }
+        return serverMatchingPush(payload: payload, in: modelContainer.mainContext)
+    }
+
+    private func serverMatchingPush(payload: PushPayload, in context: ModelContext) -> Server? {
+        guard let servers = try? context.fetch(FetchDescriptor<Server>()) else { return nil }
         return servers.first { server in
             guard let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id) else { return false }
             return secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
         }
+    }
+
+    private func projectAndServerMatchingPush(
+        payload: PushPayload,
+        in context: ModelContext
+    ) -> (project: RemoteProject, server: Server)? {
+        guard let server = serverMatchingPush(payload: payload, in: context) else { return nil }
+        let serverId = server.id
+        let cwd = payload.cwd
+        let descriptor = FetchDescriptor<RemoteProject>(
+            predicate: #Predicate { project in
+                project.serverId == serverId && project.path == cwd
+            }
+        )
+        guard let project = (try? context.fetch(descriptor))?.first else { return nil }
+        return (project, server)
+    }
+
+    private func claimReplyFinishedDeliveryIfNeeded(_ payload: PushPayload) -> Bool {
+        guard payload.type == "reply_finished" else { return true }
+        let keys = payload.deliveryDedupeKeys
+        guard !keys.isEmpty else { return true }
+
+        let now = Date()
+        recentReplyFinishedDeliveryKeys = recentReplyFinishedDeliveryKeys.filter {
+            now.timeIntervalSince($0.value) < replyFinishedDeliveryDedupeTTL
+        }
+        guard keys.allSatisfy({ recentReplyFinishedDeliveryKeys[$0] == nil }) else { return false }
+        for key in keys {
+            recentReplyFinishedDeliveryKeys[key] = now
+        }
+
+        if recentReplyFinishedDeliveryKeys.count > replyFinishedDeliveryDedupeLimit {
+            let overflow = recentReplyFinishedDeliveryKeys.count - replyFinishedDeliveryDedupeLimit
+            for staleKey in recentReplyFinishedDeliveryKeys
+                .sorted(by: { $0.value < $1.value })
+                .prefix(overflow)
+                .map(\.key) {
+                recentReplyFinishedDeliveryKeys.removeValue(forKey: staleKey)
+            }
+        }
+        return true
+    }
+
+    /// Separate from state-delivery dedupe because AppDelegate may apply the same
+    /// foreground push before UNUserNotificationCenter asks whether to present it.
+    private func claimReplyFinishedPresentationIfNeeded(_ payload: PushPayload) -> Bool {
+        guard payload.type == "reply_finished" else { return true }
+        let keys = payload.deliveryDedupeKeys
+        guard !keys.isEmpty else { return true }
+
+        let now = Date()
+        recentReplyFinishedPresentationKeys = recentReplyFinishedPresentationKeys.filter {
+            now.timeIntervalSince($0.value) < replyFinishedDeliveryDedupeTTL
+        }
+        guard keys.allSatisfy({ recentReplyFinishedPresentationKeys[$0] == nil }) else { return false }
+        for key in keys {
+            recentReplyFinishedPresentationKeys[key] = now
+        }
+
+        if recentReplyFinishedPresentationKeys.count > replyFinishedDeliveryDedupeLimit {
+            let overflow = recentReplyFinishedPresentationKeys.count - replyFinishedDeliveryDedupeLimit
+            for staleKey in recentReplyFinishedPresentationKeys
+                .sorted(by: { $0.value < $1.value })
+                .prefix(overflow)
+                .map(\.key) {
+                recentReplyFinishedPresentationKeys.removeValue(forKey: staleKey)
+            }
+        }
+        return true
     }
 
     private func fetchFCMToken() async -> String? {
@@ -682,43 +1045,63 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         }
     }
 
-    private func routeToChat(payload: PushPayload) async {
+    private func routeTappedReply(payload: PushPayload) async {
         guard let modelContainer else { return }
-        let context = ModelContext(modelContainer)
+        let context = modelContainer.mainContext
+        guard let match = projectAndServerMatchingPush(payload: payload, in: context) else { return }
+        let project = match.project
+        let matchedServer = match.server
 
-        let servers: [Server]
-        do {
-            servers = try context.fetch(FetchDescriptor<Server>())
-        } catch {
-            return
-        }
+        let relationship = ReplyFinishedSessionPolicy.relationship(
+            currentSessionId: project.openCodeSessionId,
+            incomingSessionId: payload.conversationId
+        )
+        let destination = ReplyFinishedTapPolicy.destination(for: relationship)
 
-        guard let matchedServer = servers.first(where: { server in
-            guard let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id) else { return false }
-            return secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
-        }) else {
-            return
-        }
+        routeToProject(project, server: matchedServer, destination: destination)
+    }
 
-        let serverId = matchedServer.id
-        let cwd = payload.cwd
-        let descriptor = FetchDescriptor<RemoteProject>(
+    private func routeTappedLocalReply(_ payload: LocalReplyFinishedPayload) async {
+        guard let modelContainer else { return }
+        let context = modelContainer.mainContext
+        let serverID = payload.serverID
+        let projectID = payload.projectID
+        let serverDescriptor = FetchDescriptor<Server>(
+            predicate: #Predicate { server in server.id == serverID }
+        )
+        let projectDescriptor = FetchDescriptor<RemoteProject>(
             predicate: #Predicate { project in
-                project.serverId == serverId && project.path == cwd
+                project.id == projectID && project.serverId == serverID
             }
         )
+        guard let server = (try? context.fetch(serverDescriptor))?.first,
+              let project = (try? context.fetch(projectDescriptor))?.first,
+              project.path == payload.cwd else { return }
 
-        guard let project = (try? context.fetch(descriptor))?.first else {
-            return
-        }
+        let relationship = ReplyFinishedSessionPolicy.relationship(
+            currentSessionId: project.openCodeSessionId,
+            incomingSessionId: payload.conversationId
+        )
+        routeToProject(
+            project,
+            server: server,
+            destination: ReplyFinishedTapPolicy.destination(for: relationship)
+        )
+    }
+
+    private func routeToProject(
+        _ project: RemoteProject,
+        server: Server,
+        destination: ReplyFinishedTapDestination
+    ) {
 
         ProjectContext.shared.setActiveProject(project)
-        AppNavigationState.shared.selectedTab = .chat
+        AppNavigationState.shared.selectedTab = destination == .chat ? .chat : .tasks
 
         // Kick off pooled OpenCode SSH + health before ChatView's connect loop so the
         // notification-open path reuses a warm session instead of a cold login.
         Task {
-            await OpenCodeInstallerService.shared.warmConnection(for: matchedServer, probeHealth: true)
+            await OpenCodeInstallerService.shared.warmConnection(for: server, probeHealth: true)
         }
     }
 
@@ -726,87 +1109,87 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     private func applyReplyFinishedUpdateIfPossible(payload: PushPayload) async -> Bool {
         guard payload.type == "reply_finished" else { return false }
         guard let modelContainer else { return false }
-        let context = ModelContext(modelContainer)
+        let context = modelContainer.mainContext
+        guard let match = projectAndServerMatchingPush(payload: payload, in: context) else { return false }
+        let project = match.project
+        let matchedServer = match.server
 
-        let servers: [Server]
-        do {
-            servers = try context.fetch(FetchDescriptor<Server>())
-        } catch {
-            return false
-        }
-
-        guard let matchedServer = servers.first(where: { server in
-            guard let secret = try? KeychainManager.shared.retrievePushSecret(for: server.id) else { return false }
-            return secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
-        }) else {
-            return false
-        }
-
-        let serverId = matchedServer.id
-        let cwd = payload.cwd
-        let descriptor = FetchDescriptor<RemoteProject>(
-            predicate: #Predicate { project in
-                project.serverId == serverId && project.path == cwd
-            }
+        let sessionRelationship = ReplyFinishedSessionPolicy.relationship(
+            currentSessionId: project.openCodeSessionId,
+            incomingSessionId: payload.conversationId
         )
-
-        guard let project = (try? context.fetch(descriptor))?.first else {
-            return false
+        // A late completion from an older/different session may still present its
+        // notification, but it must not replace or hydrate over the active chat. Emit
+        // a project-only refresh so Regular Tasks still updates for daemon completions.
+        if sessionRelationship == .conflicting || sessionRelationship == .noIncomingSession {
+            postReplyFinishedEvent(
+                project: project,
+                server: matchedServer,
+                payload: payload,
+                includeConversationId: false
+            )
+            return true
         }
 
-        var didUpdateOpenCodeSession = false
+        var didChange = false
         if CodingAgentRuntimeResolver.runtimeKind(for: project) == .openCode,
            project.applyOpenCodeSessionFromPush(payload.conversationId) {
-            didUpdateOpenCodeSession = true
+            didChange = true
         }
 
-        if let incomingCount = payload.renderableAssistantCount, incomingCount >= 0 {
-            let isUnreadStateUninitialized =
-                project.unreadConversationId == nil && project.lastKnownUnreadCursor == 0 && project.lastReadUnreadCursor == 0
-            if isUnreadStateUninitialized {
-                let baseline = min(estimateRenderableBubbleCount(for: project, in: context), incomingCount)
-                project.lastKnownUnreadCursor = baseline
-                project.lastReadUnreadCursor = baseline
+        if payload.cursorVersion == OpenCodeUnreadCursorSchema.currentVersion,
+           let incomingCount = payload.renderableAssistantCount,
+           let cursorSessionId = ReplyFinishedSessionPolicy.cursorSessionId(
+               incomingSessionId: payload.conversationId,
+               incomingAssistantCount: incomingCount
+           ) {
+            if project.unreadCursorVersion != OpenCodeUnreadCursorSchema.currentVersion {
+                project.unreadCursorVersion = OpenCodeUnreadCursorSchema.currentVersion
+                project.unreadConversationId = nil
+                project.lastKnownUnreadCursor = 0
+                project.lastReadUnreadCursor = 0
+                didChange = true
             }
+            let normalizedUnreadSession = project.unreadConversationId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let wasAlreadyRead = normalizedUnreadSession == cursorSessionId
+                && incomingCount <= max(0, project.lastReadUnreadCursor)
 
-            if let conversationId = payload.conversationId, !conversationId.isEmpty {
-                if project.unreadConversationId != conversationId {
-                    let shouldResetReadCursor = project.unreadConversationId != nil && !isUnreadStateUninitialized
-                    project.unreadConversationId = conversationId
-                    if shouldResetReadCursor {
-                        project.lastReadUnreadCursor = 0
-                    }
-                    project.lastKnownUnreadCursor = incomingCount
-                } else if incomingCount > project.lastKnownUnreadCursor {
-                    project.lastKnownUnreadCursor = incomingCount
+            // A duplicate/stale self-delivery must be a no-op. Feeding it through the
+            // unseen reducer would reopen an unread gap the user already cleared.
+            if !wasAlreadyRead,
+               let cursors = AgentsListUnreadCursor.applyingInteractiveReplyFinished(
+                   lastKnown: project.lastKnownUnreadCursor,
+                   lastRead: project.lastReadUnreadCursor,
+                   unreadConversationId: project.unreadConversationId,
+                   sessionId: cursorSessionId,
+                   absoluteAssistantCount: incomingCount,
+                   wasFinalOutputSeen: false
+               ) {
+                let cursorDidChange = project.lastKnownUnreadCursor != cursors.lastKnown
+                    || project.lastReadUnreadCursor != cursors.lastRead
+                    || normalizedUnreadSession != cursors.unreadConversationId
+                if cursorDidChange {
+                    project.lastKnownUnreadCursor = cursors.lastKnown
+                    project.lastReadUnreadCursor = cursors.lastRead
+                    project.unreadConversationId = cursors.unreadConversationId
+                    didChange = true
                 }
-            } else if incomingCount > project.lastKnownUnreadCursor {
-                project.lastKnownUnreadCursor = incomingCount
-            }
-
-            project.updateLastModified()
-
-            do {
-                try context.save()
-            } catch {
-                #if DEBUG
-                SSHLogger.log("Failed to save unread update: \(error)", level: .warning)
-                #endif
             }
         }
 
-        if didUpdateOpenCodeSession {
+        if didChange {
             project.updateLastModified()
             do {
                 try context.save()
             } catch {
                 #if DEBUG
-                SSHLogger.log("Failed to save OpenCode push session update: \(error)", level: .warning)
+                    SSHLogger.log("Failed to save reply-finished update: \(error)", level: .warning)
                 #endif
             }
         }
 
-        syncActiveProjectIfNeeded(from: project, payload: payload)
+        syncActiveProjectIfNeeded(from: project)
         postReplyFinishedEvent(project: project, server: matchedServer, payload: payload)
         // Always refresh app-icon total after cursor changes (background + other agents).
         refreshAppIconBadgeFromStore()
@@ -816,8 +1199,7 @@ final class PushNotificationsManager: NSObject, ObservableObject {
     /// Recompute the home-screen badge from persisted agent unread cursors.
     private func refreshAppIconBadgeFromStore() {
         guard let modelContainer else { return }
-        let context = ModelContext(modelContainer)
-        UnreadBadgeService.refreshAppIconBadge(using: context)
+        UnreadBadgeService.refreshAppIconBadge(using: modelContainer.mainContext)
     }
 
     /// Copy unread cursors onto the shared active project when IDs match.
@@ -835,15 +1217,18 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         if activeProject.lastReadUnreadCursor != project.lastReadUnreadCursor {
             activeProject.lastReadUnreadCursor = project.lastReadUnreadCursor
         }
+        if activeProject.unreadCursorVersion != project.unreadCursorVersion {
+            activeProject.unreadCursorVersion = project.unreadCursorVersion
+        }
     }
 
-    private func syncActiveProjectIfNeeded(from project: RemoteProject, payload: PushPayload) {
+    private func syncActiveProjectIfNeeded(from project: RemoteProject) {
         guard let activeProject = ProjectContext.shared.activeProject,
               activeProject.id == project.id else { return }
 
         var didUpdate = false
         if CodingAgentRuntimeResolver.runtimeKind(for: activeProject) == .openCode,
-           activeProject.applyOpenCodeSessionFromPush(payload.conversationId) {
+           activeProject.applyOpenCodeSessionFromPush(project.openCodeSessionId) {
             didUpdate = true
         }
 
@@ -859,6 +1244,10 @@ final class PushNotificationsManager: NSObject, ObservableObject {
             activeProject.lastReadUnreadCursor = project.lastReadUnreadCursor
             didUpdate = true
         }
+        if activeProject.unreadCursorVersion != project.unreadCursorVersion {
+            activeProject.unreadCursorVersion = project.unreadCursorVersion
+            didUpdate = true
+        }
 
         guard didUpdate else { return }
         do {
@@ -870,17 +1259,25 @@ final class PushNotificationsManager: NSObject, ObservableObject {
         }
     }
 
-    private func postReplyFinishedEvent(project: RemoteProject, server: Server, payload: PushPayload) {
+    private func postReplyFinishedEvent(
+        project: RemoteProject,
+        server: Server,
+        payload: PushPayload,
+        includeConversationId: Bool = true
+    ) {
         var userInfo: [String: Any] = [
             ReplyFinishedPushEventKey.projectId: project.id,
             ReplyFinishedPushEventKey.serverId: server.id,
             ReplyFinishedPushEventKey.cwd: payload.cwd,
         ]
-        if let conversationId = payload.conversationId {
+        if includeConversationId, let conversationId = payload.conversationId {
             userInfo[ReplyFinishedPushEventKey.conversationId] = conversationId
         }
         if let renderableAssistantCount = payload.renderableAssistantCount {
             userInfo[ReplyFinishedPushEventKey.renderableAssistantCount] = renderableAssistantCount
+        }
+        if let cursorVersion = payload.cursorVersion {
+            userInfo[ReplyFinishedPushEventKey.cursorVersion] = cursorVersion
         }
         NotificationCenter.default.post(name: .replyFinishedPushReceived, object: nil, userInfo: userInfo)
     }
@@ -1010,12 +1407,81 @@ private struct StoredSubscription: Codable, Hashable {
     let agentDisplayName: String?
 }
 
-private struct PushPayload: Hashable {
+/// App-created local notifications can route without a provisioned server secret.
+/// The request identifier is checked here so a remote payload cannot opt into this path.
+struct LocalReplyFinishedPayload: Hashable {
+    let projectID: UUID
+    let serverID: UUID
+    let cwd: String
+    let conversationId: String?
+
+    init?(userInfo: [AnyHashable: Any], requestIdentifier: String) {
+        guard userInfo["type"] as? String == "reply_finished",
+              userInfo["local"] as? String == "1",
+              let projectIDString = userInfo["project_id"] as? String,
+              let projectID = UUID(uuidString: projectIDString),
+              let serverIDString = userInfo["server_id"] as? String,
+              let serverID = UUID(uuidString: serverIDString),
+              let cwd = userInfo["cwd"] as? String,
+              !cwd.isEmpty else {
+            return nil
+        }
+
+        let currentPrefix = "reply-finished-\(projectID.uuidString)-"
+        let legacyIdentifier = "reply-finished-\(projectID.uuidString)"
+        guard requestIdentifier.hasPrefix(currentPrefix) || requestIdentifier == legacyIdentifier else {
+            return nil
+        }
+
+        self.projectID = projectID
+        self.serverID = serverID
+        self.cwd = cwd
+        if let value = userInfo["conversation_id"] as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            conversationId = trimmed.isEmpty ? nil : trimmed
+        } else {
+            conversationId = nil
+        }
+    }
+}
+
+struct PushPayload: Hashable {
     let type: String
     let serverKey: String
     let cwd: String
     let conversationId: String?
-    let renderableAssistantCount: Int?
+    /// Legacy UI-bubble count. Never use this as a v2 unread cursor.
+    let legacyRenderableAssistantCount: Int?
+    /// Canonical v2 absolute count of finalized, renderable assistant runtime messages.
+    let assistantMessageCursor: Int?
+    let cursorVersion: Int?
+    let completionId: String?
+    let deliveryId: String?
+    let isLocal: Bool
+
+    var deliveryDedupeKeys: [String] {
+        var identities: [String] = []
+        if let completionId {
+            identities.append("completion:\(completionId)")
+        }
+        if let deliveryId {
+            identities.append("delivery:\(deliveryId)")
+        }
+        if cursorVersion == OpenCodeUnreadCursorSchema.currentVersion,
+           let conversationId = OpenCodeSessionID.sanitize(conversationId),
+           let assistantMessageCursor,
+           assistantMessageCursor >= 0 {
+            // Correlate a soft-sync local fallback with a later daemon/APNs delivery
+            // of the same canonical session/count even when the latter has its own ID.
+            identities.append(
+                "cursor-v\(OpenCodeUnreadCursorSchema.currentVersion):\(conversationId):\(assistantMessageCursor)"
+            )
+        }
+        let prefix = "\(serverKey):\(cwd.sha256Hex()):"
+        return identities.map { prefix + $0 }
+    }
+
+    var deliveryDedupeKey: String? { deliveryDedupeKeys.first }
 
     init?(userInfo: [AnyHashable: Any]) {
         guard let type = userInfo["type"] as? String,
@@ -1036,12 +1502,52 @@ private struct PushPayload: Hashable {
 
         let countValue = userInfo["renderable_assistant_count"]
         if let count = countValue as? Int {
-            self.renderableAssistantCount = count
+            self.legacyRenderableAssistantCount = count
         } else if let countString = countValue as? String, let count = Int(countString.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            self.renderableAssistantCount = count
+            self.legacyRenderableAssistantCount = count
         } else {
-            self.renderableAssistantCount = nil
+            self.legacyRenderableAssistantCount = nil
         }
+
+        let cursorValue = userInfo["assistant_message_cursor"]
+        if let cursor = cursorValue as? Int {
+            self.assistantMessageCursor = cursor
+        } else if let cursorString = cursorValue as? String,
+                  let cursor = Int(cursorString.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            self.assistantMessageCursor = cursor
+        } else {
+            self.assistantMessageCursor = nil
+        }
+
+        // A legacy count accompanied by an optimistic version label is still legacy.
+        // Accept v2 only when its distinct cursor field is present.
+        let cursorVersionValue = userInfo["cursor_version"]
+        if assistantMessageCursor != nil, let version = cursorVersionValue as? Int {
+            self.cursorVersion = version
+        } else if assistantMessageCursor != nil,
+                  let versionString = cursorVersionValue as? String,
+                  let version = Int(versionString.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            self.cursorVersion = version
+        } else {
+            self.cursorVersion = nil
+        }
+
+        self.completionId = Self.normalizedIdentifier(userInfo["completion_id"], maxLength: 128)
+        self.deliveryId = Self.normalizedIdentifier(
+            userInfo["gcm.message_id"] ?? userInfo["google.message_id"],
+            maxLength: 256
+        )
+        self.isLocal = (userInfo["local"] as? String) == "1" || (userInfo["local"] as? Bool) == true
+    }
+
+    /// Compatibility name for internal call sites; now always means the v2 field.
+    var renderableAssistantCount: Int? { assistantMessageCursor }
+
+    private static func normalizedIdentifier(_ value: Any?, maxLength: Int) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= maxLength else { return nil }
+        return trimmed
     }
 }
 
@@ -1097,6 +1603,11 @@ extension PushNotificationsManager: @preconcurrency UNUserNotificationCenterDele
             return
         }
 
+        guard claimReplyFinishedPresentationIfNeeded(payload) else {
+            completionHandler([])
+            return
+        }
+
         Task { _ = await handleRemoteNotification(userInfo: userInfo) }
 
         if shouldSuppressForegroundNotification(payload: payload) {
@@ -1112,38 +1623,41 @@ extension PushNotificationsManager: @preconcurrency UNUserNotificationCenterDele
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        handleLaunchOrTap(userInfo: response.notification.request.content.userInfo)
+        handleLaunchOrTap(
+            userInfo: response.notification.request.content.userInfo,
+            requestIdentifier: response.notification.request.identifier
+        )
         completionHandler()
     }
 
-    /// Suppress the system banner only for the agent chat the user is currently viewing.
-    /// Background / other agents always surface banners + sound while the app is foregrounded.
+    /// Suppress a foreground banner when the matching chat is open, or when the
+    /// persisted cursor proves this exact session/count was already read before APNs arrived.
     private func shouldSuppressForegroundNotification(payload: PushPayload) -> Bool {
-        // If the app is not active, let the system present (lock screen / banners).
-        guard UIApplication.shared.applicationState == .active else {
+        let applicationIsActive = UIApplication.shared.applicationState == .active
+        guard let modelContainer,
+              let match = projectAndServerMatchingPush(
+                  payload: payload,
+                  in: modelContainer.mainContext
+              ) else {
             return false
         }
 
-        // Must be on the Chat tab of a live agent.
-        guard AppNavigationState.shared.selectedTab == .chat,
-              let activeProject = ProjectContext.shared.activeProject,
-              let activeServer = ProjectContext.shared.activeServer else {
-            return false
-        }
+        let storedProject = match.project
+        let activeProject = ProjectContext.shared.activeProject
+        let isActiveChat = AppNavigationState.shared.selectedTab == .chat
+            && activeProject?.id == storedProject.id
+        let currentProject = isActiveChat ? activeProject ?? storedProject : storedProject
 
-        // Different agent path → always show (background chat replies).
-        let activePath = activeProject.path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let payloadPath = payload.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !activePath.isEmpty, activePath == payloadPath else {
-            return false
-        }
-
-        // Same path must also be on the same server (secret hash).
-        guard let secret = try? KeychainManager.shared.retrievePushSecret(for: activeServer.id) else {
-            return false
-        }
-        let matchesServer =
-            secret.trimmingCharacters(in: .whitespacesAndNewlines).sha256Hex() == payload.serverKey
-        return matchesServer
+        return ReplyFinishedPresentationPolicy.shouldSuppress(
+            applicationIsActive: applicationIsActive,
+            isActiveChat: isActiveChat,
+            currentSessionId: currentProject.openCodeSessionId,
+            unreadConversationId: currentProject.unreadConversationId,
+            payloadSessionId: payload.conversationId,
+            currentCursorVersion: currentProject.unreadCursorVersion,
+            payloadCursorVersion: payload.cursorVersion,
+            lastReadCursor: currentProject.lastReadUnreadCursor,
+            incomingAssistantCount: payload.renderableAssistantCount
+        )
     }
 }

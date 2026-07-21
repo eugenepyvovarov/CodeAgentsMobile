@@ -7,7 +7,66 @@
 
 import Foundation
 
+enum OpenCodePersistedMessageMetadata {
+    static func runtimeMessageID(from message: Message) -> String? {
+        value(named: "messageID", from: message)
+    }
+
+    static func sessionID(from message: Message) -> String? {
+        value(named: "sessionID", from: message)
+    }
+
+    static func hasRenderableAssistantText(_ message: Message) -> Bool {
+        guard let originalJSON = message.originalJSON,
+              let raw = String(data: originalJSON, encoding: .utf8) else {
+            return false
+        }
+        for line in raw.split(whereSeparator: \.isNewline) {
+            guard let data = String(line).data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  json["type"] as? String == "assistant",
+                  let payload = json["message"] as? [String: Any],
+                  let content = payload["content"] as? [[String: Any]] else { continue }
+            if content.contains(where: { block in
+                guard block["type"] as? String == "text",
+                      let text = block["text"] as? String else { return false }
+                return !OpenCodeChatMapper.strippingSyntheticToolNarration(text).isEmpty
+            }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func value(named key: String, from message: Message) -> String? {
+        guard let originalJSON = message.originalJSON,
+              let raw = String(data: originalJSON, encoding: .utf8) else {
+            return nil
+        }
+        for line in raw.split(whereSeparator: \.isNewline) {
+            guard let data = String(line).data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let opencode = json["opencode"] as? [String: Any],
+                  let value = opencode[key] as? String else { continue }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+}
+
 enum OpenCodeChatMapper {
+    static func finalizedRenderableAssistantMessageIDs(
+        from messages: [OpenCodeSessionMessage]
+    ) -> Set<String> {
+        Set(messages.compactMap { message in
+            guard message.info.role == "assistant",
+                  message.info.time?.completed != nil,
+                  !renderedText(from: message.parts).isEmpty else { return nil }
+            return message.info.id
+        })
+    }
+
     static func hydratedMessages(from messages: [OpenCodeSessionMessage]) -> [CodingAgentRuntimeHydratedMessage] {
         messages.compactMap { message in
             let text = renderedText(from: message.parts)
@@ -28,7 +87,8 @@ enum OpenCodeChatMapper {
                     messageID: message.info.id,
                     partIDs: partIDs,
                     rawEvent: nil
-                )
+                ),
+                isComplete: message.info.role != "assistant" || message.info.time?.completed != nil
             )
         }
     }

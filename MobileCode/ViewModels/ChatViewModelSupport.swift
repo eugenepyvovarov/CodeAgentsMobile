@@ -15,6 +15,132 @@ extension Notification.Name {
     static let projectChatDidReset = Notification.Name("projectChatDidReset")
 }
 
+/// Tracks whether the exact final assistant-output revision for one OpenCode send
+/// was rendered while its changed message bubble was visible on this installation.
+struct OpenCodeReplyObservation: Equatable {
+    private(set) var generation: UUID?
+    private(set) var outputRevision = 0
+    private(set) var lastChangedMessageID: UUID?
+    private(set) var messageIDs: Set<UUID> = []
+    private var messageRevisions: [UUID: Int] = [:]
+    private var seenMessageRevisions: [UUID: Int] = [:]
+
+    mutating func begin(generation: UUID, initialMessageID: UUID) {
+        self.generation = generation
+        outputRevision = 0
+        lastChangedMessageID = nil
+        messageIDs = [initialMessageID]
+        messageRevisions = [:]
+        seenMessageRevisions = [:]
+    }
+
+    mutating func registerMessage(generation: UUID, messageID: UUID, hasVisibleContent: Bool) {
+        guard self.generation == generation else { return }
+        let wasInserted = messageIDs.insert(messageID).inserted
+        if wasInserted, hasVisibleContent {
+            noteContentChange(generation: generation, messageID: messageID)
+        }
+    }
+
+    mutating func noteContentChange(generation: UUID, messageID: UUID) {
+        guard self.generation == generation, messageIDs.contains(messageID) else { return }
+        outputRevision += 1
+        messageRevisions[messageID, default: 0] += 1
+        lastChangedMessageID = messageID
+    }
+
+    mutating func recordVisible(generation: UUID, messageID: UUID) {
+        guard self.generation == generation,
+              let revision = messageRevisions[messageID] else { return }
+        seenMessageRevisions[messageID] = revision
+    }
+
+    mutating func removeMessage(generation: UUID, messageID: UUID) {
+        guard self.generation == generation else { return }
+        messageIDs.remove(messageID)
+        messageRevisions.removeValue(forKey: messageID)
+        seenMessageRevisions.removeValue(forKey: messageID)
+        if lastChangedMessageID == messageID {
+            lastChangedMessageID = nil
+        }
+    }
+
+    func contains(messageID: UUID) -> Bool {
+        messageIDs.contains(messageID)
+    }
+
+    var registeredMessageIDs: Set<UUID> {
+        messageIDs
+    }
+
+    var pendingMessageIDs: Set<UUID> {
+        Set(messageRevisions.compactMap { messageID, revision in
+            seenMessageRevisions[messageID] == revision ? nil : messageID
+        })
+    }
+
+    var pendingMessageRevisions: [UUID: Int] {
+        messageRevisions.filter { messageID, revision in
+            seenMessageRevisions[messageID] != revision
+        }
+    }
+
+    func wasFinalOutputSeen(generation: UUID) -> Bool {
+        guard self.generation == generation, outputRevision > 0 else { return false }
+        return messageRevisions.allSatisfy { messageID, revision in
+            seenMessageRevisions[messageID] == revision
+        }
+    }
+
+    mutating func clear(generation: UUID) {
+        guard self.generation == generation else { return }
+        self = OpenCodeReplyObservation()
+    }
+
+    mutating func clear() {
+        self = OpenCodeReplyObservation()
+    }
+}
+
+/// Content proof required before a remote unread cursor may be acknowledged.
+/// A completed network request is not proof: stale/empty hydration is allowed, but
+/// the canonical assistant-message total for the pushed session must actually arrive.
+struct OpenCodeUnreadContentRequirement: Equatable {
+    let sessionID: String
+    let minimumAssistantMessageCount: Int
+
+    init?(sessionID: String?, minimumAssistantMessageCount: Int?) {
+        guard let sessionID = OpenCodeSessionID.sanitize(sessionID),
+              let minimumAssistantMessageCount,
+              minimumAssistantMessageCount >= 0 else {
+            return nil
+        }
+        self.sessionID = sessionID
+        self.minimumAssistantMessageCount = minimumAssistantMessageCount
+    }
+
+    func isSatisfied(by messages: [Message]) -> Bool {
+        UnreadBadgeMath.finalizedOpenCodeAssistantCount(
+            in: messages,
+            sessionID: sessionID
+        ) >= minimumAssistantMessageCount
+    }
+}
+
+enum OpenCodeReplyVisibilityPolicy {
+    static func shouldRecord(
+        isViewVisible: Bool,
+        isSceneActive: Bool,
+        isChatTabSelected: Bool,
+        viewModelProjectID: UUID?,
+        activeProjectID: UUID?
+    ) -> Bool {
+        guard isViewVisible, isSceneActive, isChatTabSelected else { return false }
+        guard let viewModelProjectID, let activeProjectID else { return false }
+        return viewModelProjectID == activeProjectID
+    }
+}
+
 enum OpenCodeHydratedMessageMergeAction: Equatable {
     case insert
     case updateExisting

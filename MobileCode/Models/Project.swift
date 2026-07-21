@@ -83,6 +83,9 @@ final class RemoteProject {
     var openCodeLastPartIds: [String] = []
     /// Encoded as `partId=digest` entries for content-change detection during hydration.
     var openCodeLastPartDigests: [String] = []
+    /// Full-session canonical v2 cursor snapshot, updated only by an unbounded fetch.
+    var openCodeCanonicalAssistantMessageIds: [String] = []
+    var openCodeCanonicalAssistantSessionId: String?
 
     // MARK: - Claude → OpenCode Migration
 
@@ -110,6 +113,10 @@ final class RemoteProject {
 
     /// Cursor value considered "read" (advanced when the user views the chat and scrolls to bottom).
     var lastReadUnreadCursor: Int = 0
+
+    /// Schema for the absolute unread cursor. Nil/legacy cursors counted UI rows or
+    /// message parts and are reset before accepting the canonical runtime-message cursor.
+    var unreadCursorVersion: Int?
 
     // MARK: - Avatar cache (remote identity is source of truth)
 
@@ -141,6 +148,7 @@ final class RemoteProject {
         self.lastModified = Date()
         self.createdAt = Date()
         self.agentRuntimeRawValue = CodingAgentRuntimeKind.openCode.rawValue
+        self.unreadCursorVersion = OpenCodeUnreadCursorSchema.currentVersion
         // New projects are created on OpenCode and do not need legacy migration.
         self.openCodeMigrationVersion = ClaudeToOpenCodeMigration.currentVersion
     }
@@ -210,13 +218,23 @@ final class RemoteProject {
         )
     }
 
-    func updateOpenCodeHydrationState(_ state: OpenCodeHydrationState) {
+    func updateOpenCodeHydrationState(
+        _ state: OpenCodeHydrationState,
+        updateModifiedTimestamp: Bool = true
+    ) {
         openCodeLastMessageIds = state.messageIDs.sorted()
         openCodeLastPartIds = state.partIDs.sorted()
         openCodeLastPartDigests = state.partDigests
             .map { "\($0.key)=\($0.value)" }
             .sorted()
-        updateLastModified()
+        if updateModifiedTimestamp {
+            updateLastModified()
+        }
+    }
+
+    func updateOpenCodeCanonicalAssistantMessages(ids: Set<String>, sessionID: String) {
+        openCodeCanonicalAssistantMessageIds = ids.sorted()
+        openCodeCanonicalAssistantSessionId = sessionID
     }
 
     @discardableResult
@@ -225,14 +243,19 @@ final class RemoteProject {
             return false
         }
 
-        guard openCodeSessionId != sessionId else {
+        guard OpenCodeSessionID.sanitize(openCodeSessionId) == nil else {
             return false
         }
 
+        // A notification identifies the session that produced that notification; it
+        // is not authority to replace a newer active chat session. Push may only fill
+        // an otherwise missing session anchor.
         openCodeSessionId = sessionId
         openCodeLastMessageIds = []
         openCodeLastPartIds = []
         openCodeLastPartDigests = []
+        openCodeCanonicalAssistantMessageIds = []
+        openCodeCanonicalAssistantSessionId = nil
         updateLastModified()
         return true
     }
@@ -242,6 +265,8 @@ final class RemoteProject {
         openCodeLastMessageIds = []
         openCodeLastPartIds = []
         openCodeLastPartDigests = []
+        openCodeCanonicalAssistantMessageIds = []
+        openCodeCanonicalAssistantSessionId = nil
         lastSuccessfulRuntimeProviderRawValue = nil
         updateLastModified()
     }

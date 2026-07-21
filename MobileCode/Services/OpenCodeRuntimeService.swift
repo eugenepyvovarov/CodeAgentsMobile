@@ -29,6 +29,7 @@ struct OpenCodeRuntimeDiagnostics: Equatable, CustomStringConvertible {
 enum OpenCodeRuntimeError: LocalizedError, Equatable {
     case streamAttachmentTimedOut(OpenCodeRuntimeDiagnostics)
     case streamEndedBeforePrompt(OpenCodeRuntimeDiagnostics)
+    case streamEndedBeforeCompletion(OpenCodeRuntimeDiagnostics)
 
     var errorDescription: String? {
         switch self {
@@ -36,6 +37,8 @@ enum OpenCodeRuntimeError: LocalizedError, Equatable {
             return "OpenCode event stream did not attach before sending the prompt (server may be slow or /event stalled). \(diagnostics.description)"
         case .streamEndedBeforePrompt(let diagnostics):
             return "OpenCode event stream ended before sending the prompt (check OpenCode service on the host). \(diagnostics.description)"
+        case .streamEndedBeforeCompletion(let diagnostics):
+            return "OpenCode event stream ended before the submitted reply was finalized. \(diagnostics.description)"
         }
     }
 }
@@ -54,6 +57,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
     private let clientOverride: OpenCodeClient?
     private let streamAttachTimeoutNanoseconds: UInt64
     private let streamAttachRetryCount: Int
+    private var activeSendsByProjectID: [UUID: ActiveOpenCodeSend] = [:]
 
     init(
         sshService: SSHConnectionProviding? = nil,
@@ -109,9 +113,20 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         messageId: UUID? = nil,
         mcpServers: [MCPServer] = []
     ) -> AsyncThrowingStream<MessageChunk, Error> {
-        AsyncThrowingStream { continuation in
+        let sendToken = UUID()
+        let initialPromptMessageID = Self.makePromptMessageID(from: messageId)
+        return AsyncThrowingStream { continuation in
             let lifetime = OpenCodeSendStreamLifetime()
             lifetime.task = Task {
+                activeSendsByProjectID[project.id] = ActiveOpenCodeSend(
+                    token: sendToken,
+                    latestPromptMessageID: initialPromptMessageID
+                )
+                defer {
+                    if activeSendsByProjectID[project.id]?.token == sendToken {
+                        activeSendsByProjectID.removeValue(forKey: project.id)
+                    }
+                }
                 do {
                     try Task.checkCancellation()
                     let sshSession = try await sshService.getConnection(for: project, purpose: .opencode)
@@ -140,7 +155,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     try await submitPromptPayload(
                         text,
                         project: project,
-                        messageId: messageId,
+                        messageID: initialPromptMessageID,
                         sshSession: sshSession,
                         client: client,
                         sessionID: sessionID,
@@ -152,8 +167,30 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                     // soft-steered follow-up (prompt_async mid-run) can resume before we detach.
                     var awaitingIdleGrace = false
 
-                    func finishStreamSuccessfully() async {
-                        try? await hydrateOpenCodeState(project: project, sshSession: sshSession, sessionID: sessionID)
+                    @MainActor
+                    func finishStreamSuccessfully() async throws {
+                        let expectedParentID = activeSendsByProjectID[project.id]?.latestPromptMessageID
+                            ?? initialPromptMessageID
+                        let messages = try await hydrateOpenCodeState(
+                            project: project,
+                            sshSession: sshSession,
+                            sessionID: sessionID
+                        )
+                        let exactReplyIDs = OpenCodeReplyFinality.finalizedRenderableAssistantMessageIDs(
+                            in: messages,
+                            parentMessageID: expectedParentID
+                        )
+                        guard !exactReplyIDs.isEmpty else {
+                            throw OpenCodeRuntimeError.streamEndedBeforeCompletion(diagnostics)
+                        }
+                        for chunk in hydrationChunks(
+                            from: messages,
+                            sessionID: sessionID,
+                            diff: nil,
+                            exactReplyIDs: exactReplyIDs
+                        ) {
+                            continuation.yield(chunk)
+                        }
                         continuation.finish()
                     }
 
@@ -217,16 +254,22 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                                 }
                             case .timedOut:
                                 // Grace expired with no further activity after a final answer.
-                                await finishStreamSuccessfully()
+                                try await finishStreamSuccessfully()
                                 return
                             case .ended:
-                                let fallbackChunks = try await fallbackHydrationChunks(
+                                let expectedParentID = activeSendsByProjectID[project.id]?.latestPromptMessageID
+                                    ?? initialPromptMessageID
+                                let fallback = try await fallbackHydrationChunks(
                                     project: project,
                                     sshSession: sshSession,
-                                    sessionID: sessionID
+                                    sessionID: sessionID,
+                                    expectedParentMessageID: expectedParentID
                                 )
-                                for chunk in fallbackChunks {
+                                for chunk in fallback.chunks {
                                     continuation.yield(chunk)
+                                }
+                                guard fallback.hasFinalizedExpectedReply else {
+                                    throw OpenCodeRuntimeError.streamEndedBeforeCompletion(diagnostics)
                                 }
                                 continuation.finish()
                                 return
@@ -236,15 +279,18 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         continuation.finish()
                         return
                     } catch {
-                        let fallbackChunks = (try? await fallbackHydrationChunks(
+                        let expectedParentID = activeSendsByProjectID[project.id]?.latestPromptMessageID
+                            ?? initialPromptMessageID
+                        let fallback = try? await fallbackHydrationChunks(
                             project: project,
                             sshSession: sshSession,
-                            sessionID: sessionID
-                        )) ?? []
-                        if fallbackChunks.isEmpty {
+                            sessionID: sessionID,
+                            expectedParentMessageID: expectedParentID
+                        )
+                        guard let fallback, fallback.hasFinalizedExpectedReply else {
                             throw error
                         }
-                        for chunk in fallbackChunks {
+                        for chunk in fallback.chunks {
                             continuation.yield(chunk)
                         }
                         continuation.finish()
@@ -276,22 +322,35 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         let sessionID = try await resolveSessionID(for: project, sshSession: sshSession)
         let promptModel = await resolvePromptModel(for: project, sshSession: sshSession)
         let promptVariant = resolvePromptVariant(for: project)
-        try await submitPromptPayload(
-            text,
-            project: project,
-            messageId: messageId,
-            sshSession: sshSession,
-            client: client,
-            sessionID: sessionID,
-            promptModel: promptModel,
-            promptVariant: promptVariant
-        )
+        let promptMessageID = Self.makePromptMessageID(from: messageId)
+        let previousSend = activeSendsByProjectID[project.id]
+        if var activeSend = previousSend {
+            activeSend.latestPromptMessageID = promptMessageID
+            activeSendsByProjectID[project.id] = activeSend
+        }
+        do {
+            try await submitPromptPayload(
+                text,
+                project: project,
+                messageID: promptMessageID,
+                sshSession: sshSession,
+                client: client,
+                sessionID: sessionID,
+                promptModel: promptModel,
+                promptVariant: promptVariant
+            )
+        } catch {
+            if activeSendsByProjectID[project.id]?.token == previousSend?.token {
+                activeSendsByProjectID[project.id] = previousSend
+            }
+            throw error
+        }
     }
 
     private func submitPromptPayload(
         _ text: String,
         project: RemoteProject,
-        messageId: UUID?,
+        messageID: String,
         sshSession: SSHSession,
         client: OpenCodeClient,
         sessionID: String,
@@ -299,7 +358,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         promptVariant: String?
     ) async throws {
         let prompt = try OpenCodePromptBuilder.build(
-            messageID: messageId?.uuidString,
+            messageID: messageID,
             composedPrompt: text,
             projectPath: project.path,
             model: promptModel,
@@ -332,7 +391,8 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                 previousState: state,
                 observedState: OpenCodeHydrationState(),
                 storedState: state,
-                diff: OpenCodeHydrationDiffer.diff(local: state, remote: state)
+                diff: OpenCodeHydrationDiffer.diff(local: state, remote: state),
+                canonicalAssistantCount: nil
             )
         }
 
@@ -390,6 +450,18 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         try Task.checkCancellation()
         let mapperStart = DispatchTime.now().uptimeNanoseconds
         let hydratedMessages = OpenCodeChatMapper.hydratedMessages(from: selectedMessages)
+        let canonicalAssistantIDs: Set<String>?
+        if mode.replacesStoredState || mode.limit.map({ messages.count < $0 }) == true {
+            canonicalAssistantIDs = OpenCodeChatMapper.finalizedRenderableAssistantMessageIDs(from: messages)
+        } else {
+            canonicalAssistantIDs = nil
+        }
+        if let canonicalAssistantIDs {
+            project.updateOpenCodeCanonicalAssistantMessages(
+                ids: canonicalAssistantIDs,
+                sessionID: sessionID
+            )
+        }
         ChatRecoveryTiming.log(
             runtime: kind.rawValue,
             projectID: project.id.uuidString,
@@ -413,7 +485,8 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             previousState: previousState,
             observedState: observedState,
             storedState: storedState,
-            diff: diff
+            diff: diff,
+            canonicalAssistantCount: canonicalAssistantIDs?.count
         )
     }
 
@@ -517,6 +590,8 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         // Drop placeholders / stale local ids (e.g. ses_diag) so we create a real session.
         if project.openCodeSessionId != nil {
             project.openCodeSessionId = nil
+            project.openCodeCanonicalAssistantMessageIds = []
+            project.openCodeCanonicalAssistantSessionId = nil
             project.updateLastModified()
         }
 
@@ -530,6 +605,8 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             throw OpenCodeClientError.invalidResponse("OpenCode did not return a session id.")
         }
         project.openCodeSessionId = sessionID
+        project.openCodeCanonicalAssistantMessageIds = []
+        project.openCodeCanonicalAssistantSessionId = sessionID
         project.selectedAgentRuntime = .openCode
         project.updateLastModified()
         // First pin for a newly created session: await so schedulers see it promptly.
@@ -640,11 +717,19 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         return trimmed
     }
 
+    private static func makePromptMessageID(from value: UUID?) -> String {
+        let uuid = (value ?? UUID()).uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        return "msg_\(uuid)"
+    }
+
+    @discardableResult
     private func hydrateOpenCodeState(
         project: RemoteProject,
         sshSession: SSHSession,
         sessionID: String
-    ) async throws {
+    ) async throws -> [OpenCodeSessionMessage] {
         let client = client(for: project)
         let messages = try await client.sessionMessages(
             sshSession: sshSession,
@@ -652,13 +737,19 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
             directory: project.path
         )
         project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
+        project.updateOpenCodeCanonicalAssistantMessages(
+            ids: OpenCodeChatMapper.finalizedRenderableAssistantMessageIDs(from: messages),
+            sessionID: sessionID
+        )
+        return messages
     }
 
     private func fallbackHydrationChunks(
         project: RemoteProject,
         sshSession: SSHSession,
-        sessionID: String
-    ) async throws -> [MessageChunk] {
+        sessionID: String,
+        expectedParentMessageID: String
+    ) async throws -> OpenCodeFallbackHydration {
         let client = client(for: project)
         let previousState = project.openCodeHydrationState
         let messages = try await client.sessionMessages(
@@ -668,24 +759,60 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
         )
         let diff = OpenCodeHydrationDiffer.diff(local: previousState, remoteMessages: messages)
         project.updateOpenCodeHydrationState(OpenCodeHydrationState(messages: messages))
-        guard diff.hasChanges else {
-            return []
+        project.updateOpenCodeCanonicalAssistantMessages(
+            ids: OpenCodeChatMapper.finalizedRenderableAssistantMessageIDs(from: messages),
+            sessionID: sessionID
+        )
+        let exactReplyIDs = OpenCodeReplyFinality.finalizedRenderableAssistantMessageIDs(
+            in: messages,
+            parentMessageID: expectedParentMessageID
+        )
+        let hasFinalizedExpectedReply = !exactReplyIDs.isEmpty
+        guard diff.hasChanges || !exactReplyIDs.isEmpty else {
+            return OpenCodeFallbackHydration(
+                chunks: [],
+                hasFinalizedExpectedReply: hasFinalizedExpectedReply
+            )
         }
 
-        return OpenCodeChatMapper.hydratedMessages(from: messages).compactMap { hydrated in
+        let chunks = hydrationChunks(
+            from: messages,
+            sessionID: sessionID,
+            diff: diff,
+            exactReplyIDs: exactReplyIDs
+        )
+        return OpenCodeFallbackHydration(
+            chunks: chunks,
+            hasFinalizedExpectedReply: hasFinalizedExpectedReply
+        )
+    }
+
+    private func hydrationChunks(
+        from messages: [OpenCodeSessionMessage],
+        sessionID: String,
+        diff: OpenCodeHydrationDiff?,
+        exactReplyIDs: Set<String>
+    ) -> [MessageChunk] {
+        OpenCodeChatMapper.hydratedMessages(from: messages).compactMap { hydrated -> MessageChunk? in
             let partIDs = Set(hydrated.runtimePartIDs)
-            let hasNewParts = !partIDs.isDisjoint(with: diff.addedPartIDs)
+            let hasNewParts = diff.map { !partIDs.isDisjoint(with: $0.addedPartIDs) } ?? false
+            let hasUpdatedParts = diff.map { !partIDs.isDisjoint(with: $0.updatedPartIDs) } ?? false
+            let isExactReply = exactReplyIDs.contains(hydrated.runtimeMessageID)
             guard hydrated.role == .assistant,
-                  diff.addedMessageIDs.contains(hydrated.runtimeMessageID) || hasNewParts else {
+                  isExactReply
+                    || diff?.addedMessageIDs.contains(hydrated.runtimeMessageID) == true
+                    || hasNewParts
+                    || hasUpdatedParts else {
                 return nil
             }
 
             var metadata: [String: Any] = [
-                "type": "result",
+                "type": hydrated.isComplete ? "result" : "assistant",
                 "runtime": CodingAgentRuntimeKind.openCode.rawValue,
                 "opencodeSessionId": sessionID,
                 "opencodeMessageId": hydrated.runtimeMessageID,
                 "opencodePartIds": hydrated.runtimePartIDs,
+                "opencodeSubmittedReply": isExactReply,
                 "result": hydrated.text,
                 "content": [
                     [
@@ -701,7 +828,7 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
 
             return MessageChunk(
                 content: hydrated.text,
-                isComplete: true,
+                isComplete: hydrated.isComplete,
                 isError: false,
                 metadata: metadata
             )
@@ -745,6 +872,8 @@ final class OpenCodeRuntimeService: CodingAgentRuntimeService {
                         )
                         continue
                     }
+                    throw error
+                case .streamEndedBeforeCompletion:
                     throw error
                 }
             }
@@ -920,6 +1049,43 @@ private enum OpenCodeTimedEvent {
     case event(OpenCodeEvent)
     case ended
     case timedOut
+}
+
+private struct ActiveOpenCodeSend {
+    let token: UUID
+    var latestPromptMessageID: String
+}
+
+private struct OpenCodeFallbackHydration {
+    let chunks: [MessageChunk]
+    let hasFinalizedExpectedReply: Bool
+}
+
+enum OpenCodeReplyFinality {
+    static func finalizedRenderableAssistantMessageIDs(
+        in messages: [OpenCodeSessionMessage],
+        parentMessageID: String
+    ) -> Set<String> {
+        Set(messages.compactMap { message in
+            guard message.info.role == "assistant",
+                  message.info.parentID == parentMessageID,
+                  message.info.time?.completed != nil,
+                  !OpenCodeChatMapper.renderedText(from: message.parts).isEmpty else {
+                return nil
+            }
+            return message.info.id
+        })
+    }
+
+    static func hasFinalizedRenderableAssistant(
+        in messages: [OpenCodeSessionMessage],
+        parentMessageID: String
+    ) -> Bool {
+        !finalizedRenderableAssistantMessageIDs(
+            in: messages,
+            parentMessageID: parentMessageID
+        ).isEmpty
+    }
 }
 
 /// Cancels the in-flight send-stream Task when the AsyncThrowingStream consumer ends or is cancelled.

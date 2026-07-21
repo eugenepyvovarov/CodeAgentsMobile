@@ -15,6 +15,7 @@ export const LIMITS = {
   maxAgentDisplayNameLength: 120,
   maxPlatformLength: 32,
   maxConversationIdLength: 256,
+  maxCompletionIdLength: 128,
   maxMessagePreviewLength: 600,
   /** Devices sent per FCM multicast batch (FCM hard limit 500). */
   fcmMulticastBatchSize: 500,
